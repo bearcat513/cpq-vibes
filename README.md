@@ -241,12 +241,18 @@ So a template is page setup plus an ordered list of blocks, edited as a list rat
 | Block | What it draws |
 | --- | --- |
 | Heading / Text | A title or a wrapped paragraph, with size, alignment and colour |
+| Image | A picture in the flow — a logo, a cover band, a diagram — at a width you give, with an optional caption |
 | Columns | Side-by-side panels — prepared for / prepared by / valid until |
 | Field list | Label and value pairs |
 | Line items | The quote's lines as a table: pick the columns, their widths and their alignment |
 | Totals | A right-aligned totals panel, each row naming the number it shows |
 | Signatures | Ruled areas for names and dates |
 | Divider / Spacer / Page break | The usual layout furniture |
+
+Plus a **letterhead**: a logo and a block of text drawn into the top margin, on every page or only
+the first. It sits beside the page setup rather than in the block list because it is not part of
+the flow — it is drawn after the layout is finished, like the footer, and a proposal whose second
+page is unbranded looks like a fax.
 
 Every piece of text in a block runs through the **same token vocabulary as the other formats**, so
 `{{customer.name}}` means the same thing in a PDF as in an HTML template.
@@ -258,11 +264,9 @@ cannot: there is one implementation. Design a template before you have written a
 it renders against a built-in specimen, itself priced by the real pricing engine so its totals add
 up.
 
-**Two things a PDF template deliberately cannot do.** It cannot print **cost or margin** — the
-totals it may name is a closed, customer-facing list, and internal numbers are simply not on it, so
-the one artefact designed to leave the company has no way to carry them. And it cannot hold an
-**image**: no logo, no letterhead graphic. That needs image decoding and file storage, and it is a
-real feature rather than a missing line.
+**What a PDF template deliberately cannot do.** It cannot print **cost or margin** — the totals it
+may name is a closed, customer-facing list, and internal numbers are simply not on it, so the one
+artefact designed to leave the company has no way to carry them.
 
 The writer is about a thousand lines with no dependencies, using only the PDF standard 14 fonts, so
 a quote is a few kilobytes and opens anywhere without an embedded font. That is the same trade this
@@ -277,6 +281,22 @@ over the API:
 ```bash
 curl -sb jar "localhost:3000/api/quotes/qte_1a2b3c4d/document?templateId=tpl_1a2b3c4d" -o quote.pdf
 ```
+
+### Branding
+
+A logo lives **in the template**, as a base64 `data:` URL beside the blocks that use it, so it
+travels with an export, a share and an import rather than turning into a broken reference. Drop a
+file on the image picker and it is ready to print; the browser flattens transparency onto the paper
+colour, scales anything oversized down and re-encodes losslessly, so what gets stored is bytes a
+PDF reader can take as they are.
+
+That strictness is the point: the writer embeds an image **without decoding it**. A JPEG's own data
+is PDF's `DCTDecode` stream, and a PNG's `IDAT` is `FlateDecode` with the predictor PDF already
+knows — so a logo goes into the file byte for byte, at full quality, and the same picture on eight
+pages is one object. What that rules out is transparency inside the stream (PDF has no such thing),
+interlaced PNGs, CMYK and progressive JPEGs; the editor converts all of those on the way in, and
+the API answers a sentence saying which one it hit. An image that cannot be drawn is left out and
+reported rather than failing the render — a proposal missing its logo can still be read.
 
 ### Move it around
 
@@ -300,8 +320,11 @@ An empty CPQ is not explorable: you cannot see what a volume tier does without a
 one, or what an approval ladder does without a discount deep enough to climb it. **Install the
 sample** in Settings adds eight products (a configurable platform with editions and add-ons, usage
 and services lines, and a bundle whose components carry the price), two price books with floors,
-three pricing rules, a five-rung approval ladder, two customers, three proposal templates, and a
-quote built to trip the ladder.
+three pricing rules, a five-rung approval ladder, two customers, seven proposal templates, and a
+quote built to trip the ladder. The templates are the documentation for the document format:
+between them they use every block, the letterhead, the whole customer-facing totals list and both
+kinds of image, and **Start from an example** on the Templates screen opens any of them as a draft
+to take apart.
 
 It is additive and idempotent by SKU and name — running it twice does not produce two catalogues,
 and it never overwrites something you have edited. Everything goes in through the same validators
@@ -456,7 +479,7 @@ Everything lives in PocketBase, in seven collections created by `docker/pb_migra
 | `approval_rules` | Who has to look at what, and when |
 | `accounts` | Customers, with their currency, terms and tax position |
 | `quotes` | Lines, totals and approvals, stored as priced |
-| `proposal_templates` | Document bodies — text with `{{token}}` placeholders, or a PDF document description |
+| `proposal_templates` | Document bodies — text with `{{token}}` placeholders, or a PDF document description with its branding inside it |
 
 Each collection has real columns for what the *database* has to do something with — find by SKU,
 sort by name, filter by status, match an approver — and one JSON field for the nested domain object

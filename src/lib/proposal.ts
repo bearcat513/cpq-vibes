@@ -23,6 +23,15 @@ import type { CurrencyCode, PricedLine, ProposalFormat, Quote } from "./types";
 export const MAX_TEMPLATE_NAME_LENGTH = 120;
 export const MAX_TEMPLATE_BODY_LENGTH = 200_000;
 
+/**
+ * A PDF template gets a great deal more room, because its body is JSON that
+ * carries its own pictures: a letterhead is a few hundred kilobytes of base64
+ * inside the document description. Prose never needs it — 200,000 characters
+ * is already a book — so the two limits are separate rather than one raised
+ * to the larger.
+ */
+export const MAX_PDF_TEMPLATE_BODY_LENGTH = 3_000_000;
+
 /** The repeating block: everything between these is rendered once per line. */
 export const LINES_OPEN = "{{#lines}}";
 export const LINES_CLOSE = "{{/lines}}";

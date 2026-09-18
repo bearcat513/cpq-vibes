@@ -2,7 +2,7 @@
  * Installing the worked example from `src/lib/samples.ts`.
  *
  * One call fills an empty account with a catalogue, the policy around it, two
- * customers, three proposal templates and a quote that actually trips the
+ * customers, seven proposal templates and a quote that actually trips the
  * approval ladder — so the first thing a new account sees is the app doing its
  * job rather than eight empty lists.
  *

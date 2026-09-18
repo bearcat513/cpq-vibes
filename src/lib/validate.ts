@@ -27,9 +27,10 @@
  * writing it rather than by the quote it mispriced a month later.
  */
 import { parseFormula } from "./formula";
+import { isEmbeddableImage } from "./image";
 import { asCurrency, atLeastZero, clampPercent, isCurrency } from "./money";
 import { lineVariableNames, quoteVariableNames } from "./pricing";
-import { MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "./proposal";
+import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "./proposal";
 import { DEFAULT_MARGINS, PAGE_SIZES } from "./pdf";
 import { FONT_FAMILIES } from "./pdfFonts";
 import {
@@ -41,6 +42,7 @@ import {
   starterPdfTemplate,
   type LineItemColumn,
   type PdfBlock,
+  type PdfHeader,
   type PdfTemplate,
   type TotalsRow,
 } from "./pdfTemplate";
@@ -566,8 +568,9 @@ export function readProposalTemplate(raw: unknown): Validated<ProposalTemplateIn
   const format = oneOf(input.format, PROPOSAL_FORMATS, "html") as ProposalFormat;
 
   const body = String(input.body ?? "");
-  if (body.length > MAX_TEMPLATE_BODY_LENGTH) {
-    return invalid(`A template body must be ${MAX_TEMPLATE_BODY_LENGTH.toLocaleString()} characters or fewer.`);
+  const limit = format === "pdf" ? MAX_PDF_TEMPLATE_BODY_LENGTH : MAX_TEMPLATE_BODY_LENGTH;
+  if (body.length > limit) {
+    return invalid(`A template body must be ${limit.toLocaleString()} characters or fewer.`);
   }
 
   // A PDF template's body is a document description rather than prose, so it
@@ -599,6 +602,20 @@ const optionalColor = (value: unknown): string | undefined => {
 
 const align = (value: unknown): "left" | "center" | "right" | undefined =>
   value === "center" || value === "right" || value === "left" ? value : undefined;
+
+/**
+ * A picture on a template, as a `data:` URL.
+ *
+ * Anything a PDF reader could not be handed is dropped to an empty string
+ * rather than refused — a template is a document being worked on, and losing
+ * the whole of it because one logo is a progressive JPEG would be the wrong
+ * trade. `renderPdf` reports what it could not draw, and the editor refuses
+ * the file at the point it is chosen, which is where the message is useful.
+ */
+const imageSource = (value: unknown): string => {
+  if (typeof value !== "string" || !value.trim()) return "";
+  return isEmbeddableImage(value.trim()) ? value.trim() : "";
+};
 
 function readLineColumns(raw: unknown): LineItemColumn[] {
   const fields = new Set(LINE_ITEM_FIELDS.map(entry => entry.field));
@@ -668,6 +685,21 @@ function readBlock(raw: unknown): PdfBlock | null {
         ...(input.italic === true ? { italic: true } : {}),
         ...(input.spaceAfter !== undefined ? { spaceAfter: bounded(input.spaceAfter, 4, 0, 200) } : {}),
       };
+
+    case "image": {
+      // An unreadable picture is dropped, not refused: the block keeps its
+      // place in the document and the editor says what was wrong with it,
+      // which beats a save that fails on a file someone just chose.
+      const source = imageSource(input.source);
+      return {
+        type: "image",
+        source,
+        width: bounded(input.width, 140, 8, 900),
+        ...(align(input.align) ? { align: align(input.align) } : {}),
+        ...(text(input.caption, 300) ? { caption: text(input.caption, 300) } : {}),
+        ...(input.spaceAfter !== undefined ? { spaceAfter: bounded(input.spaceAfter, 6, 0, 200) } : {}),
+      };
+    }
 
     case "spacer":
       return { type: "spacer", height: bounded(input.height, 12, 0, 400) };
@@ -777,8 +809,26 @@ export function readPdfTemplate(raw: unknown): Validated<PdfTemplate> {
   if (!blocks.length) return invalid("A PDF template needs at least one block.");
 
   const footer = asRecord(source.footer);
+  const header = asRecord(source.header);
+  // Held in a local rather than tested and used inline the way the cheap
+  // readers above are: checking a logo means decoding it, and a letterhead can
+  // be a few hundred kilobytes.
+  const logo = imageSource(header.logo);
+  const letterhead: PdfHeader = {
+    ...(logo ? { logo } : {}),
+    ...(header.logoWidth !== undefined ? { logoWidth: bounded(header.logoWidth, 110, 8, 400) } : {}),
+    ...(header.logoAlign === "right" ? { logoAlign: "right" as const } : {}),
+    ...(text(header.text, 500) ? { text: text(header.text, 500) } : {}),
+    ...(optionalColor(header.color) ? { color: optionalColor(header.color) } : {}),
+    ...(header.rule === true ? { rule: true } : {}),
+    ...(header.firstPageOnly === true ? { firstPageOnly: true } : {}),
+  };
 
   return valid({
+    // A letterhead with nothing in it is no letterhead: the key is left out
+    // so a template that has never had one does not carry an empty object
+    // around for the rest of its life.
+    ...(Object.keys(letterhead).length ? { header: letterhead } : {}),
     page: {
       size: oneOf(page.size, PAGE_SIZES, DEFAULT_PAGE.size),
       margins: {

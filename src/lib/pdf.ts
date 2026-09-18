@@ -23,12 +23,21 @@
  * top left, which is the opposite of PDF's own convention; the conversion
  * happens in exactly one place, `toPdfY`.
  *
+ * ## Images
+ *
+ * One exception to "text, rules and rectangles": a document that goes to a
+ * customer carries the sender's logo on it, so `drawImage` writes an image
+ * XObject. It still decodes nothing — `src/lib/image.ts` establishes that the
+ * bytes are already in a filter PDF speaks, and they are copied into the file
+ * as they are. The same picture used on every page is one object.
+ *
  * ## What is not
  *
- * No images, no embedded fonts, no links, no forms. Each of those is a real
- * feature with a real cost, and none of them is needed to put a priced quote
- * in front of a buyer. The omissions are deliberate rather than pending.
+ * No embedded fonts, no links, no forms. Each of those is a real feature with
+ * a real cost, and none of them is needed to put a priced quote in front of a
+ * buyer. The omissions are deliberate rather than pending.
  */
+import type { EmbeddableImage } from "./image";
 import {
   baseFontName,
   encodeWinAnsi,
@@ -190,6 +199,15 @@ type Page = {
   operators: string[];
   /** Font keys used, so the page's resource dictionary is minimal. */
   fonts: Set<string>;
+  /** Image resource names used, for the same reason. */
+  images: Set<string>;
+};
+
+/** A hex string literal, which is how a palette reaches the file. */
+const pdfHex = (bytes: Uint8Array): string => {
+  let text = "<";
+  for (const byte of bytes) text += byte.toString(16).padStart(2, "0");
+  return `${text}>`;
 };
 
 export class PdfDocument {
@@ -213,11 +231,29 @@ export class PdfDocument {
    */
   private readonly faces = new Map<string, { family: FontFamily; style: FontStyle }>();
 
+  /**
+   * Every image drawn, and the resource name it was given.
+   *
+   * A letterhead is the same picture on all eight pages of a proposal, so one
+   * entry per distinct image is the difference between a 30 kB file and a
+   * 240 kB one. Keyed on the decoded image *itself* rather than on anything
+   * about its bytes: the caller decodes each source once and hands the same
+   * object back, and two different logos that happened to agree on type, size
+   * and byte count would otherwise print as one.
+   */
+  private readonly pictures = new Map<EmbeddableImage, string>();
+
   /** Distance from the top of the page to the next thing drawn. */
   private cursor: number;
 
-  /** Drawn onto every page once the document is finished. */
-  private footer: ((document: PdfDocument, page: number, total: number) => void) | null = null;
+  /**
+   * Drawn onto every page once the document is finished.
+   *
+   * A list rather than one callback, because a branded document has two of
+   * them — a letterhead at the top and a footer at the bottom — and neither
+   * can be drawn while the page count is still unknown.
+   */
+  private readonly overlays: ((document: PdfDocument, page: number, total: number) => void)[] = [];
 
   constructor(options: Partial<DocumentOptions> = {}) {
     this.options = {
@@ -239,7 +275,7 @@ export class PdfDocument {
     this.fontSize = this.options.fontSize;
     this.color = this.options.color;
 
-    this.page = { operators: [], fonts: new Set() };
+    this.page = { operators: [], fonts: new Set(), images: new Set() };
     this.pages.push(this.page);
     this.cursor = this.margins.top;
   }
@@ -284,7 +320,7 @@ export class PdfDocument {
   /* ------------------------------- pages -------------------------------- */
 
   addPage(): void {
-    this.page = { operators: [], fonts: new Set() };
+    this.page = { operators: [], fonts: new Set(), images: new Set() };
     this.pages.push(this.page);
     this.cursor = this.margins.top;
   }
@@ -362,7 +398,59 @@ export class PdfDocument {
     this.op("Q");
   }
 
+  /**
+   * Draws an image at an absolute position. Does not move the cursor.
+   *
+   * An image XObject is drawn into the unit square, so the placement *is* the
+   * transformation matrix: scale by the size it should occupy, translate to
+   * where its bottom-left corner goes. Nothing about the picture's own pixels
+   * comes into it, which is why this writer never has to decode one.
+   */
+  drawImageAt(image: EmbeddableImage, x: number, y: number, width: number, height: number): void {
+    if (width <= 0 || height <= 0) return;
+
+    let name = this.pictures.get(image);
+    if (!name) {
+      name = `Im${this.pictures.size + 1}`;
+      this.pictures.set(image, name);
+    }
+    this.page.images.add(name);
+
+    this.op("q");
+    this.op(`${round(width)} 0 0 ${round(height)} ${round(x)} ${round(this.toPdfY(y + height))} cm`);
+    this.op(`/${name} Do`);
+    this.op("Q");
+  }
+
   /* -------------------------------- blocks ------------------------------- */
+
+  /**
+   * An image in the flow: placed at the cursor, which then moves past it.
+   *
+   * Only a width is asked for. The height follows from the picture's own
+   * proportions, because a logo stretched to fill a box is the single most
+   * obvious sign that a document was generated rather than designed.
+   */
+  image(
+    image: EmbeddableImage,
+    options: { width: number; align?: "left" | "center" | "right"; spaceAfter?: number } = { width: 120 },
+  ): number {
+    const width = Math.max(1, Math.min(options.width, this.contentWidth));
+    const height = (width * image.height) / image.width;
+
+    this.ensureRoom(height);
+
+    const x =
+      options.align === "center"
+        ? this.margins.left + (this.contentWidth - width) / 2
+        : options.align === "right"
+          ? this.margins.left + this.contentWidth - width
+          : this.margins.left;
+
+    this.drawImageAt(image, x, this.cursor, width, height);
+    this.cursor += height + (options.spaceAfter ?? 0);
+    return height;
+  }
 
   /**
    * A paragraph: wrapped, aligned, and advancing the cursor past itself.
@@ -559,30 +647,34 @@ export class PdfDocument {
     });
   }
 
-  /* -------------------------------- footer ------------------------------- */
+  /* ---------------------------- page furniture --------------------------- */
 
   /**
    * Registered now, drawn once the page count is known.
    *
-   * "Page 2 of 7" cannot be written while page 2 is being laid out, so the
-   * footer is deferred to `toBytes` and drawn onto every page with the cursor
-   * moved into the bottom margin.
+   * "Page 2 of 7" cannot be written while page 2 is being laid out, so
+   * anything that belongs on every page is deferred to `toBytes`. The cursor
+   * is parked on the footer line before each call, which is where a footer
+   * wants it; a letterhead ignores it and draws into the top margin by
+   * absolute coordinates, since that is the one region content never occupies.
    */
   onEachPage(draw: (document: PdfDocument, page: number, total: number) => void): void {
-    this.footer = draw;
+    this.overlays.push(draw);
   }
 
-  private runFooters(): void {
-    if (!this.footer) return;
+  private runOverlays(): void {
+    if (!this.overlays.length) return;
     const total = this.pages.length;
     const saved = this.page;
     const savedCursor = this.cursor;
 
     this.pages.forEach((page, index) => {
       this.page = page;
-      // Into the bottom margin, where content is not allowed to go.
-      this.cursor = this.height - this.margins.bottom + 14;
-      this.footer!(this, index + 1, total);
+      for (const overlay of this.overlays) {
+        // Into the bottom margin, where content is not allowed to go.
+        this.cursor = this.height - this.margins.bottom + 14;
+        overlay(this, index + 1, total);
+      }
     });
 
     this.page = saved;
@@ -616,7 +708,7 @@ export class PdfDocument {
 
   /** The finished file. */
   toBytes(): Uint8Array {
-    this.runFooters();
+    this.runOverlays();
 
     const objects: PdfObject[] = [];
     let nextId = 1;
@@ -649,6 +741,39 @@ export class PdfDocument {
       );
     }
 
+    /* --- one XObject per distinct picture, however many pages use it --- */
+
+    const imageIds = new Map<string, number>();
+    for (const [image, name] of this.pictures) {
+      const colorSpace =
+        image.colorSpace.kind === "indexed"
+          ? `[/Indexed /DeviceRGB ${image.colorSpace.hival} ${pdfHex(image.colorSpace.palette)}]`
+          : image.colorSpace.kind === "rgb"
+            ? "/DeviceRGB"
+            : "/DeviceGray";
+
+      // The predictor is how a PNG's own per-scanline filtering survives the
+      // trip: the stream is the file's `IDAT`, and this tells the reader to
+      // undo exactly what the encoder did.
+      const parms = image.predictor
+        ? ` /DecodeParms << /Predictor ${image.predictor.predictor} /Colors ${image.predictor.colors} ` +
+          `/BitsPerComponent ${image.predictor.bitsPerComponent} /Columns ${image.predictor.columns} >>`
+        : "";
+
+      imageIds.set(
+        name,
+        add([
+          ...ascii(
+            `<< /Type /XObject /Subtype /Image /Width ${image.width} /Height ${image.height} ` +
+              `/ColorSpace ${colorSpace} /BitsPerComponent ${image.bitsPerComponent} ` +
+              `/Filter /${image.filter}${parms} /Length ${image.data.length} >>\nstream\n`,
+          ),
+          ...image.data,
+          ...ascii("\nendstream"),
+        ]),
+      );
+    }
+
     const pagesId = nextId++; // reserved: each page needs it as its /Parent
     const pageIds: number[] = [];
 
@@ -661,12 +786,18 @@ export class PdfDocument {
         .map(key => `/${key} ${fontIds.get(key)} 0 R`)
         .join(" ");
 
+      const images = [...page.images]
+        .sort()
+        .map(name => `/${name} ${imageIds.get(name)} 0 R`)
+        .join(" ");
+
       pageIds.push(
         add(
           ascii(
             `<< /Type /Page /Parent ${pagesId} 0 R ` +
               `/MediaBox [0 0 ${round(this.width)} ${round(this.height)}] ` +
-              `/Resources << /Font << ${fonts} >> >> /Contents ${contentId} 0 R >>`,
+              `/Resources << /Font << ${fonts} >>${images ? ` /XObject << ${images} >>` : ""} >> ` +
+              `/Contents ${contentId} 0 R >>`,
           ),
         ),
       );

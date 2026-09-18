@@ -5,6 +5,7 @@
  * and the text measurement everything else is laid out from.
  */
 import { describe, expect, test } from "bun:test";
+import { decodeImage, encodePng, toDataUrl, type EmbeddableImage } from "./image";
 import { PdfDocument, parseColor } from "./pdf";
 import { encodeWinAnsi, measureText, truncateToWidth, wrapText } from "./pdfFonts";
 
@@ -113,6 +114,21 @@ describe("pagination", () => {
     expect(text).toContain(`Page ${document.pageCount} of ${document.pageCount}`);
   });
 
+  test("two overlays both run on every page", () => {
+    // A branded document has a letterhead and a footer, and neither can be
+    // drawn until the page count is known.
+    const document = new PdfDocument();
+    for (let i = 0; i < 120; i++) document.text(`Line ${i}`);
+    document.onEachPage((doc, page) => doc.drawTextAt(`head ${page}`, doc.left, 20, { size: 8 }));
+    document.onEachPage((doc, page) => doc.drawTextAt(`foot ${page}`, doc.left, doc.y, { size: 8 }));
+
+    const text = decode(document.toBytes());
+    for (let page = 1; page <= document.pageCount; page++) {
+      expect(text).toContain(`head ${page}`);
+      expect(text).toContain(`foot ${page}`);
+    }
+  });
+
   test("a block taller than a page overflows rather than looping forever", () => {
     const document = new PdfDocument();
     // `ensureRoom` must not recurse into a fresh page it also cannot fit.
@@ -210,5 +226,76 @@ describe("colour", () => {
     // A typo in one swatch should not cost the whole document.
     expect(parseColor("rebeccapurple")).toEqual([0, 0, 0]);
     expect(parseColor(undefined)).toEqual([0, 0, 0]);
+  });
+});
+
+/* --------------------------------- images --------------------------------- */
+
+/** A small real PNG, through the same encoder the image picker uses. */
+async function picture(width = 8, height = 4): Promise<EmbeddableImage> {
+  const rgb = new Uint8Array(width * height * 3).fill(120);
+  const decoded = decodeImage(toDataUrl(await encodePng(rgb, width, height), "image/png"));
+  if (!decoded.ok) throw new Error(decoded.error);
+  return decoded.image;
+}
+
+describe("images", () => {
+  test("an image becomes an XObject the page's resources point at", async () => {
+    const document = new PdfDocument();
+    document.image(await picture(), { width: 60 });
+    const text = decode(document.toBytes());
+
+    expect(text).toContain("/Subtype /Image");
+    expect(text).toContain("/Width 8");
+    expect(text).toContain("/Height 4");
+    expect(text).toContain("/ColorSpace /DeviceRGB");
+    // The PNG goes in as its own bytes, with the predictor that undoes its
+    // per-scanline filtering.
+    expect(text).toContain("/Filter /FlateDecode");
+    expect(text).toContain("/Predictor 15");
+    expect(text).toMatch(/\/XObject << \/Im1 \d+ 0 R >>/);
+    expect(text).toContain("/Im1 Do");
+  });
+
+  test("the same picture on forty pages is one object", async () => {
+    const logo = await picture();
+    const document = new PdfDocument();
+    for (let page = 0; page < 40; page++) {
+      document.drawImageAt(logo, 40, 40, 30, 15);
+      document.addPage();
+    }
+
+    const text = decode(document.toBytes());
+    expect(text.split("/Subtype /Image").length - 1).toBe(1);
+    // A letterhead that cost 40 copies of itself would be the difference
+    // between a 30 kB file and a 240 kB one.
+    expect(text.split("/Im1 Do").length - 1).toBe(40);
+  });
+
+  test("a page with no picture declares no XObject at all", async () => {
+    const document = new PdfDocument();
+    document.text("first");
+    document.addPage();
+    document.image(await picture(), { width: 40 });
+
+    const pages = decode(document.toBytes()).split("/Type /Page ").slice(1);
+    expect(pages[0]).not.toContain("/XObject");
+    expect(pages[1]).toContain("/XObject");
+  });
+
+  test("the drawn height follows the picture, and the cursor moves past it", async () => {
+    const document = new PdfDocument();
+    const before = document.y;
+    // 8×4 pixels drawn 60 points wide is 30 points tall, whatever the template
+    // hoped for: a stretched logo is the most obvious sign of a generated file.
+    const height = document.image(await picture(8, 4), { width: 60 });
+    expect(height).toBe(30);
+    expect(document.y).toBe(before + 30);
+  });
+
+  test("an image wider than the page is fitted to it rather than clipped", async () => {
+    const document = new PdfDocument();
+    const height = document.image(await picture(100, 50), { width: 5_000 });
+    expect(height).toBeCloseTo(document.contentWidth / 2, 3);
   });
 });

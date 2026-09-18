@@ -15,7 +15,7 @@
  * `{{customer.name}}` means the same thing everywhere, and the block list is
  * something a UI can edit without anyone writing JSON by hand.
  *
- * ## Two things the format deliberately will not do
+ * ## What the format deliberately will not do
  *
  * **It cannot show cost or margin.** `TOTALS_FIELDS` below is a closed list of
  * customer-facing numbers, and cost, margin and margin percent are not on it.
@@ -23,10 +23,20 @@
  * sent outside the company, and the cheapest way to guarantee it never carries
  * internal numbers is to give it no way to name them.
  *
- * **It cannot hold an image.** No logo, no letterhead graphic. Embedding one
- * means image decoding, file storage and a much larger template record; it is
- * a real feature rather than a missing line, and it is not here yet.
+ * ## Branding
+ *
+ * A template *can* hold images: an `image` block in the flow, and a `header`
+ * — a letterhead drawn into the top margin of every page, opposite an address
+ * block. Both keep the picture in the template itself, as a `data:` URL, for
+ * the same reason the rest of the document is data: a template is one record
+ * that can be exported, shared and imported, and a logo held anywhere else
+ * would be a reference that breaks the moment it travels.
+ *
+ * What may go in one is `src/lib/image.ts`'s business, and it is narrow on
+ * purpose — bytes a PDF reader can take as they are, so nothing here decodes
+ * a pixel.
  */
+import { decodeImage, imageBox, type EmbeddableImage } from "./image";
 import { formatMoney, formatPercent } from "./money";
 import { DEFAULT_MARGINS, PdfDocument, type Margins, type PageSize, type TableCell, type TableColumn } from "./pdf";
 import { measureText, type FontFamily } from "./pdfFonts";
@@ -47,6 +57,34 @@ export type PdfPageSetup = {
   mutedColor: string;
   /** Headings, rules and the totals emphasis. */
   accentColor: string;
+};
+
+/**
+ * The letterhead: a logo and a block of text in the top margin of the page.
+ *
+ * It lives beside the page setup rather than in the block list because it is
+ * not part of the flow — it is drawn on *every* page, after the layout is
+ * finished, exactly like the footer. A block would put it on page one only,
+ * and a proposal whose second page is unbranded looks like a fax.
+ *
+ * Its whole height has to fit in the top margin, since that is the one band
+ * content never occupies. A logo taller than the margin is scaled down rather
+ * than allowed to print over the first paragraph; the fix is a bigger margin.
+ */
+export type PdfHeader = {
+  /** A base64 `data:` URL. See src/lib/image.ts for what may go in one. */
+  logo?: string;
+  /** The logo's drawn width in points. Its height follows the picture. */
+  logoWidth?: number;
+  /** Which side the logo sits on; the text takes the other. */
+  logoAlign?: "left" | "right";
+  /** Address, tagline, registration number — tokens work here too. */
+  text?: string;
+  color?: string;
+  /** A rule under the band, in the accent colour. */
+  rule?: boolean;
+  /** Letterhead on page one, plain paper after it. */
+  firstPageOnly?: boolean;
 };
 
 export const DEFAULT_PAGE: PdfPageSetup = {
@@ -166,6 +204,17 @@ export type PdfBlock =
     }
   | { type: "spacer"; height: number }
   | { type: "divider"; color?: string; thickness?: number }
+  | {
+      type: "image";
+      /** A base64 `data:` URL. */
+      source: string;
+      /** Drawn width in points; the height follows the picture's proportions. */
+      width: number;
+      align?: BlockAlign;
+      /** A small line under it — a caption, a credit, a certification note. */
+      caption?: string;
+      spaceAfter?: number;
+    }
   | { type: "columns"; gap?: number; columns: { heading?: string; text: string; align?: BlockAlign }[] }
   | { type: "fields"; align?: BlockAlign; rows: { label: string; value: string }[] }
   | {
@@ -186,6 +235,7 @@ export type PdfBlock =
 export const BLOCK_TYPES: { type: PdfBlock["type"]; label: string; description: string }[] = [
   { type: "heading", label: "Heading", description: "A title line, larger than the body" },
   { type: "text", label: "Text", description: "A paragraph, wrapped to the page" },
+  { type: "image", label: "Image", description: "A picture in the flow — a logo, a diagram, a signature" },
   { type: "columns", label: "Columns", description: "Side-by-side panels — prepared for / prepared by" },
   { type: "fields", label: "Field list", description: "Label and value pairs, one per line" },
   { type: "lineItems", label: "Line items", description: "The quote's lines as a table" },
@@ -198,6 +248,8 @@ export const BLOCK_TYPES: { type: PdfBlock["type"]; label: string; description: 
 
 export type PdfTemplate = {
   page: PdfPageSetup;
+  /** The letterhead. Absent is a document on plain paper. */
+  header?: PdfHeader;
   blocks: PdfBlock[];
   footer: {
     text: string;
@@ -242,6 +294,14 @@ export type PdfRenderResult = {
   bytes: Uint8Array;
   /** Tokens the template used that this app does not know. Rendered as blank. */
   unknownTokens: string[];
+  /**
+   * Images that could not be embedded, each as a sentence.
+   *
+   * Left out of the page rather than failing the render: a document missing
+   * its logo can still be read, and the person who can fix it is the one
+   * looking at the editor, not the customer waiting for the quote.
+   */
+  imageProblems: string[];
   pageCount: number;
 };
 
@@ -262,6 +322,33 @@ export function renderPdf(template: PdfTemplate, context: ProposalContext): PdfR
   const fill = (text: string) => fillTokens(text, values, unknown);
   const money = (value: number) => formatMoney(value, quote.currency, locale);
 
+  /*
+   * Decoded once per render, however many blocks and pages use a picture: the
+   * work is header parsing, but the base64 behind a letterhead is not free.
+   *
+   * A failure is cached as its own message rather than as a null, so a second
+   * block using the same broken picture is reported against *that* block and
+   * the first one is not reported twice.
+   */
+  const pictures = new Map<string, EmbeddableImage | string>();
+  const problems = new Set<string>();
+  const picture = (source: string, what: string): EmbeddableImage | null => {
+    if (!source) return null;
+
+    let entry = pictures.get(source);
+    if (entry === undefined) {
+      const decoded = decodeImage(source);
+      entry = decoded.ok ? decoded.image : decoded.error;
+      pictures.set(source, entry);
+    }
+
+    if (typeof entry === "string") {
+      problems.add(`${what}: ${entry}`);
+      return null;
+    }
+    return entry;
+  };
+
   const document = new PdfDocument({
     size: page.size,
     margins: page.margins,
@@ -274,10 +361,12 @@ export function renderPdf(template: PdfTemplate, context: ProposalContext): PdfR
   });
 
   for (const block of template.blocks) {
-    renderBlock(block, { document, page, quote, fill, money, locale, unknown });
+    renderBlock(block, { document, page, quote, fill, money, locale, unknown, picture });
   }
 
-  /* --- the footer, drawn once the page count is known --- */
+  /* --- the letterhead and the footer, once the page count is known --- */
+
+  renderHeader(template.header, { document, page, fill, picture });
 
   const footerText = template.footer?.text ? fill(template.footer.text) : "";
   const showPageNumbers = template.footer?.showPageNumbers !== false;
@@ -302,8 +391,16 @@ export function renderPdf(template: PdfTemplate, context: ProposalContext): PdfR
   }
 
   const bytes = document.toBytes();
-  return { bytes, unknownTokens: [...unknown].sort(), pageCount: document.pageCount };
+  return {
+    bytes,
+    unknownTokens: [...unknown].sort(),
+    imageProblems: [...problems].sort(),
+    pageCount: document.pageCount,
+  };
 }
+
+/** Resolves a `data:` URL, remembering both the picture and what went wrong. */
+type PictureResolver = (source: string, what: string) => EmbeddableImage | null;
 
 type RenderContext = {
   document: PdfDocument;
@@ -313,7 +410,83 @@ type RenderContext = {
   money: (value: number) => string;
   locale?: string;
   unknown: Set<string>;
+  picture: PictureResolver;
 };
+
+/* ------------------------------ the letterhead --------------------------- */
+
+/**
+ * Space kept between the letterhead and the first line of content.
+ *
+ * Enough that a rule drawn under the band has air on both sides of it: the
+ * band is the top margin less this, the rule sits a third of the way down,
+ * and the rest is the gap a reader sees.
+ */
+const HEADER_GAP = 20;
+
+/**
+ * Draws the letterhead into the top margin of every page.
+ *
+ * Deferred like the footer, and for the same reason: `firstPageOnly` cannot
+ * be decided while page one is still being laid out. Both halves are bottom
+ * aligned to the same line, so a tall logo and a three-line address sit on a
+ * common baseline rather than drifting apart.
+ */
+function renderHeader(
+  header: PdfHeader | undefined,
+  context: { document: PdfDocument; page: PdfPageSetup; fill: (text: string) => string; picture: PictureResolver },
+): void {
+  const { document, page, fill } = context;
+  if (!header) return;
+
+  const text = header.text ? fill(header.text) : "";
+  const logo = header.logo ? context.picture(header.logo, "The letterhead logo") : null;
+  if (!logo && !text && !header.rule) return;
+
+  // The band is the top margin less the gap: anything taller would print over
+  // the first block on the page.
+  const band = Math.max(0, page.margins.top - HEADER_GAP);
+  const baseline = page.margins.top - HEADER_GAP;
+
+  const logoOnLeft = header.logoAlign !== "right";
+  const size = Math.max(6, page.fontSize - 1.5);
+  const lineHeight = size * 1.35;
+  const lines = text ? text.split("\n") : [];
+  const textHeight = lines.length * lineHeight;
+
+  let logoWidth = 0;
+  let logoHeight = 0;
+  if (logo) {
+    const box = imageBox(logo, Math.min(header.logoWidth ?? 110, document.contentWidth));
+    // A logo the top margin cannot hold is scaled to fit rather than allowed
+    // to run into the page.
+    const scale = box.height > band && band > 0 ? band / box.height : 1;
+    logoWidth = box.width * scale;
+    logoHeight = box.height * scale;
+  }
+
+  document.onEachPage((doc, current) => {
+    if (header.firstPageOnly && current !== 1) return;
+
+    if (logo && logoHeight > 0) {
+      const x = logoOnLeft ? doc.left : doc.left + doc.contentWidth - logoWidth;
+      doc.drawImageAt(logo, x, baseline - logoHeight, logoWidth, logoHeight);
+    }
+
+    lines.forEach((line, index) => {
+      const width = measureText(line, page.family, size);
+      const x = logoOnLeft ? doc.left + doc.contentWidth - width : doc.left;
+      doc.drawTextAt(line, x, baseline - textHeight + index * lineHeight, {
+        size,
+        color: header.color ?? page.mutedColor,
+      });
+    });
+
+    if (header.rule) {
+      doc.drawRule(baseline + HEADER_GAP / 3, { color: page.accentColor, thickness: 0.75 });
+    }
+  });
+}
 
 function renderBlock(block: PdfBlock, context: RenderContext): void {
   const { document, page, quote, fill, money } = context;
@@ -340,6 +513,27 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
         align: alignOf(block.align),
         spaceAfter: block.spaceAfter ?? 4,
       });
+      break;
+    }
+
+    case "image": {
+      const image = context.picture(block.source, "An image block");
+      if (!image) break;
+
+      document.image(image, {
+        width: block.width || 120,
+        align: alignOf(block.align),
+        spaceAfter: block.caption ? 2 : (block.spaceAfter ?? 6),
+      });
+
+      if (block.caption) {
+        document.text(fill(block.caption), {
+          size: page.fontSize - 2,
+          color: page.mutedColor,
+          align: alignOf(block.align),
+          spaceAfter: block.spaceAfter ?? 6,
+        });
+      }
       break;
     }
 
@@ -399,21 +593,30 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
       if (!rows.length) break;
 
       const labelWidth = Math.min(160, document.contentWidth * 0.35);
+      const valueWidth = document.contentWidth - labelWidth;
+
       for (const row of rows) {
-        const height = page.fontSize * 1.5;
-        document.ensureRoom(height);
+        const minimum = page.fontSize * 1.5;
+        document.ensureRoom(minimum);
         const y = document.y;
 
         document.drawTextAt(fill(row.label), document.left, y, {
           size: page.fontSize,
           color: page.mutedColor,
         });
-        document.drawTextAt(fill(row.value), document.left + labelWidth, y, {
-          size: page.fontSize,
-          color: page.textColor,
-        });
 
-        document.y = y + height;
+        // The value goes through `text` rather than `drawTextAt`, because a
+        // value can be a whole address: `{{customer.address}}` is four lines
+        // with newlines in it, and drawn as one string those lines would be
+        // run together into "Suite 400San Francisco".
+        document.y = y;
+        document.text(
+          fill(row.value),
+          { size: page.fontSize, color: page.textColor, lineHeight: 1.5 },
+          { x: document.left + labelWidth, width: valueWidth },
+        );
+
+        document.y = Math.max(document.y, y + minimum);
       }
       document.moveDown(4);
       break;
@@ -654,6 +857,10 @@ export function blankBlock(type: PdfBlock["type"]): PdfBlock {
       return { type: "heading", text: "{{quote.name}}", size: 18 };
     case "text":
       return { type: "text", text: "" };
+    // A picture has to be chosen; an empty source renders as nothing at all,
+    // which is the right blank state for a block the editor opens on.
+    case "image":
+      return { type: "image", source: "", width: 140 };
     case "spacer":
       return { type: "spacer", height: 12 };
     case "divider":

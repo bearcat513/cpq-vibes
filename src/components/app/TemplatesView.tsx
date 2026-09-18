@@ -10,7 +10,7 @@ import { PdfTemplateEditor } from "./PdfTemplateEditor";
 import { api, type Shareable } from "@/lib/api";
 import { LINE_TOKENS, LINES_CLOSE, LINES_OPEN, PROPOSAL_TOKENS, unknownTokensIn } from "@/lib/proposal";
 import { starterPdfTemplate, type PdfTemplate } from "@/lib/pdfTemplate";
-import { STARTER_TEMPLATE_BODY, specimenQuote } from "@/lib/samples";
+import { SAMPLE_TEMPLATES, STARTER_TEMPLATE_BODY, specimenQuote } from "@/lib/samples";
 import { readPdfTemplate } from "@/lib/validate";
 import { PROPOSAL_FORMATS, type ProposalFormat, type ProposalTemplate } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -73,6 +73,22 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
     setDraft({ name: "New proposal", format: "pdf", body: JSON.stringify(starterPdfTemplate()) });
   };
 
+  /**
+   * Starting from one of the shipped examples.
+   *
+   * The examples are the documentation for this format: between them they use
+   * every block, the letterhead and the whole totals list, and opening one and
+   * taking it apart is a faster way to learn what a block does than reading
+   * about it. It is a copy in the draft, not a saved record — nothing exists
+   * until Save, exactly like New.
+   */
+  const startFromExample = (name: string) => {
+    const example = SAMPLE_TEMPLATES.find(entry => entry.name === name);
+    if (!example) return;
+    setActiveId(null);
+    setDraft({ name: example.name, format: example.format, body: example.body });
+  };
+
   const open = (template: ProposalTemplate) => {
     setActiveId(template.id);
     setDraft(null);
@@ -127,6 +143,21 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
           </Button>
         }
       >
+        <div className="border-b p-2">
+          <Select value="" onValueChange={startFromExample}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue placeholder="Start from an example…" />
+            </SelectTrigger>
+            <SelectContent>
+              {SAMPLE_TEMPLATES.map(example => (
+                <SelectItem key={example.name} value={example.name}>
+                  {example.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
         {templates.length === 0 ? (
           <EmptyState title="No templates">Create one to render a quote into a document.</EmptyState>
         ) : (
@@ -271,7 +302,8 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
       ) : (
         <Section title="Nothing open">
           <EmptyState title="Pick a template, or create one">
-            A template turns a quote into an HTML, Markdown or plain-text document you can send.
+            A template turns a quote into a PDF, HTML, Markdown or plain-text document you can send.
+            Start from an example to see what a branded, laid-out proposal is made of.
           </EmptyState>
         </Section>
       )}

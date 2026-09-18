@@ -71,11 +71,14 @@ import { evaluateApprovals } from "./lib/approvals";
 import { FUNCTION_NAMES, parseFormula } from "./lib/formula";
 import { DEFAULT_PREFERENCES } from "./lib/preferences";
 import { PRICING_VARIABLES, lineVariableNames, quoteVariableNames } from "./lib/pricing";
+import { IMAGE_MEDIA_TYPES, MAX_IMAGE_BYTES } from "./lib/image";
 import {
   CONTENT_TYPES,
   LINE_TOKENS,
   LINES_CLOSE,
   LINES_OPEN,
+  MAX_PDF_TEMPLATE_BODY_LENGTH,
+  MAX_TEMPLATE_BODY_LENGTH,
   PROPOSAL_TOKENS,
   proposalFileName,
   renderProposal,
@@ -387,6 +390,12 @@ const server = serve({
               totalsFields: TOTALS_FIELDS,
               margin: "A PDF template cannot name cost or margin — the totals it may print is a closed, customer-facing list.",
               fonts: "The PDF standard 14 only, so a quote is a few kilobytes and needs no embedded font.",
+              branding: {
+                what: "An `image` block puts a picture in the flow; `header` is a letterhead drawn in the top margin of every page (or only the first, with `firstPageOnly`).",
+                source: "A base64 `data:` URL held in the template itself, so branding travels with an export, a share and an import.",
+                accepts: `PNG without an alpha channel, or baseline JPEG, ${Math.round(MAX_IMAGE_BYTES / 1000)} kB or less. A PDF stream carries no transparency, so the app flattens an image onto a background when you choose one in the editor; posted here, a transparent or progressive image is refused with a sentence and the block keeps its place.`,
+                size: `A PDF template body may be ${MAX_PDF_TEMPLATE_BODY_LENGTH.toLocaleString()} characters, against ${MAX_TEMPLATE_BODY_LENGTH.toLocaleString()} for the text formats, because the pictures are in it.`,
+              },
             },
           },
           sharing: {
@@ -451,6 +460,7 @@ const server = serve({
           pdfTotalsFields: TOTALS_FIELDS,
           pdfPageSizes: PAGE_SIZES,
           pdfFontFamilies: FONT_FAMILIES,
+          pdfImageMediaTypes: IMAGE_MEDIA_TYPES,
           preferenceDefaults: DEFAULT_PREFERENCES,
         }),
       ),

@@ -5,6 +5,7 @@
  * margin.
  */
 import { describe, expect, test } from "bun:test";
+import { encodePng, toDataUrl } from "./image";
 import { BLOCK_TYPES, DEFAULT_TOTALS_ROWS, blankBlock, renderPdf, starterPdfTemplate, type PdfTemplate } from "./pdfTemplate";
 import { specimenQuote } from "./samples";
 import { readPdfTemplate } from "./validate";
@@ -280,5 +281,149 @@ describe("robustness", () => {
 
     const text = decode(renderPdf(starterPdfTemplate(), { ...context(), quote }).bytes);
     expect(text).toContain("AC/DC \\(5kW\\) \\\\ spare");
+  });
+});
+
+/* -------------------------------- branding -------------------------------- */
+
+/**
+ * Branding is the one part of a template that can fail on data rather than on
+ * layout: a picture may be a shape a PDF cannot carry. So these are about
+ * where an image lands, and about what happens when it cannot.
+ */
+describe("images and the letterhead", () => {
+  /** A small real PNG, through the encoder the image picker uses. */
+  const logo = async (width = 8, height = 4): Promise<string> =>
+    toDataUrl(await encodePng(new Uint8Array(width * height * 3).fill(90), width, height), "image/png");
+
+  test("an image block puts a picture on the page", async () => {
+    const result = render(only({ type: "image", source: await logo(), width: 80 }));
+
+    expect(result.imageProblems).toEqual([]);
+    expect(result.text).toContain("/Subtype /Image");
+    expect(result.text).toContain("/Im1 Do");
+  });
+
+  test("a caption is drawn under the image, in the muted colour", async () => {
+    const result = render(only({ type: "image", source: await logo(), width: 80, caption: "Our Bristol office" }));
+    expect(result.text).toContain("Our Bristol office");
+  });
+
+  test("an image that cannot be embedded is reported, not thrown", async () => {
+    // The document still renders. A proposal missing its logo can be read; a
+    // proposal that failed to render cannot, and the person who can fix it is
+    // looking at the editor rather than waiting for the quote.
+    const result = render(only({ type: "image", source: "data:image/png;base64,bm90YQ==", width: 80 }));
+
+    expect(result.text.startsWith("%PDF")).toBe(true);
+    expect(result.imageProblems).toHaveLength(1);
+    expect(result.imageProblems[0]).toContain("An image block");
+  });
+
+  test("a block with no picture chosen yet renders nothing and says nothing", () => {
+    // Which is what `blankBlock` produces: an empty source is a block being
+    // worked on, not a broken one.
+    const result = render(only({ type: "image", source: "", width: 80 }));
+    expect(result.imageProblems).toEqual([]);
+    expect(result.text).not.toContain("/Subtype /Image");
+  });
+
+  test("the letterhead is drawn on every page, from one embedded picture", async () => {
+    const base = specimenQuote();
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      header: { logo: await logo(), logoWidth: 40, text: "Nimbus Software Ltd", rule: true },
+    };
+
+    const quote = {
+      ...base,
+      lines: Array.from({ length: 60 }, (_, index) => ({ ...base.lines[0]!, id: `ln_${index}` })),
+    };
+    const result = renderPdf(template, { ...context(), quote });
+    const text = decode(result.bytes);
+
+    expect(result.pageCount).toBeGreaterThan(1);
+    expect(text.split("/Im1 Do").length - 1).toBe(result.pageCount);
+    expect(text.split("/Subtype /Image").length - 1).toBe(1);
+    expect(text.split("Nimbus Software Ltd").length - 1).toBe(result.pageCount);
+  });
+
+  test("`firstPageOnly` puts the letterhead on page one and nowhere else", async () => {
+    const base = specimenQuote();
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      header: { logo: await logo(), text: "Nimbus Software Ltd", firstPageOnly: true },
+    };
+
+    const quote = {
+      ...base,
+      lines: Array.from({ length: 60 }, (_, index) => ({ ...base.lines[0]!, id: `ln_${index}` })),
+    };
+    const result = renderPdf(template, { ...context(), quote });
+    const text = decode(result.bytes);
+
+    expect(result.pageCount).toBeGreaterThan(1);
+    expect(text.split("/Im1 Do").length - 1).toBe(1);
+  });
+
+  test("a logo taller than the top margin is scaled to fit rather than printed over the page", async () => {
+    // 8×80 pixels asked for at 100 points wide would be 1000 points tall.
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      page: { ...starterPdfTemplate().page, margins: { top: 60, right: 48, bottom: 56, left: 48 } },
+      header: { logo: await logo(8, 80), logoWidth: 100 },
+    };
+
+    const text = decode(renderPdf(template, context()).bytes);
+    // The `cm` matrix carries the drawn size: height is the second number
+    // after the scale pair, and it must fit the band (the margin less the gap).
+    const matrix = /([\d.]+) 0 0 ([\d.]+) [\d.]+ [\d.]+ cm/.exec(text);
+    expect(matrix).not.toBeNull();
+    expect(Number(matrix![2])).toBeLessThanOrEqual(40);
+  });
+
+  test("letterhead text resolves tokens like everything else", async () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      header: { text: "Quote {{quote.number}}", logo: await logo() },
+    };
+    expect(render(template).text).toContain(`Quote ${specimenQuote().number}`);
+  });
+
+  test("a template with a letterhead survives a round trip through the validator", async () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      header: { logo: await logo(), logoWidth: 40, logoAlign: "right", text: "Nimbus", rule: true },
+      blocks: [{ type: "image", source: await logo(), width: 90, align: "center", caption: "A caption" }],
+    };
+
+    const parsed = readPdfTemplate(JSON.stringify(template));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.header).toEqual(template.header);
+    expect(parsed.value.blocks[0]).toEqual(template.blocks[0]!);
+  });
+
+  test("the validator drops a picture a PDF could not carry, keeping the block", () => {
+    // A save that failed on a file someone had just chosen would lose the rest
+    // of their editing with it.
+    const parsed = readPdfTemplate(
+      JSON.stringify({
+        ...starterPdfTemplate(),
+        header: { logo: "https://example.com/logo.png", text: "Nimbus" },
+        blocks: [{ type: "image", source: "data:image/gif;base64,AAAA", width: 90 }],
+      }),
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.header?.logo).toBeUndefined();
+    expect(parsed.value.header?.text).toBe("Nimbus");
+    expect(parsed.value.blocks[0]).toEqual({ type: "image", source: "", width: 90 });
+  });
+
+  test("a template with no letterhead does not grow an empty one", () => {
+    const parsed = readPdfTemplate(JSON.stringify(starterPdfTemplate()));
+    expect(parsed.ok && parsed.value.header).toBeUndefined();
   });
 });

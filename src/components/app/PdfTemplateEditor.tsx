@@ -7,6 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Field, Notice } from "./common";
+import { ImagePicker } from "./ImagePicker";
 import { PAGE_SIZES } from "@/lib/pdf";
 import { FONT_FAMILIES } from "@/lib/pdfFonts";
 import {
@@ -19,6 +20,7 @@ import {
   renderPdf,
   type LineItemColumn,
   type PdfBlock,
+  type PdfHeader,
   type PdfTemplate,
   type TotalsRow,
 } from "@/lib/pdfTemplate";
@@ -47,6 +49,7 @@ type Props = {
 export function PdfTemplateEditor({ template, context, onChange }: Props) {
   const [open, setOpen] = useState<number | null>(0);
   const [showPage, setShowPage] = useState(false);
+  const [showHeader, setShowHeader] = useState(false);
   const [error, setError] = useState("");
   const [url, setUrl] = useState("");
   const previous = useRef("");
@@ -60,6 +63,7 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
       return {
         bytes: null,
         unknownTokens: [] as string[],
+        imageProblems: [] as string[],
         pageCount: 0,
         error: failure instanceof Error ? failure.message : "This template could not be rendered.",
       };
@@ -90,6 +94,11 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
 
   const patchPage = (changes: Partial<PdfTemplate["page"]>) =>
     onChange({ ...template, page: { ...template.page, ...changes } });
+
+  const patchHeader = (changes: Partial<PdfHeader>) =>
+    onChange({ ...template, header: { ...(template.header ?? {}), ...changes } });
+
+  const header: PdfHeader = template.header ?? {};
 
   const patchBlock = (index: number, changes: Record<string, unknown>) =>
     onChange({
@@ -198,6 +207,96 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
           )}
         </div>
 
+        {/* --------------------------- the letterhead ------------------------ */}
+
+        <div className="rounded-md border">
+          <button
+            type="button"
+            onClick={() => setShowHeader(!showHeader)}
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium hover:bg-accent"
+          >
+            Letterhead
+            <span className="text-xs font-normal text-muted-foreground">
+              {header.logo || header.text
+                ? [header.logo ? "logo" : "", header.text ? "address" : "", header.firstPageOnly ? "page 1 only" : "every page"]
+                    .filter(Boolean)
+                    .join(" · ")
+                : "none"}
+            </span>
+          </button>
+
+          {showHeader && (
+            <div className="space-y-3 border-t p-3">
+              <ImagePicker
+                value={header.logo ?? ""}
+                onChange={logo => patchHeader({ logo: logo || undefined })}
+                hint="Drawn in the top margin. Give the page a bigger top margin to make room for a taller logo."
+              />
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="Logo width (pt)">
+                  <Input
+                    type="number"
+                    min={8}
+                    max={400}
+                    value={header.logoWidth ?? 110}
+                    onChange={event => patchHeader({ logoWidth: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Logo side">
+                  <Select
+                    value={header.logoAlign ?? "left"}
+                    onValueChange={value => patchHeader({ logoAlign: value === "right" ? "right" : undefined })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="left">Left</SelectItem>
+                      <SelectItem value="right">Right</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <ColorField
+                  label="Text colour"
+                  value={header.color ?? ""}
+                  onChange={color => patchHeader({ color: color || undefined })}
+                  allowEmpty
+                />
+              </div>
+
+              <Field label="Text" hint="Opposite the logo. One line each; tokens work here too.">
+                <Textarea
+                  value={header.text ?? ""}
+                  onChange={event => patchHeader({ text: event.target.value || undefined })}
+                  rows={3}
+                  className="text-xs"
+                  placeholder={"Nimbus Software Ltd\n14 Harbour Road, Bristol"}
+                />
+              </Field>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label="Rule under it">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={header.rule ?? false}
+                      onChange={event => patchHeader({ rule: event.target.checked || undefined })}
+                    />
+                  </div>
+                </Field>
+                <Field label="First page only" hint="Letterhead on page one, plain paper after.">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={header.firstPageOnly ?? false}
+                      onChange={event => patchHeader({ firstPageOnly: event.target.checked || undefined })}
+                    />
+                  </div>
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+
         <ul className="space-y-2">
           {template.blocks.map((block, index) => {
             const meta = BLOCK_TYPES.find(entry => entry.type === block.type);
@@ -284,11 +383,15 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
         <Notice kind="error" lines={error ? [error] : []} />
         <Notice
           kind="warning"
-          lines={
-            rendered.unknownTokens.length
+          lines={[
+            ...(rendered.unknownTokens.length
               ? [`Not tokens this app knows, so they render blank: ${rendered.unknownTokens.join(", ")}`]
-              : []
-          }
+              : []),
+            // An image that cannot be embedded is left out of the document
+            // rather than failing the render — so the only place it shows up
+            // is here.
+            ...rendered.imageProblems,
+          ]}
         />
 
         {url ? (
@@ -361,6 +464,38 @@ function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes:
                 </div>
               </Field>
             )}
+          </div>
+        </>
+      );
+
+    case "image":
+      return (
+        <>
+          <ImagePicker
+            value={block.source}
+            onChange={source => onChange({ source })}
+            hint="Transparency is flattened onto white, because that is what the page is."
+          />
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Field label="Width (pt)" hint="72pt is an inch. The height follows.">
+              <Input
+                type="number"
+                min={8}
+                max={900}
+                value={block.width}
+                onChange={event => onChange({ width: Number(event.target.value) })}
+              />
+            </Field>
+            <Field label="Align">
+              <AlignSelect value={block.align} onChange={align => onChange({ align })} />
+            </Field>
+            <Field label="Caption">
+              <Input
+                value={block.caption ?? ""}
+                onChange={event => onChange({ caption: event.target.value || undefined })}
+                placeholder="none"
+              />
+            </Field>
           </div>
         </>
       );
@@ -741,6 +876,8 @@ function summarise(block: PdfBlock): string {
     case "heading":
     case "text":
       return block.text.replace(/\s+/g, " ").slice(0, 70) || "empty";
+    case "image":
+      return block.source ? `${block.width}pt wide${block.caption ? ` · ${block.caption}` : ""}` : "no image chosen";
     case "spacer":
       return `${block.height}pt`;
     case "divider":

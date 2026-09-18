@@ -20,6 +20,7 @@
  */
 import { priceQuote } from "./pricing";
 import { starterPdfTemplate, type PdfTemplate } from "./pdfTemplate";
+import { SAMPLE_COVER_BANNER, SAMPLE_LOGO } from "./sampleBrand";
 import type { ProposalFormat, Product, Quote } from "./types";
 import type { AccountInput, ApprovalRuleInput, PriceBookInput, PricingRuleInput, ProductInput } from "./validate";
 
@@ -506,6 +507,15 @@ export const SAMPLE_ACCOUNTS: AccountInput[] = [
 
 /* --------------------------- proposal templates -------------------------- */
 
+/*
+ * The HTML proposal, branded.
+ *
+ * A text template needs nothing from this app to carry a logo — an `<img>`
+ * with a `data:` URL is a picture that survives being saved to disk, emailed
+ * and opened offline, which a link to an asset on a server is not. It is the
+ * same logo, and the same argument, as the PDF templates: a document that
+ * travels has to take its branding with it.
+ */
 const HTML_TEMPLATE = `<!doctype html>
 <html lang="en">
   <head>
@@ -513,7 +523,10 @@ const HTML_TEMPLATE = `<!doctype html>
     <title>{{quote.name}} — {{quote.number}}</title>
     <style>
       body { font: 15px/1.55 -apple-system, Segoe UI, Roboto, sans-serif; color: #18181b; margin: 0; padding: 48px; }
-      header { display: flex; justify-content: space-between; align-items: start; border-bottom: 2px solid #18181b; padding-bottom: 16px; }
+      header { display: flex; justify-content: space-between; align-items: start; border-bottom: 2px solid #1d4ed8; padding-bottom: 16px; }
+      .brand { display: flex; gap: 12px; align-items: center; }
+      .brand img { width: 44px; height: 44px; border-radius: 10px; }
+      .brand-name { font-weight: 600; font-size: 15px; }
       h1 { font-size: 22px; margin: 0 0 4px; }
       .muted { color: #71717a; font-size: 13px; }
       .parties { display: flex; gap: 48px; margin: 28px 0; }
@@ -529,11 +542,18 @@ const HTML_TEMPLATE = `<!doctype html>
   </head>
   <body>
     <header>
-      <div>
-        <h1>{{quote.name}}</h1>
-        <div class="muted">Quote {{quote.number}} · revision {{quote.version}} · {{quote.date}}</div>
+      <div class="brand">
+        <img src="${SAMPLE_LOGO}" alt="Nimbus" />
+        <div>
+          <h1>{{quote.name}}</h1>
+          <div class="muted">Quote {{quote.number}} · revision {{quote.version}} · {{quote.date}}</div>
+        </div>
       </div>
-      <div class="muted">Valid until <strong>{{quote.validUntil}}</strong></div>
+      <div class="muted">
+        <div class="brand-name">Nimbus Software Ltd</div>
+        14 Harbour Road, Bristol BS1 5TY<br />
+        Valid until <strong>{{quote.validUntil}}</strong>
+      </div>
     </header>
 
     <div class="parties">
@@ -636,13 +656,23 @@ Payment terms: {{customer.paymentTerms}}`;
 /* ----------------------------- PDF templates ----------------------------- */
 
 /**
- * The PDF a customer receives, in two registers.
+ * The PDF a customer receives, in four registers.
  *
- * `starterPdfTemplate()` is the full proposal — addresses, line items with
- * their configured options, a totals panel and signature lines. The compact
- * one below is the same quote as a one-page summary: no signature block, no
- * notes, tighter type. Between them they show both ends of what the block
- * format can do, which is the point of shipping two rather than one.
+ * `starterPdfTemplate()` is the plain full proposal — addresses, line items
+ * with their configured options, a totals panel and signature lines. The three
+ * below take it somewhere:
+ *
+ * - **Summary** is the same quote on one page: no signatures, no notes,
+ *   tighter type. The bottom end of the range.
+ * - **Branded** is the top end, and between them they use every block and
+ *   every setting the format has — a repeating letterhead, a full line table,
+ *   the whole customer-facing totals list, a terms page behind a page break.
+ * - **Order form** is the shape nobody thinks of as a proposal: a cover
+ *   graphic, a letterhead that appears once, and a table meant to be signed.
+ *
+ * They are examples in the strict sense — everything here is something you
+ * could have built in the editor, and taking one apart is the fastest way to
+ * find out what a block does.
  */
 const PDF_SUMMARY: PdfTemplate = {
   page: {
@@ -703,7 +733,247 @@ const PDF_SUMMARY: PdfTemplate = {
   footer: { text: "{{quote.number}} · prepared by {{seller.email}}", showPageNumbers: true },
 };
 
+/* ------------------------------ the branded one --------------------------- */
+
+/**
+ * The everything template: the one to open when you want to know what the
+ * format can do.
+ *
+ * It carries a letterhead on every page, which is what the generous top margin
+ * is for — the band is the margin, and content starts under it. The line table
+ * shows six columns rather than five because a customer who is being asked for
+ * a signature wants to see the discount they negotiated on the line it applies
+ * to, and the totals list is the full customer-facing set including the
+ * recurring split. Behind the page break is the part every real proposal has
+ * and no minimal example ever does: the terms.
+ */
+const PDF_BRANDED: PdfTemplate = {
+  page: {
+    size: "A4",
+    // The top margin is the letterhead band. A shallower one would print the
+    // first heading over the logo.
+    margins: { top: 96, right: 48, bottom: 64, left: 48 },
+    family: "helvetica",
+    fontSize: 10,
+    textColor: "#18181b",
+    mutedColor: "#71717a",
+    accentColor: "#1d4ed8",
+  },
+  header: {
+    logo: SAMPLE_LOGO,
+    logoWidth: 40,
+    logoAlign: "left",
+    text: "Nimbus Software Ltd\n14 Harbour Road, Bristol BS1 5TY\nhello@nimbus.example · VAT GB 421 8890 23",
+    rule: true,
+  },
+  blocks: [
+    { type: "heading", text: "{{quote.name}}", size: 20, color: "#1d4ed8", spaceAfter: 2 },
+    {
+      type: "text",
+      text: "Quote {{quote.number}} · revision {{quote.version}} · prepared {{quote.date}} · valid until {{quote.validUntil}}",
+      size: 9,
+      color: "#71717a",
+      spaceAfter: 10,
+    },
+    {
+      type: "columns",
+      gap: 20,
+      columns: [
+        {
+          heading: "PREPARED FOR",
+          text: "{{customer.name}}\n{{customer.contactName}}\n{{customer.address}}",
+        },
+        {
+          heading: "PREPARED BY",
+          text: "{{seller.name}}\n{{seller.email}}\nNimbus Software Ltd",
+        },
+        {
+          heading: "COMMERCIAL TERMS",
+          text: "{{quote.termMonths}}-month term\nPayment {{customer.paymentTerms}}\nPriced in {{quote.currency}}",
+          align: "right",
+        },
+      ],
+    },
+    { type: "divider", color: "#1d4ed8", thickness: 1.5 },
+    { type: "spacer", height: 6 },
+    { type: "heading", text: "What you are buying", size: 13, spaceAfter: 6 },
+    {
+      type: "lineItems",
+      columns: [
+        { field: "number", header: "#", width: 0.6 },
+        { field: "sku", header: "SKU", width: 1.7 },
+        { field: "name", header: "Item", width: 4.6 },
+        { field: "quantity", header: "Qty", width: 0.9, align: "right" },
+        // Wide enough for a five-figure unit price with a currency symbol in
+        // front of it: a wrapped number in a money column reads as a mistake.
+        { field: "unitPrice", header: "Unit", width: 2, align: "right" },
+        { field: "discountPercent", header: "Disc.", width: 1, align: "right" },
+        { field: "total", header: "Total", width: 2.2, align: "right" },
+      ],
+      showOptions: true,
+      showDescription: true,
+      headerFill: "#eff6ff",
+      zebra: "#f8fafc",
+      fontSize: 9,
+    },
+    {
+      type: "totals",
+      width: 260,
+      rows: [
+        { label: "List price", field: "listTotal" },
+        { label: "Line discounts", field: "lineDiscountAmount", omitIfZero: true },
+        { label: "Quote discount", field: "quoteDiscountAmount", omitIfZero: true },
+        { label: "Discount off list", field: "effectiveDiscountPercent", omitIfZero: true },
+        { label: "Shipping", field: "shipping", omitIfZero: true },
+        { label: "Tax", field: "taxAmount", omitIfZero: true },
+        { label: "Total", field: "grandTotal", emphasis: true },
+      ],
+    },
+    { type: "spacer", height: 10 },
+    {
+      type: "fields",
+      rows: [
+        { label: "Monthly recurring", value: "{{totals.mrr}}" },
+        { label: "Annual recurring", value: "{{totals.arr}}" },
+        { label: "One-time charges", value: "{{totals.oneTime}}" },
+        { label: "Total contract value", value: "{{totals.tcv}} over {{quote.termMonths}} months" },
+      ],
+    },
+    { type: "text", text: "{{quote.notes}}", size: 9, color: "#52525b" },
+
+    { type: "pageBreak" },
+
+    { type: "heading", text: "Terms of this quote", size: 13, spaceAfter: 6 },
+    {
+      type: "text",
+      text: "Pricing is held until {{quote.validUntil}} and assumes the full {{quote.termMonths}}-month term stated above. Recurring charges are billed in advance; one-time charges are invoiced on delivery. Payment terms are {{customer.paymentTerms}} from the date of invoice.",
+      size: 9.5,
+      spaceAfter: 8,
+    },
+    {
+      type: "text",
+      text: "Quantities may be increased mid-term at the unit prices shown here, pro-rated to the end of the current term. Reductions take effect at renewal. Taxes, where they apply, are shown separately and charged at the rate in force on the invoice date.",
+      size: 9.5,
+      spaceAfter: 8,
+    },
+    {
+      type: "text",
+      text: "This document is a quotation and not an invoice. It becomes an order when signed by both parties below.",
+      size: 9.5,
+      italic: true,
+      spaceAfter: 10,
+    },
+    {
+      type: "signatures",
+      parties: [
+        { label: "{{customer.name}}", caption: "Name, title and date" },
+        { label: "Nimbus Software Ltd", caption: "Name, title and date" },
+      ],
+    },
+  ],
+  footer: { text: "{{quote.number}} · {{customer.name}} · commercial in confidence", showPageNumbers: true },
+};
+
+/* ------------------------------- the order form --------------------------- */
+
+/**
+ * The document that gets signed.
+ *
+ * Two things here that the proposals do not do: a full-width image in the
+ * flow — the cover band across the top — and a letterhead set to `firstPageOnly`,
+ * so the continuation pages are plain. Both are worth seeing, and an order
+ * form is where they belong: it is a cover and a table, and nothing else.
+ */
+const PDF_ORDER_FORM: PdfTemplate = {
+  page: {
+    size: "A4",
+    margins: { top: 74, right: 52, bottom: 56, left: 52 },
+    family: "helvetica",
+    fontSize: 10,
+    textColor: "#0f172a",
+    mutedColor: "#64748b",
+    accentColor: "#0f172a",
+  },
+  header: {
+    logo: SAMPLE_LOGO,
+    logoWidth: 32,
+    logoAlign: "right",
+    text: "Nimbus Software Ltd\nOrder form",
+    firstPageOnly: true,
+  },
+  blocks: [
+    // The content width on A4 at these margins is 491pt, so this runs from
+    // margin to margin.
+    { type: "image", source: SAMPLE_COVER_BANNER, width: 491, spaceAfter: 16 },
+    { type: "heading", text: "Order form", size: 22, spaceAfter: 2 },
+    { type: "text", text: "{{customer.name}}", size: 13, spaceAfter: 2 },
+    {
+      type: "text",
+      text: "Quote {{quote.number}} · revision {{quote.version}} · valid until {{quote.validUntil}}",
+      size: 9,
+      color: "#64748b",
+      spaceAfter: 14,
+    },
+    {
+      type: "fields",
+      rows: [
+        { label: "Account", value: "{{customer.name}}" },
+        { label: "Contact", value: "{{customer.contactName}} · {{customer.contactEmail}}" },
+        { label: "Billing address", value: "{{customer.address}}" },
+        { label: "Payment terms", value: "{{customer.paymentTerms}}" },
+        { label: "Term", value: "{{quote.termMonths}} months" },
+        { label: "Currency", value: "{{quote.currency}}" },
+      ],
+    },
+    { type: "divider", thickness: 1 },
+    { type: "spacer", height: 4 },
+    {
+      type: "lineItems",
+      columns: [
+        { field: "name", header: "Item", width: 5.2 },
+        { field: "billing", header: "Billing", width: 1.5 },
+        { field: "term", header: "Term", width: 1.5 },
+        { field: "quantity", header: "Qty", width: 0.8, align: "right" },
+        { field: "unitPrice", header: "Unit price", width: 2.1, align: "right" },
+        { field: "total", header: "Total", width: 2.2, align: "right" },
+      ],
+      showOptions: true,
+      showDescription: false,
+      headerFill: "#f1f5f9",
+      fontSize: 9,
+    },
+    {
+      type: "totals",
+      width: 240,
+      rows: [
+        { label: "Subtotal", field: "subtotal" },
+        { label: "Discount", field: "totalDiscount", omitIfZero: true },
+        { label: "Shipping", field: "shipping", omitIfZero: true },
+        { label: "Tax", field: "taxAmount", omitIfZero: true },
+        { label: "Order total", field: "grandTotal", emphasis: true },
+      ],
+    },
+    { type: "spacer", height: 8 },
+    {
+      type: "text",
+      text: "By signing below, {{customer.name}} orders the items listed above under the terms of the quotation dated {{quote.date}}.",
+      size: 9,
+      color: "#475569",
+    },
+    {
+      type: "signatures",
+      parties: [
+        { label: "{{customer.name}}", caption: "Signature, name and date" },
+        { label: "Nimbus Software Ltd", caption: "Signature, name and date" },
+      ],
+    },
+  ],
+  footer: { text: "Order form {{quote.number}}", showPageNumbers: true },
+};
+
 export const SAMPLE_TEMPLATES: { name: string; format: ProposalFormat; body: string }[] = [
+  { name: "Proposal — branded PDF", format: "pdf", body: JSON.stringify(PDF_BRANDED) },
+  { name: "Order form — PDF", format: "pdf", body: JSON.stringify(PDF_ORDER_FORM) },
   { name: "Proposal — PDF", format: "pdf", body: JSON.stringify(starterPdfTemplate()) },
   { name: "Quote summary — PDF", format: "pdf", body: JSON.stringify(PDF_SUMMARY) },
   { name: "Proposal — letterhead", format: "html", body: HTML_TEMPLATE },

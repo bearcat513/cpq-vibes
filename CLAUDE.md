@@ -133,10 +133,17 @@ runs the same code for the record — never fork them.
   by `requestStatus` from the votes it carries, never assigned
 - `src/lib/proposal.ts` — `{{token}}` rendering, escaped per format; owns the token vocabulary
 - `src/lib/pdf.ts` / `pdfFonts.ts` — a dependency-free PDF writer: a top-down cursor, tables that
-  paginate, the standard 14 fonts and WinAnsi encoding. No images, no embedded fonts
+  paginate, the standard 14 fonts and WinAnsi encoding, and image XObjects. No embedded fonts
+- `src/lib/image.ts` — what may go on a document. It **decodes nothing**: a JPEG is PDF's
+  `DCTDecode` stream and a PNG's `IDAT` is `FlateDecode` with a predictor, so an embeddable image
+  is copied in byte for byte and everything else (alpha, interlace, CMYK, progressive) is refused
+  with a sentence. `src/lib/imageFile.ts` is the browser-only converter that makes those refusals
+  invisible in the UI — it flattens and re-encodes through a canvas
 - `src/lib/pdfTemplate.ts` — PDF templates as a block document. Pure, so the editor's preview is
   rendered by the same code as the download. Its totals list is closed and customer-facing: a
-  proposal template has no way to name cost or margin
+  proposal template has no way to name cost or margin. Branding — an `image` block, and a `header`
+  letterhead drawn on every page — lives **inside the template** as a `data:` URL, so it survives
+  an export, a share and an import; `tools/sampleBrand.ts` draws the sample workspace's logo
 - `src/lib/validate.ts` — every untrusted input, shared by the REST API and the file importer
 - `src/server/quotes.ts` — pricing orchestration, lifecycle and revisions
 - `src/server/db.ts` — the collections. Every call takes a token and is async
