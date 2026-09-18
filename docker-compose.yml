@@ -1,0 +1,109 @@
+name: cpq-pb 
+
+# This file lives at the repo root deliberately: Compose resolves every
+# relative path below against the directory holding it, so the build contexts
+# below are the repo root whether you run `docker compose up` from here or a
+# deploy target points at the file explicitly.
+#
+# Nothing here publishes a host port. `docker-compose.override.yml` does that,
+# and Compose only auto-loads an override when it discovers this file on its
+# own — a deploy target naming a compose file with `-f` gets the base file
+# only. That keeps `localhost:3000` working locally without publishing
+# PocketBase's admin UI wherever this is deployed.
+
+# Shared settings live in an anchor so a change applies to both services.
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  pocketbase:
+    <<: *service-defaults
+    build:
+      context: ./docker
+      dockerfile: pb.dockerfile
+      args:
+        # Set it in the repo-root .env. Interpolation happens before any build
+        # starts, so a missing value fails immediately rather than halfway.
+        PB_VERSION: "${PB_VERSION:?set PB_VERSION in .env (copy .env.example)}"
+    # Tagging by version means bumping PB_VERSION rebuilds instead of silently
+    # reusing the previously built image.
+    image: cpq-pocketbase:${PB_VERSION}
+    environment:
+      # Read by pb_hooks/setup/superuser.js on first boot only. This account is
+      # for the dashboard; the app itself never uses it.
+      PB_ADMIN_EMAIL: ${PB_ADMIN_EMAIL:?set PB_ADMIN_EMAIL in .env}
+      PB_ADMIN_PASSWORD: ${PB_ADMIN_PASSWORD:?set PB_ADMIN_PASSWORD in .env - min 8 characters}
+    # No ports and no expose: `app` reaches PocketBase over the compose network
+    # regardless. The override file publishes it for local development, where
+    # the dashboard is useful; on a deploy target nothing outside the compose
+    # network should be able to reach it.
+    volumes:
+      - pb_data:/pb/pb_data
+      # pb_hooks and pb_migrations are deliberately NOT mounted here. They are
+      # baked into the image by pb.dockerfile, and a bind mount whose source
+      # the daemon cannot see resolves to an empty directory that *hides* them
+      # — which would mean no collections and no superuser. The override file
+      # mounts them for local editing only.
+
+  # One-shot: creates or resets the PocketBase superuser, then exits.
+  # Not started by `up` (profile-gated) — run it with `bun run docker:init`.
+  # `upsert` is idempotent, so re-running it just resets the password, which is
+  # the way back in when the app reports 401s after a credential change.
+  #
+  # NOTE: profiles keep it from *running*, not from being *parsed* — the
+  # variables below are interpolated on every compose command.
+  pocketbase-init:
+    profiles: ["init"]
+    image: cpq-pocketbase:${PB_VERSION}
+    restart: "no"
+    volumes:
+      # Same volume as the server, so the superuser lands in the live database.
+      - pb_data:/pb/pb_data
+    entrypoint:
+      - /pb/pocketbase
+      - superuser
+      - upsert
+      - "${PB_ADMIN_EMAIL:?set PB_ADMIN_EMAIL}"
+      - "${PB_ADMIN_PASSWORD:?set PB_ADMIN_PASSWORD - min 8 characters}"
+
+  app:
+    <<: *service-defaults
+    build:
+      # The repo root: the Dockerfile needs package.json, src/, styles/, bunfig.toml.
+      context: .
+      dockerfile: docker/bun.dockerfile
+      args:
+        BUN_VERSION: ${BUN_VERSION:-1.4.0}
+    image: cpq:${BUN_VERSION:-1.4.0}
+    # `expose`, not `ports` — see the header. Local host access comes from
+    # docker-compose.override.yml.
+    expose:
+      - "3000"
+    # Everything in .env reaches the container.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # The service name on the compose network; 8080 is the container port,
+      # not PB_PORT. Declared after env_file so it wins over a local override.
+      POCKETBASE_URL: http://pocketbase:8080
+      # The app signs in as its own users and holds no credentials of its own,
+      # so the database superuser password has no business being in this
+      # container. These override whatever .env carried in.
+      PB_ADMIN_EMAIL: ""
+      PB_ADMIN_PASSWORD: ""
+    depends_on:
+      pocketbase:
+        # Waits for PocketBase's own healthcheck, so the app's first request
+        # does not race the migrations that create its collections.
+        condition: service_healthy
+
+volumes:
+  # Every configuration, dataset and script template lives here. `docker
+  # compose down` keeps it; `down -v` is what deletes the data.
+  pb_data:

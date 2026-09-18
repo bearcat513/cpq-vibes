@@ -1,0 +1,25 @@
+# Local development only.
+#
+# Compose auto-loads this file when it discovers docker-compose.yml on its own
+# (`docker compose up`), and ignores it when a compose file is named explicitly
+# with `-f`. So these host ports exist on your machine and nowhere else.
+#
+# Do not move any of this into docker-compose.yml: publishing ports on a shared
+# deploy target collides with other services and exposes PocketBase's admin UI.
+
+services:
+  app:
+    ports:
+      - "${API_PORT:-3004}:3000"
+
+  pocketbase:
+    ports:
+      # The dashboard is at http://localhost:8091/_/ — also the URL `bun dev`
+      # talks to when it runs outside Compose.
+      - "${PB_PORT:-8094}:8080"
+    # Edit hooks and migrations without rebuilding the image. These override
+    # the copies baked in by pb.dockerfile — which is why they must stay out of
+    # the base file, where an unreadable mount source would silently blank them.
+    volumes:
+      - ./docker/pb_hooks:/pb/pb_hooks
+      - ./docker/pb_migrations:/pb/pb_migrations
