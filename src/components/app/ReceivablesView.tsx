@@ -175,7 +175,14 @@ export function ReceivablesView({ accounts, preferences, onError, onNotice, conf
             )}
             <Button variant="outline" size="sm" asChild>
               <a href={api.receivablesCsvUrl} download>
-                <Download /> CSV
+                <Download /> Aged CSV
+              </a>
+            </Button>
+            {/* Cash received, across invoices — the sheet a bank
+                reconciliation is done against. */}
+            <Button variant="outline" size="sm" asChild>
+              <a href={api.paymentsCsvUrl} download>
+                <Download /> Receipts CSV
               </a>
             </Button>
             <Button size="sm" onClick={() => setCreating(true)}>

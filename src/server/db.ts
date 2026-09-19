@@ -41,9 +41,12 @@ import type {
   QuoteSummary,
   QuoteTotals,
 } from "../lib/types";
+import { lineTotals, settlement, type LineTotals } from "../lib/receivable";
 import { readPaymentTermDays } from "../lib/validate";
 import type {
   AccountInput,
+  CreditInput,
+  PaymentInput,
   ApprovalRuleInput,
   PriceBookInput,
   PricingRuleInput,
@@ -833,11 +836,154 @@ export { normalizePreferences };
 const MAX_INVOICE_BYTES = 1024 * 1024;
 
 const INVOICE_SUMMARY_FIELDS =
-  "id,number,state,currency,issueDate,dueDate,total,balance,lineCount,quote,header,totals,owner,sharedWith,created,updated";
+  "id,number,state,currency,issueDate,dueDate,total,lineCount,quote,header,totals,owner,sharedWith,created,updated";
 
-function toInvoice(row: Record_): Invoice {
+/* ----------------------------- the subledger ----------------------------- */
+
+function toPayment(row: Record_): InvoicePayment {
+  return {
+    id: String(row.id),
+    invoiceId: relationId(row.invoice),
+    receivedOn: String(row.receivedOn ?? ""),
+    amount: Number(row.amount ?? 0),
+    method: (String(row.method ?? "bank_transfer") || "bank_transfer") as InvoicePayment["method"],
+    reference: String(row.reference ?? ""),
+    note: String(row.note ?? ""),
+    ownerId: relationId(row.owner),
+    ...stamps(row),
+  };
+}
+
+function toCredit(row: Record_): InvoiceCredit {
+  return {
+    id: String(row.id),
+    invoiceId: relationId(row.invoice),
+    issuedOn: String(row.issuedOn ?? ""),
+    amount: Number(row.amount ?? 0),
+    reason: (String(row.reason ?? "adjustment") || "adjustment") as InvoiceCredit["reason"],
+    note: String(row.note ?? ""),
+    ownerId: relationId(row.owner),
+    ...stamps(row),
+  };
+}
+
+/** Oldest first, which is the order a ledger is read in. */
+const LEDGER_SORT = "created";
+
+export const listPayments = async (token: string, filter?: string): Promise<InvoicePayment[]> =>
+  (await readMany(token, "payments", { limit: 0, sort: LEDGER_SORT, filter })).map(toPayment);
+
+export const listCredits = async (token: string, filter?: string): Promise<InvoiceCredit[]> =>
+  (await readMany(token, "credits", { limit: 0, sort: LEDGER_SORT, filter })).map(toCredit);
+
+const forInvoice = (invoiceId: string) => `invoice = "${invoiceId.replace(/"/g, "")}"`;
+
+/**
+ * One invoice's ledger.
+ *
+ * Two queries, in parallel. The alternative — a `payments` and a `credits`
+ * array on the invoice — is what this collection replaced, and it cost a
+ * rewrite of the whole invoice every time somebody banked a cheque.
+ */
+export async function readLedger(
+  token: string,
+  invoiceId: string,
+): Promise<{ payments: InvoicePayment[]; credits: InvoiceCredit[] }> {
+  const [payments, credits] = await Promise.all([
+    listPayments(token, forInvoice(invoiceId)),
+    listCredits(token, forInvoice(invoiceId)),
+  ]);
+  return { payments, credits };
+}
+
+/**
+ * Ledgers grouped by invoice — two queries however many invoices there are.
+ *
+ * `invoiceIds` narrows it to the invoices actually in hand; omit it for the
+ * whole book. Two queries either way, which is the point: the alternative is
+ * two per invoice, and a list of fifty invoices is not worth a hundred round
+ * trips.
+ */
+export async function readLedgers(
+  token: string,
+  invoiceIds?: string[],
+): Promise<{
+  payments: Map<string, InvoicePayment[]>;
+  credits: Map<string, InvoiceCredit[]>;
+}> {
+  // No invoices means no ledger to read, and a filter of `||` over an empty
+  // list would be a syntax error rather than "nothing".
+  if (invoiceIds && invoiceIds.length === 0) return { payments: new Map(), credits: new Map() };
+
+  const filter = invoiceIds?.map(forInvoice).join(" || ");
+  const [payments, credits] = await Promise.all([listPayments(token, filter), listCredits(token, filter)]);
+
+  const group = <T extends { invoiceId: string }>(rows: T[]): Map<string, T[]> => {
+    const byInvoice = new Map<string, T[]>();
+    for (const row of rows) {
+      const existing = byInvoice.get(row.invoiceId);
+      if (existing) existing.push(row);
+      else byInvoice.set(row.invoiceId, [row]);
+    }
+    return byInvoice;
+  };
+
+  return { payments: group(payments), credits: group(credits) };
+}
+
+export async function createPayment(
+  token: string,
+  invoiceId: string,
+  input: PaymentInput,
+): Promise<InvoicePayment> {
+  const row = await write(
+    token,
+    "payments",
+    null,
+    { id: newId("pmt"), invoice: invoiceId, ...input },
+    "Could not record the payment",
+  );
+  return toPayment(row!);
+}
+
+export async function createCredit(token: string, invoiceId: string, input: CreditInput): Promise<InvoiceCredit> {
+  const row = await write(
+    token,
+    "credits",
+    null,
+    { id: newId("crd"), invoice: invoiceId, ...input },
+    "Could not record the credit",
+  );
+  return toCredit(row!);
+}
+
+export const deletePayment = (token: string, id: string) => remove(token, "payments", id);
+export const deleteCredit = (token: string, id: string) => remove(token, "credits", id);
+
+export async function getPayment(token: string, id: string): Promise<InvoicePayment | null> {
+  const row = await readOne(token, "payments", id);
+  return row ? toPayment(row) : null;
+}
+
+export async function getCredit(token: string, id: string): Promise<InvoiceCredit | null> {
+  const row = await readOne(token, "credits", id);
+  return row ? toCredit(row) : null;
+}
+
+/* -------------------------------- invoices ------------------------------- */
+
+/**
+ * An invoice, with the ledger it was read alongside.
+ *
+ * The ledger is passed in rather than fetched here, because the list endpoint
+ * reads every payment in the workspace once and hands each invoice its share
+ * — two queries for a page rather than two per invoice.
+ */
+function toInvoice(row: Record_, payments: InvoicePayment[], credits: InvoiceCredit[]): Invoice {
   const header = jsonObject<Record<string, unknown>>(row.header, {});
-  const ledger = jsonObject<{ payments?: unknown; credits?: unknown }>(row.ledger, {});
+  const stored = jsonObject<Partial<InvoiceTotals>>(row.totals, {});
+  const currency = asCurrency(row.currency);
+  const lines = jsonArray<InvoiceLine>(row.lines);
 
   return {
     id: String(row.id),
@@ -847,7 +993,7 @@ function toInvoice(row: Record_): Invoice {
     // Spread over a blank one, so an invoice stored before a snapshot field
     // existed still has every key the renderers read unguarded.
     customer: { ...emptyCustomer(), ...jsonObject<Record<string, unknown>>(header.customer, {}) },
-    currency: asCurrency(row.currency),
+    currency,
     state: (String(row.state ?? "draft") || "draft") as Invoice["state"],
     issueDate: String(row.issueDate ?? ""),
     dueDate: String(row.dueDate ?? ""),
@@ -855,26 +1001,42 @@ function toInvoice(row: Record_): Invoice {
     poNumber: String(header.poNumber ?? ""),
     notes: String(header.notes ?? ""),
     internalNotes: String(header.internalNotes ?? ""),
-    lines: jsonArray<InvoiceLine>(row.lines),
-    payments: jsonArray<InvoicePayment>(ledger.payments),
-    credits: jsonArray<InvoiceCredit>(ledger.credits),
-    totals: jsonObject<InvoiceTotals>(row.totals, {} as InvoiceTotals),
+    lines,
+    payments,
+    credits,
+    // The line half comes from storage; the ledger half is added up here, so
+    // a balance can never disagree with the payments behind it.
+    totals: {
+      currency,
+      lineCount: Number(stored.lineCount ?? lines.length),
+      subtotal: Number(stored.subtotal ?? 0),
+      taxAmount: Number(stored.taxAmount ?? 0),
+      total: Number(stored.total ?? 0),
+      ...settlement(Number(stored.total ?? 0), payments, credits, currency),
+    },
     ...ownership(row),
     ...stamps(row),
   };
 }
 
-function toInvoiceSummary(row: Record_): InvoiceSummary {
-  const invoice = toInvoice(row);
-  const { lines, payments, credits, ...rest } = invoice;
+function toInvoiceSummary(row: Record_, payments: InvoicePayment[], credits: InvoiceCredit[]): InvoiceSummary {
+  const invoice = toInvoice(row, payments, credits);
+  const { lines, payments: paid, credits: credited, ...rest } = invoice;
   return {
     ...rest,
     lineCount: Number(row.lineCount ?? lines.length),
-    paymentCount: payments.length,
+    paymentCount: paid.length,
+    creditCount: credited.length,
   };
 }
 
-/** Everything an invoice record holds. Totals are the server's, never a client's. */
+/**
+ * Everything an invoice record holds.
+ *
+ * No ledger: payments and credits are their own records now, written through
+ * `createPayment` and `createCredit`. Totals are the server's, never a
+ * client's, and only the line half of them is stored.
+ */
 export type InvoiceRecordInput = {
   number: string;
   quoteId: string | null;
@@ -889,9 +1051,8 @@ export type InvoiceRecordInput = {
   notes: string;
   internalNotes: string;
   lines: InvoiceLine[];
-  payments: InvoicePayment[];
-  credits: InvoiceCredit[];
-  totals: InvoiceTotals;
+  /** The line half only — see `lineTotals` in src/lib/receivable.ts. */
+  totals: LineTotals;
 };
 
 function invoiceBody(input: InvoiceRecordInput): Record_ {
@@ -910,13 +1071,13 @@ function invoiceBody(input: InvoiceRecordInput): Record_ {
     currency: input.currency,
     issueDate: input.issueDate,
     dueDate: input.dueDate,
-    // Denormalised so an aging query never has to open the JSON.
+    // Denormalised for sorting and filtering by the size of the demand. The
+    // *balance* deliberately is not: it depends on records in two other
+    // collections, and a cached one is a number that can go wrong quietly.
     total: input.totals.total,
-    balance: input.totals.balance,
     lineCount: input.lines.length,
     quote: input.quoteId ?? "",
     lines: input.lines,
-    ledger: { payments: input.payments, credits: input.credits },
     totals: input.totals,
     header: {
       customer: input.customer,
@@ -936,50 +1097,70 @@ function invoiceBody(input: InvoiceRecordInput): Record_ {
  * stopped at fifty invoices would understate the book, and understating what
  * you are owed is the one direction a finance number must not be wrong in.
  */
-export const listInvoices = async (token: string, limit = 0): Promise<InvoiceSummary[]> =>
-  (await readMany(token, "invoices", { limit, sort: "-created", fields: INVOICE_SUMMARY_FIELDS })).map(
-    toInvoiceSummary,
+/**
+ * Attaches each row's ledger and turns it into a summary.
+ *
+ * Every list of invoices goes through here, so no caller can accidentally
+ * produce a summary whose balance ignores the payments against it.
+ */
+async function withLedgers(token: string, rows: Record_[], all = false): Promise<InvoiceSummary[]> {
+  const ledgers = await readLedgers(token, all ? undefined : rows.map(row => String(row.id)));
+  return rows.map(row =>
+    toInvoiceSummary(row, ledgers.payments.get(String(row.id)) ?? [], ledgers.credits.get(String(row.id)) ?? []),
   );
+}
+
+export async function listInvoices(token: string, limit = 0): Promise<InvoiceSummary[]> {
+  const rows = await readMany(token, "invoices", { limit, sort: "-created", fields: INVOICE_SUMMARY_FIELDS });
+  // The whole book: one unfiltered ledger read beats a filter naming every
+  // invoice in the workspace.
+  return withLedgers(token, rows, limit <= 0);
+}
 
 /**
  * One customer's invoices. Filtered on the snapshot inside `header`, the same
  * way `listQuotesForAccount` is and for the same reason: an invoice carries
  * its customer rather than pointing at one.
  */
-export const listInvoicesForAccount = async (token: string, accountId: string): Promise<InvoiceSummary[]> =>
-  (
-    await readMany(token, "invoices", {
-      limit: 0,
-      sort: "-created",
-      fields: INVOICE_SUMMARY_FIELDS,
-      filter: `header.customer.accountId = "${accountId.replace(/"/g, "")}"`,
-    })
-  ).map(toInvoiceSummary);
+export async function listInvoicesForAccount(token: string, accountId: string): Promise<InvoiceSummary[]> {
+  const rows = await readMany(token, "invoices", {
+    limit: 0,
+    sort: "-created",
+    fields: INVOICE_SUMMARY_FIELDS,
+    filter: `header.customer.accountId = "${accountId.replace(/"/g, "")}"`,
+  });
+  return withLedgers(token, rows);
+}
 
 /** The invoices already raised from one quote — what stops it being billed twice. */
-export const listInvoicesForQuote = async (token: string, quoteId: string): Promise<InvoiceSummary[]> =>
-  (
-    await readMany(token, "invoices", {
-      limit: 0,
-      sort: "-created",
-      fields: INVOICE_SUMMARY_FIELDS,
-      filter: `quote = "${quoteId.replace(/"/g, "")}"`,
-    })
-  ).map(toInvoiceSummary);
+export async function listInvoicesForQuote(token: string, quoteId: string): Promise<InvoiceSummary[]> {
+  const rows = await readMany(token, "invoices", {
+    limit: 0,
+    sort: "-created",
+    fields: INVOICE_SUMMARY_FIELDS,
+    filter: `quote = "${quoteId.replace(/"/g, "")}"`,
+  });
+  return withLedgers(token, rows);
+}
 
 export async function getInvoice(token: string, id: string): Promise<Invoice | null> {
   const row = await readOne(token, "invoices", id);
-  return row ? toInvoice(row) : null;
+  if (!row) return null;
+  const ledger = await readLedger(token, String(row.id));
+  return toInvoice(row, ledger.payments, ledger.credits);
 }
 
 export async function createInvoice(token: string, input: InvoiceRecordInput): Promise<Invoice> {
   const row = await write(token, "invoices", null, { id: newId("inv"), ...invoiceBody(input) }, "Could not save the invoice");
-  return toInvoice(row!);
+  // Brand new, so its ledger is empty by construction rather than by query.
+  return toInvoice(row!, [], []);
 }
 
 export async function updateInvoice(token: string, id: string, input: InvoiceRecordInput): Promise<Invoice | null> {
   const row = await write(token, "invoices", id, invoiceBody(input), "Could not update the invoice");
-  return row ? toInvoice(row) : null;
+  if (!row) return null;
+  const ledger = await readLedger(token, id);
+  return toInvoice(row, ledger.payments, ledger.credits);
 }
 
 export const deleteInvoice = (token: string, id: string) => remove(token, "invoices", id);

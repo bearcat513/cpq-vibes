@@ -19,7 +19,7 @@ import {
   today,
   type AgingReport,
 } from "../lib/receivable";
-import type { Invoice, InvoiceSummary, Product, Quote } from "../lib/types";
+import type { Invoice, InvoiceCredit, InvoicePayment, InvoiceSummary, Product, Quote } from "../lib/types";
 
 type Row = Record<string, unknown>;
 
@@ -141,6 +141,51 @@ export function invoiceLineRows(invoice: Invoice): Row[] {
     taxPercent: line.taxPercent,
     taxAmount: line.taxAmount,
   }));
+}
+
+/**
+ * Cash received, one row per payment.
+ *
+ * The report a bank reconciliation is done against, which is why the
+ * reference is a column of its own: it is the only thing tying a row here to
+ * a line on a statement.
+ */
+export function paymentRows(payments: InvoicePayment[], invoices: InvoiceSummary[] = []): Row[] {
+  const byId = new Map(invoices.map(invoice => [invoice.id, invoice]));
+
+  return payments.map(payment => {
+    const invoice = byId.get(payment.invoiceId);
+    return {
+      receivedOn: payment.receivedOn,
+      invoice: invoice?.number ?? payment.invoiceId,
+      customer: invoice?.customer.name ?? "",
+      currency: invoice?.currency ?? "",
+      amount: payment.amount,
+      method: payment.method,
+      reference: payment.reference,
+      note: payment.note,
+      recordedOn: payment.createdAt.slice(0, 10),
+    };
+  });
+}
+
+/** Credits and write-offs, one row each. What was given away, and why. */
+export function creditRows(credits: InvoiceCredit[], invoices: InvoiceSummary[] = []): Row[] {
+  const byId = new Map(invoices.map(invoice => [invoice.id, invoice]));
+
+  return credits.map(credit => {
+    const invoice = byId.get(credit.invoiceId);
+    return {
+      issuedOn: credit.issuedOn,
+      invoice: invoice?.number ?? credit.invoiceId,
+      customer: invoice?.customer.name ?? "",
+      currency: invoice?.currency ?? "",
+      amount: credit.amount,
+      reason: credit.reason,
+      note: credit.note,
+      recordedOn: credit.createdAt.slice(0, 10),
+    };
+  });
 }
 
 /**

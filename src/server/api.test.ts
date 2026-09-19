@@ -743,6 +743,129 @@ describe("receivables", () => {
     await api(`/api/invoices/${raised.invoice.id}`, { method: "DELETE" });
   });
 
+  signedIn("a payment is a record of its own, with an identity and an owner", async () => {
+    const ledger = await json(`/api/invoices/${invoiceId}/payments`);
+
+    expect(ledger.length).toBeGreaterThan(0);
+    const payment = ledger[0];
+    expect(payment.id).toMatch(/^pmt_/);
+    expect(payment.invoiceId).toBe(invoiceId);
+    expect(payment.ownerId).toBeString();
+    // Its own created date, rather than a timestamp inside somebody's JSON.
+    expect(payment.createdAt).toBeString();
+    expect(payment.receivedOn).toBe("2026-03-10");
+  });
+
+  signedIn("cash is answerable on its own, across invoices", async () => {
+    // The question the embedded ledger could not answer without opening every
+    // invoice in the workspace.
+    const all = await json("/api/payments");
+    expect(all.length).toBeGreaterThan(0);
+    expect(all.every((one: any) => one.invoiceId && one.amount > 0)).toBe(true);
+
+    const mine = await json(`/api/payments?invoiceId=${invoiceId}`);
+    expect(mine.every((one: any) => one.invoiceId === invoiceId)).toBe(true);
+    expect(mine.length).toBeLessThanOrEqual(all.length);
+
+    const credits = await json(`/api/credits?invoiceId=${invoiceId}`);
+    expect(credits.every((one: any) => one.invoiceId === invoiceId)).toBe(true);
+  });
+
+  signedIn("two payments banked at the same moment both land", async () => {
+    // The bug that made this a collection. When the ledger was an array on the
+    // invoice, recording a payment was a read-modify-write of the whole
+    // record, so the second save wrote back the ledger the first had read and
+    // one payment vanished. An insert cannot do that.
+    const raised = await post("/api/invoices", {
+      accountId,
+      lines: [{ description: "Concurrent", quantity: 1, unitPrice: 300 }],
+    });
+    await post(`/api/invoices/${raised.invoice.id}/issue`, {});
+
+    await Promise.all([
+      post(`/api/invoices/${raised.invoice.id}/payments`, { amount: 100, reference: "A" }),
+      post(`/api/invoices/${raised.invoice.id}/payments`, { amount: 100, reference: "B" }),
+      post(`/api/invoices/${raised.invoice.id}/payments`, { amount: 100, reference: "C" }),
+    ]);
+
+    const after = await json(`/api/invoices/${raised.invoice.id}`);
+    expect(after.payments).toHaveLength(3);
+    expect(after.payments.map((one: any) => one.reference).sort()).toEqual(["A", "B", "C"]);
+    // And the balance is read off the ledger, so it agrees with all three.
+    expect(after.totals.paidAmount).toBe(300);
+    expect(after.totals.balance).toBe(0);
+  });
+
+  signedIn("the balance is computed from the ledger, never cached on the invoice", async () => {
+    // Deleting a payment row is enough to move the balance: nothing has to
+    // remember to rewrite a number on the invoice.
+    const before = await json(`/api/invoices/${invoiceId}`);
+    const balanceBefore = before.totals.balance;
+    const payment = before.payments[0];
+
+    const removed = await api(`/api/invoices/${invoiceId}/payments/${payment.id}`, { method: "DELETE" });
+    expect(removed.status).toBe(200);
+    expect((await removed.json()).totals.balance).toBe(balanceBefore + payment.amount);
+
+    // The list endpoint agrees, which is the half that reads every ledger at once.
+    const listed = (await json("/api/invoices")).find((one: any) => one.id === invoiceId);
+    expect(listed.totals.balance).toBe(balanceBefore + payment.amount);
+
+    // Put it back so the aging assertions above still describe this invoice.
+    await post(`/api/invoices/${invoiceId}/payments`, {
+      amount: payment.amount,
+      receivedOn: payment.receivedOn,
+      reference: payment.reference,
+    });
+  });
+
+  signedIn("a payment belonging to another invoice cannot be removed through this one", async () => {
+    const other = await post("/api/invoices", {
+      accountId,
+      lines: [{ description: "Elsewhere", quantity: 1, unitPrice: 50 }],
+    });
+    await post(`/api/invoices/${other.invoice.id}/issue`, {});
+    const recorded = await post(`/api/invoices/${other.invoice.id}/payments`, { amount: 50 });
+    const paymentId = recorded.invoice.payments[0].id;
+
+    const response = await api(`/api/invoices/${invoiceId}/payments/${paymentId}`, { method: "DELETE" });
+    expect(response.status).toBe(404);
+
+    // Still there, on the invoice it actually belongs to.
+    expect(await json(`/api/invoices/${other.invoice.id}/payments`)).toHaveLength(1);
+  });
+
+  signedIn("nobody else can file a payment against your invoice", async () => {
+    // Through the API Bob cannot even see the invoice, so this goes straight
+    // at PocketBase to check the collection rule rather than the route.
+    const response = await fetch(`${pocketbase.url}/api/collections/payments/records`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: await bobToken() },
+      body: JSON.stringify({ id: "pmt_intruder", invoice: invoiceId, amount: 999, receivedOn: "2026-03-10" }),
+    });
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    // And Alice's ledger is untouched by it.
+    const ledger = await json(`/api/invoices/${invoiceId}/payments`);
+    expect(ledger.every((one: any) => one.id !== "pmt_intruder")).toBe(true);
+  });
+
+  signedIn("Bob sees no ledger at all, because he sees no invoices", async () => {
+    expect(await json("/api/payments", { cookie: bobCookie })).toEqual([]);
+    expect(await json("/api/credits", { cookie: bobCookie })).toEqual([]);
+  });
+
+  signedIn("the cash receipts export names the invoice, not its id", async () => {
+    const response = await api("/api/payments?format=csv");
+    const csv = await response.text();
+
+    expect(csv).toContain("receivedOn,invoice,customer");
+    expect(csv).toContain("reference");
+    // Read beside a bank statement, so it carries the human-facing number.
+    expect(csv).toMatch(/INV-\d{4}-\d{4}/);
+    expect(csv).toContain("Harbour Logistics");
+  });
+
   signedIn("the receivables export carries the derived status and aging", async () => {
     const response = await api("/api/invoices/export?format=csv&asOf=2026-05-20");
     const csv = await response.text();

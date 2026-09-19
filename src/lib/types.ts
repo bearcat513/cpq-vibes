@@ -889,12 +889,33 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   other: "Other",
 };
 
-/** Cash actually received against one invoice. */
+/**
+ * Cash actually received against one invoice.
+ *
+ * Its own record, in its own collection, rather than an entry in the
+ * invoice's JSON. Three things follow from that and all three are the reason
+ * for it:
+ *
+ * **Recording one is an insert.** It used to be a read-modify-write of the
+ * whole invoice, so two people banking payments at the same moment could lose
+ * one of them. An insert cannot.
+ *
+ * **Cash is answerable on its own.** "What came in last month" is a question
+ * about payments, not about invoices, and it was previously unaskable without
+ * opening every invoice in the workspace.
+ *
+ * **It has an identity and an audit trail** — an owner, a created date, a
+ * durable id — like every other record here rather than an object inside
+ * another record's field.
+ */
 export type InvoicePayment = {
   id: string;
+  /** The invoice it settles. A payment always belongs to exactly one. */
+  invoiceId: string;
   /**
    * ISO date the money arrived — not the day somebody keyed it in. Aging is
-   * measured against the calendar, so the difference is a real one.
+   * measured against the calendar, so the difference is a real one, and
+   * `createdAt` is the day it was keyed in.
    */
   receivedOn: string;
   amount: number;
@@ -902,8 +923,9 @@ export type InvoicePayment = {
   /** Bank reference, cheque number, processor id — whatever ties it to a statement. */
   reference: string;
   note: string;
-  /** When this row was added here, which is an audit fact rather than a money one. */
-  recordedAt: string;
+  ownerId: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /**
@@ -924,14 +946,20 @@ export const CREDIT_REASON_LABELS: Record<CreditReason, string> = {
   write_off: "Write-off",
 };
 
-/** An amount forgiven, corrected or written off. Reduces the balance; no cash moved. */
+/**
+ * An amount forgiven, corrected or written off. Reduces the balance; no cash
+ * moved. Its own record, for the same reasons as a payment.
+ */
 export type InvoiceCredit = {
   id: string;
+  invoiceId: string;
   issuedOn: string;
   amount: number;
   reason: CreditReason;
   note: string;
-  recordedAt: string;
+  ownerId: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /**
@@ -987,6 +1015,20 @@ export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
   void: "Void",
 };
 
+/**
+ * What an invoice comes to.
+ *
+ * Split down the middle by where the numbers come from. `subtotal`,
+ * `taxAmount` and `total` are a pure function of the invoice's own lines, and
+ * are stored with it. `paidAmount`, `creditedAmount` and `balance` are a
+ * function of its ledger, which lives in two other collections — so they are
+ * **computed on every read** rather than cached on the invoice.
+ *
+ * That is deliberate. A cached balance is a number that can disagree with the
+ * payments behind it, and a finance system is the last place to keep one.
+ * Reading a page of invoices costs two extra queries for the whole page — not
+ * one per invoice — which is a price worth paying to make drift impossible.
+ */
 export type InvoiceTotals = {
   currency: CurrencyCode;
   lineCount: number;
@@ -995,9 +1037,9 @@ export type InvoiceTotals = {
   taxAmount: number;
   /** What was demanded: subtotal plus tax. */
   total: number;
-  /** Cash received. */
+  /** Cash received. Summed from the `payments` collection at read time. */
   paidAmount: number;
-  /** Amounts credited or written off. */
+  /** Amounts credited or written off. Summed from `credits` at read time. */
   creditedAmount: number;
   /**
    * `total − paid − credited`, and **allowed to be negative**: a customer who
@@ -1035,6 +1077,11 @@ export type Invoice = {
   /** Never shown to the customer — the collections note. */
   internalNotes: string;
   lines: InvoiceLine[];
+  /**
+   * Its ledger, read from the `payments` and `credits` collections and
+   * attached here for whoever is holding the invoice. Not stored on it — see
+   * `InvoiceTotals`.
+   */
   payments: InvoicePayment[];
   credits: InvoiceCredit[];
   totals: InvoiceTotals;
@@ -1044,8 +1091,14 @@ export type Invoice = {
   updatedAt: string;
 };
 
-/** An invoice without its ledger — what the list endpoint returns. */
+/**
+ * An invoice without its lines or its ledger rows — what the list endpoint
+ * returns. Its `totals` are still whole, balance included: the list reads
+ * every payment and credit in two queries and adds them up, because a list of
+ * invoices with no balances on it is not worth returning.
+ */
 export type InvoiceSummary = Omit<Invoice, "lines" | "payments" | "credits"> & {
   lineCount: number;
   paymentCount: number;
+  creditCount: number;
 };

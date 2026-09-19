@@ -81,10 +81,13 @@ describe("the receivables screen", () => {
     expect(html).not.toContain("$0.00");
   });
 
-  test("the way in is there: a new invoice, and the export", () => {
+  test("the way in is there: a new invoice, and both exports", () => {
     expect(html).toContain("New invoice");
-    expect(html).toContain("/api/invoices/export?format=csv");
     expect(html).toContain("Search invoices");
+    // The aged book, and the cash that came in against it — two different
+    // questions, and now two different sheets.
+    expect(html).toContain("/api/invoices/export?format=csv");
+    expect(html).toContain("/api/payments?format=csv");
   });
 });
 

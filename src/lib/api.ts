@@ -10,6 +10,8 @@ import type { AgingReport } from "./receivable";
 import type {
   Account,
   Invoice,
+  InvoiceCredit,
+  InvoicePayment,
   InvoiceSummary,
   ApprovalRequest,
   ApprovalRule,
@@ -306,6 +308,15 @@ export const api = {
     send<Invoice>(`/api/invoices/${id}/payments/${paymentId}`, "DELETE"),
   recordCredit: (id: string, payload: CreditInput) => send<SavedInvoice>(`/api/invoices/${id}/credits`, "POST", payload),
   removeCredit: (id: string, creditId: string) => send<Invoice>(`/api/invoices/${id}/credits/${creditId}`, "DELETE"),
+
+  /** Every payment received — the cash receipts list, across invoices. */
+  listPaymentsReceived: () => request<InvoicePayment[]>("/api/payments"),
+  listCreditsIssued: () => request<InvoiceCredit[]>("/api/credits"),
+  invoicePayments: (id: string) => request<InvoicePayment[]>(`/api/invoices/${id}/payments`),
+  invoiceCredits: (id: string) => request<InvoiceCredit[]>(`/api/invoices/${id}/credits`),
+
+  paymentsCsvUrl: "/api/payments?format=csv",
+  creditsCsvUrl: "/api/credits?format=csv",
 
   aging: (currency: string, asOf?: string) =>
     request<AgingReport>(`/api/receivables/aging?currency=${currency}${asOf ? `&asOf=${asOf}` : ""}`),

@@ -32,8 +32,10 @@ import {
   listProducts,
   listProposalTemplates,
   listQuotes,
+  listCredits,
   listInvoices,
   listInvoicesForAccount,
+  listPayments,
   listQuotesAwaiting,
   listQuotesForAccount,
   updateAccount,
@@ -45,10 +47,12 @@ import {
 } from "./server/db";
 import {
   agingRows,
+  creditRows,
   exportResponse,
   fileResponse,
   invoiceLineRows,
   invoiceRows,
+  paymentRows,
   productRows,
   quoteRows,
 } from "./server/export";
@@ -374,6 +378,8 @@ const server = serve({
             "POST   /api/quotes/:id/shares": "{ email } → share it read-only (owner only)",
             "DELETE /api/quotes/:id/shares": "?email= → stop sharing it",
             "GET    /api/receivables/aging": "The aging report (?currency=, ?asOf=, ?format=csv)",
+            "GET    /api/payments": "Every payment received (?invoiceId=, ?format=csv) — the cash receipts list",
+            "GET    /api/credits": "Every credit and write-off (?invoiceId=, ?format=csv)",
             "GET    /api/invoices": "List invoices",
             "POST   /api/invoices": "Create a draft invoice for a customer",
             "GET    /api/invoices/export": "Download every invoice with its aging (?format=csv|json)",
@@ -382,8 +388,10 @@ const server = serve({
             "DELETE /api/invoices/:id": "Discard a draft. An issued invoice is voided, never deleted",
             "POST   /api/invoices/:id/issue": "{ issueDate? } → date it, set its due date, make it a receivable",
             "POST   /api/invoices/:id/void": "Cancel one. Refused once a payment is recorded",
+            "GET    /api/invoices/:id/payments": "One invoice's payments",
             "POST   /api/invoices/:id/payments": "{ amount, receivedOn?, method?, reference? } → record cash received",
             "DELETE /api/invoices/:id/payments/:paymentId": "Remove a payment entered in error",
+            "GET    /api/invoices/:id/credits": "One invoice's credits",
             "POST   /api/invoices/:id/credits": "{ amount, reason?, issuedOn? } → credit or write off",
             "DELETE /api/invoices/:id/credits/:creditId": "Remove a credit entered in error",
             "GET    /api/invoices/:id/export": "Download one invoice (?format=csv|json)",
@@ -438,7 +446,13 @@ const server = serve({
               "Nothing about an invoice's condition is stored. open, part paid, paid and overdue are worked out " +
               "from the ledger and the date, every time they are asked for — a stored 'overdue' is wrong the " +
               "morning after it is written.",
-            balance: "total − payments − credits. It may go negative: an overpaid invoice owes money back.",
+            ledger:
+              "Payments and credits are their own collections, each row belonging to one invoice. Recording one " +
+              "is an insert, so two people banking cash at once cannot lose a payment, and the invoice's own " +
+              "record is never rewritten.",
+            balance:
+              "total − payments − credits, computed on every read rather than cached — a stored balance can " +
+              "disagree with the payments behind it. It may go negative: an overpaid invoice owes money back.",
             editing: "draft only. An issued invoice is changed with a credit, never an edit.",
             numbering: "INV-<year>-<sequence> per account. Nothing ever issued is deleted, so the run stays gapless.",
             paymentMethods: PAYMENT_METHODS,
@@ -1011,6 +1025,39 @@ const server = serve({
       }),
     },
 
+    /**
+     * Every payment received, newest first — the cash receipts list.
+     *
+     * A question about payments rather than about invoices, and one that was
+     * unaskable while the ledger lived inside the invoice's JSON. `?invoiceId=`
+     * narrows it to one invoice's ledger.
+     */
+    "/api/payments": {
+      GET: guarded(async (token, req) => {
+        const invoiceId = query(req).get("invoiceId") ?? "";
+        const payments = await listPayments(token, invoiceId ? `invoice = "${invoiceId.replace(/"/g, "")}"` : undefined);
+
+        const format = formatParam(query(req));
+        if (format !== "csv") return Response.json(payments);
+
+        // The spreadsheet wants invoice numbers and customer names, not ids:
+        // it is read beside a bank statement, not beside this database.
+        return exportResponse(paymentRows(payments, await listInvoices(token)), "csv", "payments");
+      }),
+    },
+
+    /** Every credit and write-off. `?invoiceId=` narrows it to one invoice. */
+    "/api/credits": {
+      GET: guarded(async (token, req) => {
+        const invoiceId = query(req).get("invoiceId") ?? "";
+        const credits = await listCredits(token, invoiceId ? `invoice = "${invoiceId.replace(/"/g, "")}"` : undefined);
+
+        const format = formatParam(query(req));
+        if (format !== "csv") return Response.json(credits);
+        return exportResponse(creditRows(credits, await listInvoices(token)), "csv", "credits");
+      }),
+    },
+
     "/api/invoices": {
       GET: guarded(async token => Response.json(await listInvoices(token))),
 
@@ -1088,6 +1135,9 @@ const server = serve({
     },
 
     "/api/invoices/:id/payments": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await listPayments(token, `invoice = "${req.params.id.replace(/"/g, "")}"`)),
+      ),
       POST: guarded<{ params: { id: string } }>(async (token, req) =>
         Response.json(await recordPayment(token, req.params.id, must(readPayment(await body(req)))), { status: 201 }),
       ),
@@ -1101,6 +1151,9 @@ const server = serve({
     },
 
     "/api/invoices/:id/credits": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await listCredits(token, `invoice = "${req.params.id.replace(/"/g, "")}"`)),
+      ),
       POST: guarded<{ params: { id: string } }>(async (token, req) =>
         Response.json(await recordCredit(token, req.params.id, must(readCredit(await body(req)))), { status: 201 }),
       ),

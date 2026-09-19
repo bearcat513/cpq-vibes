@@ -27,6 +27,10 @@ const OWNED = [
   "proposal_templates",
   "quotes",
   "invoices",
+  // A ledger row records who keyed it in. What it may do is decided by its
+  // invoice's owner, in the collection rules — see 1750000007.
+  "payments",
+  "credits",
 ];
 
 /** Quotes are updated under rules/approvals.js instead. */

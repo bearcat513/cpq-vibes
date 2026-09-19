@@ -23,28 +23,21 @@
  * be sequential and gapless; a draft may be thrown away because it was never
  * a document, and anything past that is voided instead.
  */
-import {
-  agingReport,
-  dueDateFor,
-  invoiceTotals,
-  pricedLines,
-  today,
-  type AgingReport,
-} from "../lib/receivable";
+import { agingReport, dueDateFor, lineTotals, pricedLines, today, type AgingReport } from "../lib/receivable";
 import { formatMoney } from "../lib/money";
-import {
-  type Invoice,
-  type InvoiceCredit,
-  type InvoiceLine,
-  type InvoicePayment,
-  type Quote,
-} from "../lib/types";
+import { type Invoice, type InvoiceLine, type Quote } from "../lib/types";
 import { localId, type CreditInput, type InvoiceHeaderInput, type PaymentInput } from "../lib/validate";
 import {
+  createCredit,
   createInvoice as insertInvoice,
+  createPayment,
+  deleteCredit,
   deleteInvoice,
+  deletePayment,
   getAccount,
+  getCredit,
   getInvoice,
+  getPayment,
   getQuote,
   listInvoices,
   listInvoicesForQuote,
@@ -66,11 +59,9 @@ import { snapshotCustomer } from "./quotes";
  */
 function recompute(input: Omit<InvoiceRecordInput, "totals">): InvoiceRecordInput {
   const lines = pricedLines(input.lines, input.currency);
-  return {
-    ...input,
-    lines,
-    totals: invoiceTotals(lines, input.payments, input.credits, input.currency),
-  };
+  // Only the line half is stored. What has been paid and credited against it
+  // lives in two other collections and is added up on every read.
+  return { ...input, lines, totals: lineTotals(lines, input.currency) };
 }
 
 /** The record shape of an invoice already in hand, for a partial update. */
@@ -88,8 +79,6 @@ const recordOf = (invoice: Invoice): Omit<InvoiceRecordInput, "totals"> => ({
   notes: invoice.notes,
   internalNotes: invoice.internalNotes,
   lines: invoice.lines,
-  payments: invoice.payments,
-  credits: invoice.credits,
 });
 
 /**
@@ -158,8 +147,6 @@ export async function createBlankInvoice(
       notes: header.notes,
       internalNotes: header.internalNotes,
       lines,
-      payments: [],
-      credits: [],
     }),
     warnings,
   };
@@ -252,8 +239,6 @@ export async function invoiceQuote(token: string, quoteId: string): Promise<Invo
     notes: quote.notes,
     internalNotes: `Raised from ${quote.number}.`,
     lines: linesFromQuote(quote),
-    payments: [],
-    credits: [],
   });
 
   if (invoice.totals.total !== quote.totals.grandTotal) {
@@ -452,41 +437,50 @@ function requireIssued(invoice: Invoice, what: string): void {
   );
 }
 
+/**
+ * Records cash received.
+ *
+ * An insert into its own collection, not a rewrite of the invoice. That is
+ * the whole point of the ledger being separate: two people banking payments
+ * at the same moment used to be able to lose one of them, and an insert
+ * cannot. The invoice is re-read afterwards so the caller gets it back with
+ * the new balance already worked out.
+ */
 export async function recordPayment(token: string, id: string, input: PaymentInput): Promise<InvoiceResult> {
   const invoice = await load(token, id);
   requireIssued(invoice, "pay");
 
-  const payment: InvoicePayment = { id: localId("pmt"), recordedAt: new Date().toISOString(), ...input };
-
   const warnings: string[] = [];
   // An overpayment is recorded, not refused: the money is in the bank whether
   // or not the invoice expected it, and the balance goes negative to say so.
-  if (payment.amount > invoice.totals.balance) {
+  if (input.amount > invoice.totals.balance) {
     warnings.push(
-      `${formatMoney(payment.amount, invoice.currency)} is more than the ` +
+      `${formatMoney(input.amount, invoice.currency)} is more than the ` +
         `${formatMoney(invoice.totals.balance, invoice.currency)} outstanding. ` +
-        `${invoice.number} will be overpaid by ${formatMoney(payment.amount - invoice.totals.balance, invoice.currency)}.`,
+        `${invoice.number} will be overpaid by ${formatMoney(input.amount - invoice.totals.balance, invoice.currency)}.`,
     );
   }
 
-  return {
-    invoice: await save(token, id, { ...recordOf(invoice), payments: [...invoice.payments, payment] }),
-    warnings,
-  };
+  await createPayment(token, invoice.id, input);
+  return { invoice: await load(token, id), warnings };
 }
 
 /**
  * Removes a payment — for the one recorded against the wrong invoice, or
  * twice. Not a refund: a refund is money leaving, and this is the correction
  * of a bookkeeping entry that should not have existed.
+ *
+ * The payment is checked to belong to this invoice before it is deleted, so
+ * a mistyped id cannot reach into another invoice's ledger.
  */
 export async function removePayment(token: string, id: string, paymentId: string): Promise<Invoice> {
   const invoice = await load(token, id);
-  const payments = invoice.payments.filter(payment => payment.id !== paymentId);
-  if (payments.length === invoice.payments.length) {
-    throw new ApiError("No such payment on this invoice.", 404);
-  }
-  return save(token, id, { ...recordOf(invoice), payments });
+
+  const payment = await getPayment(token, paymentId);
+  if (!payment || payment.invoiceId !== invoice.id) throw new ApiError("No such payment on this invoice.", 404);
+  if (!(await deletePayment(token, paymentId))) throw new ApiError("No such payment on this invoice.", 404);
+
+  return load(token, id);
 }
 
 /**
@@ -510,24 +504,24 @@ export async function recordCredit(token: string, id: string, input: CreditInput
     );
   }
 
-  const credit: InvoiceCredit = { id: localId("crd"), recordedAt: new Date().toISOString(), ...input };
-  const saved = await save(token, id, { ...recordOf(invoice), credits: [...invoice.credits, credit] });
+  await createCredit(token, invoice.id, input);
 
   const warnings: string[] =
     input.reason === "write_off"
       ? [`${formatMoney(input.amount, invoice.currency)} written off against ${invoice.number}.`]
       : [];
 
-  return { invoice: saved, warnings };
+  return { invoice: await load(token, id), warnings };
 }
 
 export async function removeCredit(token: string, id: string, creditId: string): Promise<Invoice> {
   const invoice = await load(token, id);
-  const credits = invoice.credits.filter(credit => credit.id !== creditId);
-  if (credits.length === invoice.credits.length) {
-    throw new ApiError("No such credit on this invoice.", 404);
-  }
-  return save(token, id, { ...recordOf(invoice), credits });
+
+  const credit = await getCredit(token, creditId);
+  if (!credit || credit.invoiceId !== invoice.id) throw new ApiError("No such credit on this invoice.", 404);
+  if (!(await deleteCredit(token, creditId))) throw new ApiError("No such credit on this invoice.", 404);
+
+  return load(token, id);
 }
 
 /* --------------------------------- reporting ------------------------------ */

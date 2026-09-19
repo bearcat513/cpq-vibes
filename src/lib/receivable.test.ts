@@ -49,21 +49,27 @@ const line = (quantity: number, unitPrice: number, taxPercent = 0): InvoiceLine 
 
 const payment = (amount: number, receivedOn = "2026-02-01"): InvoicePayment => ({
   id: `pmt_${amount}`,
+  invoiceId: "inv_1",
   receivedOn,
   amount,
   method: "bank_transfer",
   reference: "",
   note: "",
-  recordedAt: "2026-02-01T00:00:00Z",
+  ownerId: "u",
+  createdAt: "2026-02-01T00:00:00Z",
+  updatedAt: "2026-02-01T00:00:00Z",
 });
 
 const credit = (amount: number): InvoiceCredit => ({
   id: `crd_${amount}`,
+  invoiceId: "inv_1",
   issuedOn: "2026-02-01",
   amount,
   reason: "adjustment",
   note: "",
-  recordedAt: "2026-02-01T00:00:00Z",
+  ownerId: "u",
+  createdAt: "2026-02-01T00:00:00Z",
+  updatedAt: "2026-02-01T00:00:00Z",
 });
 
 /** An invoice summary, built from what actually moves the arithmetic. */
@@ -105,6 +111,7 @@ const invoice = (
     updatedAt: "",
     lineCount: 1,
     paymentCount: paid ? 1 : 0,
+    creditCount: credited ? 1 : 0,
   }) as InvoiceSummary;
 
 /* --------------------------------- dates --------------------------------- */

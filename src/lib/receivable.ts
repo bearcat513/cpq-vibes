@@ -98,18 +98,14 @@ export const pricedLines = (lines: InvoiceLine[], currency: CurrencyCode): Invoi
   lines.map(line => ({ ...line, ...lineAmounts(line, currency) }));
 
 /**
- * The whole invoice, added up.
+ * The line half of the totals: what was demanded.
  *
- * Takes the ledger as well as the lines because the balance is the only
- * number anyone actually acts on, and computing it anywhere else would mean
- * two places that could disagree about whether an invoice is settled.
+ * A pure function of the invoice's own lines, which is why this half is
+ * stored with the invoice while the other half is not.
  */
-export function invoiceTotals(
-  lines: InvoiceLine[],
-  payments: InvoicePayment[],
-  credits: InvoiceCredit[],
-  currency: CurrencyCode,
-): InvoiceTotals {
+export type LineTotals = Pick<InvoiceTotals, "currency" | "lineCount" | "subtotal" | "taxAmount" | "total">;
+
+export function lineTotals(lines: InvoiceLine[], currency: CurrencyCode): LineTotals {
   const priced = pricedLines(lines, currency);
 
   const subtotal = sum(
@@ -120,8 +116,32 @@ export function invoiceTotals(
     priced.map(line => line.taxAmount),
     currency,
   );
-  const total = round(subtotal + taxAmount, currency);
 
+  return {
+    currency,
+    lineCount: priced.length,
+    subtotal,
+    taxAmount,
+    total: round(subtotal + taxAmount, currency),
+  };
+}
+
+/**
+ * The ledger half: what has come back against what was demanded.
+ *
+ * Kept separate because the ledger lives in its own collections now, so this
+ * is computed on every read of an invoice rather than cached on it. One
+ * function, called from the one place an invoice is assembled, is what keeps
+ * a balance from ever disagreeing with the payments behind it.
+ */
+export type Settlement = Pick<InvoiceTotals, "paidAmount" | "creditedAmount" | "balance">;
+
+export function settlement(
+  total: number,
+  payments: Pick<InvoicePayment, "amount">[],
+  credits: Pick<InvoiceCredit, "amount">[],
+  currency: CurrencyCode,
+): Settlement {
   const paidAmount = sum(
     payments.map(payment => round(payment.amount, currency)),
     currency,
@@ -132,16 +152,29 @@ export function invoiceTotals(
   );
 
   return {
-    currency,
-    lineCount: priced.length,
-    subtotal,
-    taxAmount,
-    total,
     paidAmount,
     creditedAmount,
     // Deliberately not clamped at zero — see InvoiceTotals.
-    balance: round(total - paidAmount - creditedAmount, currency),
+    balance: round(round(total, currency) - paidAmount - creditedAmount, currency),
   };
+}
+
+/**
+ * The whole invoice, added up — both halves, from the parts in hand.
+ *
+ * What the browser draws a live total with while an invoice is being typed,
+ * and what the tests pin the arithmetic down with. The server assembles the
+ * same number out of `lineTotals` and `settlement` separately, because it
+ * stores one half and computes the other.
+ */
+export function invoiceTotals(
+  lines: InvoiceLine[],
+  payments: Pick<InvoicePayment, "amount">[],
+  credits: Pick<InvoiceCredit, "amount">[],
+  currency: CurrencyCode,
+): InvoiceTotals {
+  const totals = lineTotals(lines, currency);
+  return { ...totals, ...settlement(totals.total, payments, credits, currency) };
 }
 
 /* ------------------------------ the condition ---------------------------- */

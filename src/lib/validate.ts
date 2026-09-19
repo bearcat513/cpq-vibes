@@ -1137,7 +1137,12 @@ export function readInvoiceLines(raw: unknown): Validated<InvoiceLine[]> {
   return valid(lines);
 }
 
-export type PaymentInput = Omit<InvoicePayment, "id" | "recordedAt">;
+/**
+ * A payment as a caller may describe it. The invoice it belongs to comes from
+ * the URL, not the body — a payment cannot be filed against a different
+ * invoice than the one being posted to.
+ */
+export type PaymentInput = Omit<InvoicePayment, "id" | "invoiceId" | "ownerId" | "createdAt" | "updatedAt">;
 
 export function readPayment(raw: unknown): Validated<PaymentInput> {
   const input = asRecord(raw);
@@ -1156,7 +1161,7 @@ export function readPayment(raw: unknown): Validated<PaymentInput> {
   });
 }
 
-export type CreditInput = Omit<InvoiceCredit, "id" | "recordedAt">;
+export type CreditInput = Omit<InvoiceCredit, "id" | "invoiceId" | "ownerId" | "createdAt" | "updatedAt">;
 
 export function readCredit(raw: unknown): Validated<CreditInput> {
   const input = asRecord(raw);

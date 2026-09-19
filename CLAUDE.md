@@ -140,9 +140,11 @@ stakes are sharper: a client that could set its own balance could mark its own d
   invoice. **Nothing about an invoice's condition is stored**: only `state` (draft / issued / void)
   is recorded, and `invoiceStatus` derives open, part paid, paid and overdue from the ledger and the
   date every time they are asked for — a stored "overdue" is wrong the morning after it is written.
-  A balance is `total − payments − credits` and **may go negative**: an overpaid invoice owes money
-  back, and clamping it at zero loses a customer's money. Aging buckets the **balance**, not the
-  total, and never adds two currencies — invoices in another are counted and reported
+  The totals split in two for the same reason: `lineTotals` is a pure function of the invoice's own
+  lines and is stored with it, while `settlement` (paid, credited, **balance**) is a function of two
+  other collections and is recomputed on every read. A balance **may go negative** — an overpaid
+  invoice owes money back, and clamping it at zero loses a customer's money. Aging buckets the
+  balance, not the total, and never adds two currencies
 - `src/lib/proposal.ts` — `{{token}}` rendering, escaped per format; owns the token vocabulary
 - `src/lib/pdf.ts` / `pdfFonts.ts` — a dependency-free PDF writer: a top-down cursor, tables that
   paginate, the standard 14 fonts and WinAnsi encoding, and image XObjects. No embedded fonts
@@ -176,7 +178,10 @@ stakes are sharper: a client that could set its own balance could mark its own d
   migration file here, not a dashboard edit, or a fresh volume comes up without it. **A JSON field
   reaches the JSVM as a byte array (`types.JSONRaw`)**, so reading one, mutating it and saving runs
   without error and writes nothing — do data backfills in SQL with SQLite's `json_set`, the way
-  `1750000004_multi_approver.js` does, and test the statement (`src/server/migration.test.ts`)
+  `1750000004_multi_approver.js` does, and test the statement (`src/server/migration.test.ts`).
+  `1750000007_ledger_collections.js` fans a JSON array *out* into rows with `json_each`, and its
+  statements are tested the same way — it is the one migration that moves data rather than adding
+  to it, so a dropped row would be a customer's payment with nothing left to recover it from
 - `docker/pb_hooks/` — server-side JS run by PocketBase's own JSVM, not by Bun. **A hook body
   cannot see its file's scope**: declare what a handler needs inside the handler, or `require` it
   there. Code that breaks this rule registers fine and fails only at runtime
@@ -208,10 +213,22 @@ right-hand, full-height panel. Only things meant to be read (a rendered proposal
 queries (`@md:grid-cols-2`), never viewport ones — `sm:grid-cols-4` would still be four columns in
 a 500px panel. `src/components/sheet.test.tsx` asserts both halves of that rule.
 
-**Receivables are a separate collection, not a quote state.** A quote is an offer that gets revised
+**Receivables are separate collections, not a quote state.** A quote is an offer that gets revised
 and superseded; an invoice is a number sitting in somebody's accounts payable. `invoices` keeps
-`state`, `dueDate` and `balance` as real columns because those three are what an aging query filters
-and sorts on — and keeps no `status` column at all, for the reason in `src/lib/receivable.ts`. An
+`state`, `dueDate` and `total` as real columns, and keeps **no `status` and no `balance` column at
+all** — both are derived, for the reason in `src/lib/receivable.ts`.
+
+**A payment and a credit are records, not entries in the invoice's JSON.** `payments` and `credits`
+are their own collections, each row belonging to one invoice, which buys three things: recording one
+is an *insert*, so two people banking cash at the same moment cannot lose a payment (the old
+read-modify-write of the whole invoice could, and `src/server/api.test.ts` has a concurrency test
+that would catch a regression); "what came in last month" becomes answerable without opening every
+invoice; and each row has an owner, a created date and a durable id. Their access rules key off
+`invoice.owner` rather than the row's own owner — that is what stops a signed-in stranger filing a
+payment against your invoice. Every list of invoices goes through `withLedgers` in
+`src/server/db.ts`, which reads the ledger in **two queries for the whole page** rather than two per
+invoice; no other code path may assemble a summary, or it would produce a balance that ignores the
+payments behind it. An
 account carries `paymentTermDays` (the number an invoice's due date is computed from, seeded out of
 the free-text "Net 30" for rows written before receivables) and an advisory `creditLimit`: nothing
 here blocks a quote on it, because a limit somebody typed last year would be wrong more often than
