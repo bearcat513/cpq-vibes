@@ -104,18 +104,13 @@
   --card-foreground: oklch(0.26 0.028 55);
   --popover: oklch(0.982 0.011 86);
   --popover-foreground: oklch(0.26 0.028 55);
-  --primary: oklch(0.45 0.078 148);
-  --primary-foreground: oklch(0.975 0.015 88);
   --secondary: oklch(0.917 0.026 84);
   --secondary-foreground: oklch(0.32 0.03 60);
   --muted: oklch(0.925 0.022 84);
   --muted-foreground: oklch(0.505 0.028 66);
-  --accent: oklch(0.905 0.042 128);
-  --accent-foreground: oklch(0.31 0.05 145);
   --destructive: oklch(0.505 0.16 32);
   --border: oklch(0.868 0.028 78);
   --input: oklch(0.885 0.03 80);
-  --ring: oklch(0.55 0.08 145);
 
   /* Nature, in the order a chart will reach for them. */
   --chart-1: oklch(0.52 0.1 148);
@@ -127,12 +122,7 @@
   /* The binding edge: a deeper stock than the page it holds. */
   --sidebar: oklch(0.932 0.027 80);
   --sidebar-foreground: oklch(0.28 0.03 58);
-  --sidebar-primary: oklch(0.45 0.078 148);
-  --sidebar-primary-foreground: oklch(0.975 0.015 88);
-  --sidebar-accent: oklch(0.9 0.042 128);
-  --sidebar-accent-foreground: oklch(0.31 0.05 145);
   --sidebar-border: oklch(0.855 0.03 78);
-  --sidebar-ring: oklch(0.55 0.08 145);
 
   /*
    * The tooth of the sheet: two fine cross-hatches, a degree or two off the
@@ -150,7 +140,7 @@
   /* The blotches an old sheet has where it was handled and where it was not. */
   --foxing:
     radial-gradient(58rem 42rem at 8% -12%, oklch(0.995 0.02 92 / 0.75), transparent 62%),
-    radial-gradient(46rem 34rem at 104% 4%, oklch(0.93 0.055 128 / 0.4), transparent 58%),
+    radial-gradient(46rem 34rem at 104% 4%, oklch(0.93 0.055 var(--tint-hue) / 0.4), transparent 58%),
     radial-gradient(52rem 40rem at 46% 118%, oklch(0.9 0.05 70 / 0.42), transparent 62%);
   --rule: oklch(0.58 0.12 48 / 0.28);
 }
@@ -163,18 +153,13 @@
   --card-foreground: oklch(0.928 0.018 85);
   --popover: oklch(0.262 0.017 74);
   --popover-foreground: oklch(0.928 0.018 85);
-  --primary: oklch(0.73 0.1 148);
-  --primary-foreground: oklch(0.2 0.03 140);
   --secondary: oklch(0.302 0.018 74);
   --secondary-foreground: oklch(0.928 0.018 85);
   --muted: oklch(0.302 0.018 74);
   --muted-foreground: oklch(0.72 0.02 82);
-  --accent: oklch(0.335 0.038 142);
-  --accent-foreground: oklch(0.93 0.04 140);
   --destructive: oklch(0.63 0.16 32);
   --border: oklch(0.86 0.03 85 / 14%);
   --input: oklch(0.86 0.03 85 / 18%);
-  --ring: oklch(0.6 0.08 148);
 
   --chart-1: oklch(0.7 0.11 148);
   --chart-2: oklch(0.75 0.12 78);
@@ -184,21 +169,154 @@
 
   --sidebar: oklch(0.192 0.015 74);
   --sidebar-foreground: oklch(0.9 0.018 85);
-  --sidebar-primary: oklch(0.73 0.1 148);
-  --sidebar-primary-foreground: oklch(0.2 0.03 140);
-  --sidebar-accent: oklch(0.31 0.036 142);
-  --sidebar-accent-foreground: oklch(0.93 0.04 140);
   --sidebar-border: oklch(0.86 0.03 85 / 12%);
-  --sidebar-ring: oklch(0.6 0.08 148);
 
   --grain:
     repeating-linear-gradient(107deg, transparent 0 4px, oklch(0.95 0.02 85 / 0.014) 4px 5px),
     repeating-linear-gradient(-72deg, transparent 0 7px, oklch(0.95 0.02 85 / 0.01) 7px 8px);
   --foxing:
     radial-gradient(58rem 42rem at 8% -12%, oklch(0.5 0.05 140 / 0.22), transparent 62%),
-    radial-gradient(46rem 34rem at 104% 4%, oklch(0.45 0.05 160 / 0.2), transparent 58%),
+    radial-gradient(46rem 34rem at 104% 4%, oklch(0.45 0.05 var(--tint-hue) / 0.2), transparent 58%),
     radial-gradient(52rem 40rem at 46% 118%, oklch(0.4 0.04 60 / 0.25), transparent 62%);
   --rule: oklch(0.7 0.1 60 / 0.22);
+}
+
+/* ------------------------------- the accent ------------------------------- */
+
+/*
+ * Seven earth tones, of which one is worn at a time.
+ *
+ * An accent is *two numbers*: a hue, and a trim on the chroma. Everything
+ * tinted — primary, the focus ring, the sidebar's live colours — is derived
+ * from those below rather than written out seven times, so the seven cannot
+ * drift apart and adding an eighth is one line here and a name in
+ * `src/lib/preferences.ts`.
+ *
+ * The trim is not decoration: at equal chroma a yellow reads pale and a blue
+ * reads loud, so ochre is given a little more and slate a little less to keep
+ * the seven at the same weight. Lightness never moves, which is what keeps
+ * text on a primary button readable in all seven.
+ *
+ * What does *not* follow the accent: the status tones. Moss still means paid
+ * and clay still means overdue — see `--color-moss` above — because a state
+ * told by colour alone would start lying the moment somebody chose that
+ * colour.
+ */
+
+:root {
+  --tint-hue: 148;
+  --tint-chroma: 1;
+}
+
+[data-accent="moss"] {
+  --tint-hue: 148;
+  --tint-chroma: 1;
+}
+[data-accent="olive"] {
+  --tint-hue: 112;
+  --tint-chroma: 0.95;
+}
+[data-accent="ochre"] {
+  --tint-hue: 85;
+  --tint-chroma: 1.12;
+}
+[data-accent="clay"] {
+  --tint-hue: 52;
+  --tint-chroma: 1.05;
+}
+[data-accent="rust"] {
+  --tint-hue: 32;
+  --tint-chroma: 1;
+}
+[data-accent="heather"] {
+  --tint-hue: 338;
+  --tint-chroma: 0.85;
+}
+[data-accent="slate"] {
+  --tint-hue: 245;
+  --tint-chroma: 0.8;
+}
+
+/*
+ * The tinted half of the palette — declared wherever an accent is *named*,
+ * not only on the page root.
+ *
+ * A custom property that uses `var()` is substituted where it is declared, so
+ * an element that sets its own `--tint-hue` inherits the root's already
+ * resolved `--primary` and would paint in the wrong colour. Redeclaring here
+ * is what lets a swatch in the settings panel carry `data-accent` and paint
+ * itself in that accent, out of this stylesheet, rather than out of a second
+ * list of colours in the TypeScript that can disagree with this one.
+ */
+:root,
+[data-accent] {
+  --primary: oklch(0.45 calc(0.078 * var(--tint-chroma)) var(--tint-hue));
+  --primary-foreground: oklch(0.975 0.015 88);
+  --accent: oklch(0.905 calc(0.042 * var(--tint-chroma)) var(--tint-hue));
+  --accent-foreground: oklch(0.31 calc(0.05 * var(--tint-chroma)) var(--tint-hue));
+  --ring: oklch(0.55 calc(0.08 * var(--tint-chroma)) var(--tint-hue));
+
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.9 calc(0.042 * var(--tint-chroma)) var(--tint-hue));
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-ring: var(--ring);
+}
+
+/* The same seven at dusk: lighter, so they carry on the dark stock. The
+   descendant and the compound selector are both needed — the page root wears
+   the class and the attribute together, a swatch wears only the attribute. */
+.dark,
+.dark [data-accent],
+.dark[data-accent] {
+  --primary: oklch(0.73 calc(0.1 * var(--tint-chroma)) var(--tint-hue));
+  --primary-foreground: oklch(0.2 0.03 var(--tint-hue));
+  --accent: oklch(0.335 calc(0.038 * var(--tint-chroma)) var(--tint-hue));
+  --accent-foreground: oklch(0.93 calc(0.04 * var(--tint-chroma)) var(--tint-hue));
+  --ring: oklch(0.6 calc(0.08 * var(--tint-chroma)) var(--tint-hue));
+
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: oklch(0.31 calc(0.036 * var(--tint-chroma)) var(--tint-hue));
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-ring: var(--ring);
+}
+
+/* -------------------------------- the face -------------------------------- */
+
+/*
+ * What the app is read in.
+ *
+ * System stacks only, for the reason `--font-serif` is one: a webfont is a
+ * network dependency on a tool that runs locally, and the first paint would
+ * be in the fallback anyway. `--font-sans` is what Tailwind's `font-sans` and
+ * the body resolve, so naming a face on <html> re-sets the whole app — and
+ * naming it on a single element previews that face in place, which is how the
+ * picker shows each option in its own letters.
+ *
+ * Headings keep `--font-serif` throughout. The wordmark and the totals are
+ * this app's printed matter, and printed matter sets its titles in a serif.
+ */
+
+[data-font="sans"] {
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji";
+}
+[data-font="grotesque"] {
+  --font-sans: "Helvetica Neue", Helvetica, Inter, "Liberation Sans", Arial, sans-serif;
+}
+[data-font="humanist"] {
+  --font-sans: Optima, Candara, "Gill Sans", "Gill Sans MT", "Trebuchet MS", "Segoe UI", sans-serif;
+}
+[data-font="oldstyle"] {
+  --font-sans: var(--font-serif);
+}
+[data-font="transitional"] {
+  --font-sans: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, ui-serif, serif;
+}
+[data-font="mono"] {
+  --font-sans: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 /* ------------------------------- movement --------------------------------- */
@@ -361,7 +479,7 @@
   }
 
   ::selection {
-    background: color-mix(in oklab, var(--color-fern) 28%, transparent);
+    background: color-mix(in oklab, var(--ring) 30%, transparent);
   }
 }
 

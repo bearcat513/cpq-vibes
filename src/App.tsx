@@ -187,6 +187,17 @@ export function App() {
     return () => media.removeEventListener("change", apply);
   }, [preferences.theme]);
 
+  /**
+   * The accent and the reading face are attributes on the same element, which
+   * is all styles/globals.css needs: both are a handful of custom properties
+   * keyed off `[data-accent]` / `[data-font]`, so changing one re-tints or
+   * re-sets the whole app without a re-render.
+   */
+  useEffect(() => {
+    document.documentElement.dataset.accent = preferences.accent;
+    document.documentElement.dataset.font = preferences.font;
+  }, [preferences.accent, preferences.font]);
+
   // A pending save would otherwise fire into a page that is going away.
   useEffect(() => () => clearTimeout(preferenceTimer.current ?? undefined), []);
 

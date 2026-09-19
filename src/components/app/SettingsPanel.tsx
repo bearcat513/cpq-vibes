@@ -7,8 +7,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Field, Notice, Section } from "./common";
 import { api, type Meta, type SessionUser } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
-import { CURRENCIES, PREFERENCE_LIMITS, THEMES, type Preferences } from "@/lib/preferences";
+import { ACCENTS, CURRENCIES, FONTS, PREFERENCE_LIMITS, THEMES, type Preferences } from "@/lib/preferences";
 import type { PriceBook, ProposalTemplate } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 export type SaveState = "idle" | "saving" | "saved";
 
@@ -57,6 +58,8 @@ export function SettingsPanel(props: Props) {
 
   return (
     <div className="space-y-4">
+      <AppearanceSection preferences={preferences} saveState={props.saveState} onChange={props.onChange} />
+
       <Section
         title="Defaults"
         description="What a new quote starts as. Saved automatically."
@@ -67,21 +70,6 @@ export function SettingsPanel(props: Props) {
         }
       >
         <div className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
-          <Field label="Theme">
-            <Select value={preferences.theme} onValueChange={value => props.onChange({ theme: value as Preferences["theme"] })}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {THEMES.map(theme => (
-                  <SelectItem key={theme} value={theme}>
-                    {theme}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-
           <Field label="Currency">
             <Select
               value={preferences.defaultCurrency}
@@ -276,6 +264,101 @@ export function SettingsPanel(props: Props) {
 
       <PasswordSection email={me.email} onError={props.onError} onNotice={props.onNotice} />
     </div>
+  );
+}
+
+/**
+ * The three choices that change nothing but the look of the place: light or
+ * dark, which of the seven earth tones carries anything live, and the face it
+ * is all read in.
+ *
+ * The swatches paint themselves — each carries its own `data-accent`, so the
+ * colour on the button is the colour the app will wear, out of the stylesheet
+ * rather than out of a second list here that could disagree with it.
+ */
+function AppearanceSection({
+  preferences,
+  saveState,
+  onChange,
+}: {
+  preferences: Preferences;
+  saveState: SaveState;
+  onChange: (patch: Partial<Preferences>) => void;
+}) {
+  const accent = ACCENTS.find(one => one.id === preferences.accent);
+  const font = FONTS.find(one => one.id === preferences.font);
+
+  return (
+    <Section
+      title="Appearance"
+      description="How the app looks while you work. Saved automatically."
+      actions={
+        <span className="text-xs text-muted-foreground">
+          {saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : ""}
+        </span>
+      }
+    >
+      <div className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="Theme" hint="System follows this machine, live.">
+          <Select value={preferences.theme} onValueChange={value => onChange({ theme: value as Preferences["theme"] })}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {THEMES.map(theme => (
+                <SelectItem key={theme} value={theme}>
+                  {theme}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+
+        <Field label="Font" hint={font ? `${font.hint}. Headings stay in the printed serif.` : undefined}>
+          <Select value={preferences.font} onValueChange={value => onChange({ font: value as Preferences["font"] })}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {/* Each option is set in the face it names — the attribute is all
+                  the stylesheet needs, portalled menu or not. */}
+              {FONTS.map(one => (
+                <SelectItem key={one.id} value={one.id} data-font={one.id} className="font-sans">
+                  {one.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+
+        <Field label="Accent" hint={accent ? `${accent.label} — seven earth tones.` : undefined}>
+          <div className="flex h-9 flex-wrap items-center gap-2">
+            {ACCENTS.map(one => {
+              const chosen = one.id === preferences.accent;
+              return (
+                <button
+                  key={one.id}
+                  type="button"
+                  data-accent={one.id}
+                  title={one.label}
+                  aria-pressed={chosen}
+                  onClick={() => onChange({ accent: one.id })}
+                  className={cn(
+                    "bg-primary ring-primary ring-offset-card flex size-7 items-center justify-center rounded-full",
+                    "border border-black/10 ring-offset-2 dark:border-white/10",
+                    "motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:-translate-y-px",
+                    chosen && "ring-2",
+                  )}
+                >
+                  {chosen && <Check className="text-primary-foreground size-3.5" />}
+                  <span className="sr-only">{one.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </Field>
+      </div>
+    </Section>
   );
 }
 

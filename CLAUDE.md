@@ -197,6 +197,15 @@ menus), `margin-rule` (the ruled binding edge on the nav) and `double-rule` (the
 page sets under a heading). Use those rather than `bg-card` / `bg-background` for surfaces, and
 `font-serif` for titles and for a number meant to read as printed matter.
 
+**The accent and the reading face are preferences.** Seven earth tones, each one a `--tint-hue`
+and a chroma trim under `[data-accent=…]`, from which every tinted role (`--primary`, `--ring`,
+the sidebar's live colours) is *derived* — so never write a colour literal for one of those
+roles, and add an accent by adding the hue there and the name to `ACCENTS`. The status tones do
+not follow it: moss still means paid and clay still means overdue, or a state told by colour
+would start lying the moment somebody picked that colour. The face is `--font-sans` under
+`[data-font=…]`, system stacks only; headings keep the serif. `App.tsx` puts both on `<html>`,
+which is why the settings swatches can carry their own `data-accent` and paint themselves.
+
 **Texture is a background layer, never anything text sits on**, and it is built from repeating
 gradients rather than an SVG noise tile — a tiled `feTurbulence` seams visibly at the tile edges
 and puts a faint checkerboard across the page.

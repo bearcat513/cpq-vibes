@@ -4,7 +4,7 @@
  * rendering it. It has to always produce a complete, in-range set.
  */
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_PREFERENCES, PREFERENCE_LIMITS, normalizePreferences } from "./preferences";
+import { ACCENTS, DEFAULT_PREFERENCES, FONTS, PREFERENCE_LIMITS, normalizePreferences } from "./preferences";
 
 describe("normalizePreferences", () => {
   test("anything unusable becomes the defaults", () => {
@@ -66,6 +66,13 @@ describe("normalizePreferences", () => {
     expect(normalizePreferences({ navCollapsed: "yes" }).navCollapsed).toBe(false);
   });
 
+  test("an accent or a face this app cannot dress in falls back", () => {
+    expect(normalizePreferences({ accent: "neon" }).accent).toBe(DEFAULT_PREFERENCES.accent);
+    expect(normalizePreferences({ accent: "slate" }).accent).toBe("slate");
+    expect(normalizePreferences({ font: "comic" }).font).toBe(DEFAULT_PREFERENCES.font);
+    expect(normalizePreferences({ font: "mono" }).font).toBe("mono");
+  });
+
   test("the two booleans default the safe way round", () => {
     // Confirmations on, margin off — the latter because it is the number
     // nobody wants on screen in front of a customer.
@@ -73,5 +80,30 @@ describe("normalizePreferences", () => {
     expect(normalizePreferences({}).showMargin).toBe(false);
     expect(normalizePreferences({ confirmDestructive: false }).confirmDestructive).toBe(false);
     expect(normalizePreferences({ showMargin: "yes" }).showMargin).toBe(false);
+  });
+});
+
+/**
+ * The look is chosen here and drawn in styles/globals.css, and neither half
+ * can see the other: an accent added to the list above with no hue behind it
+ * would offer a swatch that paints nothing and a setting that does nothing.
+ * The stylesheet is the only place either is written down, so it is the thing
+ * asserted against.
+ */
+describe("what the stylesheet has to know about", () => {
+  const css = Bun.file(new URL("../../styles/globals.css", import.meta.url)).text();
+
+  test("every accent is a hue in the stylesheet", async () => {
+    for (const accent of ACCENTS) expect(await css).toContain(`[data-accent="${accent.id}"]`);
+  });
+
+  test("every face is a stack in the stylesheet", async () => {
+    for (const font of FONTS) expect(await css).toContain(`[data-font="${font.id}"]`);
+  });
+
+  test("the seven are seven, and named once each", () => {
+    expect(ACCENTS).toHaveLength(7);
+    expect(new Set(ACCENTS.map(one => one.id)).size).toBe(ACCENTS.length);
+    expect(new Set(FONTS.map(one => one.id)).size).toBe(FONTS.length);
   });
 });

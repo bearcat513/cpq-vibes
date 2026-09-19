@@ -16,9 +16,58 @@ import { CURRENCIES, type CurrencyCode } from "./types";
 
 export type Theme = "system" | "light" | "dark";
 
+/**
+ * The earth tone the app is dressed in.
+ *
+ * Each one is a single hue turned in `styles/globals.css`, where the whole
+ * accent palette — primary, ring, the sidebar's live colours — is derived
+ * from that hue rather than listed. So an accent is two numbers in the
+ * stylesheet and a name here, and the seven cannot drift apart.
+ *
+ * Nothing that *means* something moves with it: a paid invoice is still moss
+ * and an overdue one still clay, because a status told by colour alone would
+ * start lying the moment somebody chose that colour.
+ */
+export type Accent = "moss" | "olive" | "ochre" | "clay" | "rust" | "heather" | "slate";
+
+/** In the order they are offered: the woods, then the soils, then the stone. */
+export const ACCENTS: { id: Accent; label: string }[] = [
+  { id: "moss", label: "Moss" },
+  { id: "olive", label: "Olive" },
+  { id: "ochre", label: "Ochre" },
+  { id: "clay", label: "Clay" },
+  { id: "rust", label: "Rust" },
+  { id: "heather", label: "Heather" },
+  { id: "slate", label: "Slate" },
+];
+
+/**
+ * The face the app is read in.
+ *
+ * System stacks only, for the same reason `--font-serif` is one: a webfont is
+ * a network dependency on a tool that runs locally, and the first paint would
+ * be in the fallback regardless. Headings keep the printed serif whatever is
+ * chosen here — the wordmark and the totals are this app's printed matter —
+ * except of course when the choice *is* that serif.
+ */
+export type FontChoice = "sans" | "grotesque" | "humanist" | "oldstyle" | "transitional" | "mono";
+
+export const FONTS: { id: FontChoice; label: string; hint: string }[] = [
+  { id: "sans", label: "System", hint: "Whatever this machine reads best" },
+  { id: "grotesque", label: "Grotesque", hint: "Neutral, tighter" },
+  { id: "humanist", label: "Humanist", hint: "Calligraphic, open" },
+  { id: "oldstyle", label: "Old style", hint: "The serif on the headings" },
+  { id: "transitional", label: "Transitional", hint: "A serif built to be read small" },
+  { id: "mono", label: "Monospace", hint: "Everything on the same grid" },
+];
+
 export type Preferences = {
   /** "system" follows the OS; the other two override it. */
   theme: Theme;
+  /** Which of the seven earth tones carries anything live. */
+  accent: Accent;
+  /** The face the app is set in. Headings keep the serif. */
+  font: FontChoice;
   /** The currency a new quote is denominated in. */
   defaultCurrency: CurrencyCode;
   /** The price book a new quote starts on; empty means the default book. */
@@ -65,6 +114,8 @@ export const PREFERENCE_LIMITS = {
 
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
+  accent: "moss",
+  font: "sans",
   defaultCurrency: DEFAULT_CURRENCY,
   defaultPriceBookId: "",
   defaultTermMonths: 12,
@@ -79,6 +130,10 @@ export const DEFAULT_PREFERENCES: Preferences = {
 };
 
 export const THEMES: Theme[] = ["system", "light", "dark"];
+
+/** The one member of a closed list, or the default. */
+const oneOf = <T extends string>(list: readonly T[], value: unknown, fallback: T): T =>
+  list.includes(value as T) ? (value as T) : fallback;
 
 export { CURRENCIES };
 
@@ -117,7 +172,9 @@ export function normalizePreferences(raw: unknown): Preferences {
   const locale = String(input.locale ?? "").trim().slice(0, 35);
 
   return {
-    theme: THEMES.includes(input.theme as Theme) ? (input.theme as Theme) : DEFAULT_PREFERENCES.theme,
+    theme: oneOf(THEMES, input.theme, DEFAULT_PREFERENCES.theme),
+    accent: oneOf(ACCENTS.map(a => a.id), input.accent, DEFAULT_PREFERENCES.accent),
+    font: oneOf(FONTS.map(f => f.id), input.font, DEFAULT_PREFERENCES.font),
     defaultCurrency: asCurrency(input.defaultCurrency, DEFAULT_PREFERENCES.defaultCurrency),
     defaultPriceBookId: asRecordId(input.defaultPriceBookId),
     defaultTermMonths: asNumber(input.defaultTermMonths, DEFAULT_PREFERENCES.defaultTermMonths, PREFERENCE_LIMITS.termMonths),
