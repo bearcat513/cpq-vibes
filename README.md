@@ -21,6 +21,11 @@ with a worked example you can take apart.
 
 Usable as a UI or as a local REST API — see [API](#api).
 
+It is dressed as the thing it produces: warm parchment with a laid-paper tooth, walnut ink, forest
+green for anything live, and titles set in a serif — with a dark mode that is the same wood at
+dusk. Motion is slight and always `motion-safe`: screens settle onto the page, the section you are
+on is marked with a leaf's vein, and nothing moves for anyone who has asked it not to.
+
 ## What it does
 
 ### Configure

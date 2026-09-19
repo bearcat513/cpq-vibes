@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { AlertCircle, FileText, Loader2 } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, type SessionUser } from "@/lib/api";
+import { BrandLockup } from "./Brand";
 
 /** PocketBase's own minimum for the `users` collection. */
 const MIN_PASSWORD = 8;
@@ -48,21 +49,32 @@ export function AuthPanel({ onSignedIn }: { onSignedIn: (user: SessionUser) => v
   }
 
   return (
-    <div className="flex h-screen w-full items-center justify-center bg-background p-6 text-foreground">
-      <div className="w-full max-w-sm">
-        <div className="mb-6 flex items-center gap-2">
-          <FileText className="size-5 text-primary" />
-          <div>
-            <h1 className="text-lg font-semibold leading-tight">CPQ</h1>
-            <p className="text-xs text-muted-foreground">
-              {registering
-                ? "Create an account to keep your own catalogue, customers and quotes."
-                : "Sign in to your catalogue and quotes."}
-            </p>
-          </div>
+    <div className="paper relative flex h-screen w-full items-center justify-center overflow-hidden p-6 text-foreground">
+      {/*
+       * Light through leaves: two soft washes that drift very slowly against
+       * each other. It is the only decoration in the app that moves on its
+       * own, and it is on the one screen nobody is trying to work on.
+       */}
+      <div
+        aria-hidden="true"
+        className="motion-safe:animate-drift pointer-events-none absolute -top-1/3 -left-1/4 size-[80vmax] rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--color-fern)_12%,transparent),transparent_62%)] blur-3xl"
+      />
+      <div
+        aria-hidden="true"
+        className="motion-safe:animate-drift pointer-events-none absolute -right-1/4 -bottom-1/3 size-[70vmax] rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--color-clay)_10%,transparent),transparent_60%)] blur-3xl [animation-delay:-12s]"
+      />
+
+      <div className="motion-safe:animate-unfurl relative w-full max-w-sm">
+        <div className="mb-6">
+          <BrandLockup markClassName="size-10 rounded-xl" tagline="configure · price · quote" />
+          <p className="mt-3 max-w-[30ch] font-serif text-sm leading-relaxed text-muted-foreground italic">
+            {registering
+              ? "Your own catalogue, your own customers, your own quotes — kept on your own paper."
+              : "Sign in to your catalogue and quotes."}
+          </p>
         </div>
 
-        <form onSubmit={submit} className="space-y-3 rounded-lg border p-4">
+        <form onSubmit={submit} className="leaf space-y-3 rounded-xl border p-4 shadow-lg">
           {registering && (
             <div>
               <Label htmlFor="auth-name" className="mb-1 text-xs">
@@ -122,7 +134,7 @@ export function AuthPanel({ onSignedIn }: { onSignedIn: (user: SessionUser) => v
           {registering ? "Already have an account?" : "No account yet?"}{" "}
           <button
             type="button"
-            className="font-medium text-foreground underline underline-offset-2"
+            className="decoration-primary/50 font-medium text-foreground underline underline-offset-2 transition-colors hover:text-primary"
             onClick={() => switchMode(registering ? "login" : "register")}
           >
             {registering ? "Sign in" : "Create one"}

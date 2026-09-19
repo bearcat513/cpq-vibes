@@ -26,7 +26,7 @@ export function TotalsPanel({ totals, format, showMargin, approvalsRequired, ter
 
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border bg-card">
+      <div className="leaf rounded-lg border shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]">
         <div className="space-y-1 px-4 py-3 text-sm">
           <Line label="List price" value={format.money(totals.listTotal)} muted />
           {totals.lineDiscountAmount !== 0 && (
@@ -46,9 +46,13 @@ export function TotalsPanel({ totals, format, showMargin, approvalsRequired, ter
           {totals.shipping !== 0 && <Line label="Shipping" value={format.money(totals.shipping)} muted />}
           {totals.taxAmount !== 0 && <Line label="Tax" value={format.money(totals.taxAmount)} muted />}
 
-          <div className="mt-2 flex items-baseline justify-between border-t pt-2">
+          {/* The one number the customer will read back to you, set the way a
+              printed proposal sets it. */}
+          <div className="border-primary/30 mt-2 flex items-baseline justify-between border-t-2 pt-2">
             <span className="font-medium">Total</span>
-            <span className="text-lg font-semibold tabular-nums">{format.money(totals.grandTotal)}</span>
+            <span className="text-primary font-serif text-xl font-semibold tabular-nums">
+              {format.money(totals.grandTotal)}
+            </span>
           </div>
 
           {totals.effectiveDiscountPercent > 0 && (
@@ -61,7 +65,7 @@ export function TotalsPanel({ totals, format, showMargin, approvalsRequired, ter
 
       {/* Revenue shape — the numbers the business reports, not the customer. */}
       {(recurring !== 0 || totals.oneTimeTotal !== 0) && (
-        <div className="rounded-lg border bg-card px-4 py-3 text-sm">
+        <div className="leaf rounded-lg border px-4 py-3 text-sm">
           <p className="mb-2 flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
             <TrendingUp className="size-3.5" /> Contract
           </p>

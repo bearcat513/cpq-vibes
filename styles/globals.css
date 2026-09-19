@@ -3,6 +3,27 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Parchment and nature.
+ *
+ * A CPQ tool spends its life making documents that end up on paper, so the
+ * app is dressed as the thing it produces: a warm sheet with a grain to it,
+ * ruled and bound, written on in walnut ink, with the greens of the outdoors
+ * carrying anything that means "yes, this is live, this is yours".
+ *
+ * Every colour is oklch, which is what makes a palette like this hold
+ * together: the parchments are all the same hue with the lightness stepped,
+ * so a card sits *on* the page rather than being a different paper stock, and
+ * the greens keep their chroma when they go dark instead of turning to mud.
+ *
+ * Two rules the rest of the app depends on:
+ *
+ * - **Nothing is styled by colour alone.** The status tones still differ in
+ *   shape and wording; the palette only makes them pleasant.
+ * - **Texture never touches legibility.** The grain is a background layer at
+ *   a few percent opacity, so text always sits on flat colour.
+ */
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -41,80 +62,320 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
+/*
+ * The brand's own names, which are deliberately *things* rather than shades.
+ *
+ * `bg-moss/10` says what it is for in a way `bg-green-600/10` never does, and
+ * when the palette is retuned there is one place to do it.
+ */
+@theme {
+  /* A serif for anything that reads as printed matter: titles, wordmarks,
+     the totals that end up on a proposal. The stack is all system faces —
+     a webfont would be a network dependency on a tool that runs locally. */
+  --font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, ui-serif, serif;
+
+  --color-parchment: oklch(0.955 0.018 82);
+  --color-vellum: oklch(0.978 0.013 86);
+  --color-ink: oklch(0.26 0.028 55);
+  --color-bark: oklch(0.38 0.035 58);
+  --color-moss: oklch(0.45 0.078 148);
+  --color-fern: oklch(0.62 0.11 145);
+  --color-lichen: oklch(0.74 0.06 160);
+  --color-clay: oklch(0.58 0.12 48);
+  --color-berry: oklch(0.48 0.12 12);
+
+  --animate-rise: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-unfurl: unfurl 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-sway: sway 3.2s ease-in-out infinite;
+  --animate-vein: vein 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-settle: settle 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-drift: drift 34s ease-in-out infinite alternate;
+  --animate-ripen: ripen 2.6s ease-in-out infinite;
+}
+
+/* ------------------------------- the paper -------------------------------- */
+
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  --background: oklch(0.955 0.018 82);
+  --foreground: oklch(0.26 0.028 55);
+  --card: oklch(0.978 0.013 86);
+  --card-foreground: oklch(0.26 0.028 55);
+  --popover: oklch(0.982 0.011 86);
+  --popover-foreground: oklch(0.26 0.028 55);
+  --primary: oklch(0.45 0.078 148);
+  --primary-foreground: oklch(0.975 0.015 88);
+  --secondary: oklch(0.917 0.026 84);
+  --secondary-foreground: oklch(0.32 0.03 60);
+  --muted: oklch(0.925 0.022 84);
+  --muted-foreground: oklch(0.505 0.028 66);
+  --accent: oklch(0.905 0.042 128);
+  --accent-foreground: oklch(0.31 0.05 145);
+  --destructive: oklch(0.505 0.16 32);
+  --border: oklch(0.868 0.028 78);
+  --input: oklch(0.885 0.03 80);
+  --ring: oklch(0.55 0.08 145);
+
+  /* Nature, in the order a chart will reach for them. */
+  --chart-1: oklch(0.52 0.1 148);
+  --chart-2: oklch(0.62 0.11 78);
+  --chart-3: oklch(0.58 0.12 48);
+  --chart-4: oklch(0.56 0.07 210);
+  --chart-5: oklch(0.5 0.12 12);
+
+  /* The binding edge: a deeper stock than the page it holds. */
+  --sidebar: oklch(0.932 0.027 80);
+  --sidebar-foreground: oklch(0.28 0.03 58);
+  --sidebar-primary: oklch(0.45 0.078 148);
+  --sidebar-primary-foreground: oklch(0.975 0.015 88);
+  --sidebar-accent: oklch(0.9 0.042 128);
+  --sidebar-accent-foreground: oklch(0.31 0.05 145);
+  --sidebar-border: oklch(0.855 0.03 78);
+  --sidebar-ring: oklch(0.55 0.08 145);
+
+  /*
+   * The tooth of the sheet: two fine cross-hatches, a degree or two off the
+   * axes so they never line up with anything on the page.
+   *
+   * Gradients rather than an SVG noise tile, which is the obvious way to do
+   * this and the wrong one — a tiled `feTurbulence` seams visibly at the tile
+   * edges whatever `stitchTiles` claims, and a page-sized checkerboard is a
+   * worse artefact than no texture at all. A repeating gradient is continuous
+   * by construction, and costs the compositor nothing.
+   */
+  --grain:
+    repeating-linear-gradient(107deg, transparent 0 4px, oklch(0.35 0.04 60 / 0.022) 4px 5px),
+    repeating-linear-gradient(-72deg, transparent 0 7px, oklch(0.35 0.04 60 / 0.016) 7px 8px);
+  /* The blotches an old sheet has where it was handled and where it was not. */
+  --foxing:
+    radial-gradient(58rem 42rem at 8% -12%, oklch(0.995 0.02 92 / 0.75), transparent 62%),
+    radial-gradient(46rem 34rem at 104% 4%, oklch(0.93 0.055 128 / 0.4), transparent 58%),
+    radial-gradient(52rem 40rem at 46% 118%, oklch(0.9 0.05 70 / 0.42), transparent 62%);
+  --rule: oklch(0.58 0.12 48 / 0.28);
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Dusk in the same wood: the paper is gone, the ink is what is left. */
+  --background: oklch(0.213 0.016 74);
+  --foreground: oklch(0.928 0.018 85);
+  --card: oklch(0.258 0.017 74);
+  --card-foreground: oklch(0.928 0.018 85);
+  --popover: oklch(0.262 0.017 74);
+  --popover-foreground: oklch(0.928 0.018 85);
+  --primary: oklch(0.73 0.1 148);
+  --primary-foreground: oklch(0.2 0.03 140);
+  --secondary: oklch(0.302 0.018 74);
+  --secondary-foreground: oklch(0.928 0.018 85);
+  --muted: oklch(0.302 0.018 74);
+  --muted-foreground: oklch(0.72 0.02 82);
+  --accent: oklch(0.335 0.038 142);
+  --accent-foreground: oklch(0.93 0.04 140);
+  --destructive: oklch(0.63 0.16 32);
+  --border: oklch(0.86 0.03 85 / 14%);
+  --input: oklch(0.86 0.03 85 / 18%);
+  --ring: oklch(0.6 0.08 148);
+
+  --chart-1: oklch(0.7 0.11 148);
+  --chart-2: oklch(0.75 0.12 78);
+  --chart-3: oklch(0.7 0.13 48);
+  --chart-4: oklch(0.68 0.08 210);
+  --chart-5: oklch(0.65 0.14 12);
+
+  --sidebar: oklch(0.192 0.015 74);
+  --sidebar-foreground: oklch(0.9 0.018 85);
+  --sidebar-primary: oklch(0.73 0.1 148);
+  --sidebar-primary-foreground: oklch(0.2 0.03 140);
+  --sidebar-accent: oklch(0.31 0.036 142);
+  --sidebar-accent-foreground: oklch(0.93 0.04 140);
+  --sidebar-border: oklch(0.86 0.03 85 / 12%);
+  --sidebar-ring: oklch(0.6 0.08 148);
+
+  --grain:
+    repeating-linear-gradient(107deg, transparent 0 4px, oklch(0.95 0.02 85 / 0.014) 4px 5px),
+    repeating-linear-gradient(-72deg, transparent 0 7px, oklch(0.95 0.02 85 / 0.01) 7px 8px);
+  --foxing:
+    radial-gradient(58rem 42rem at 8% -12%, oklch(0.5 0.05 140 / 0.22), transparent 62%),
+    radial-gradient(46rem 34rem at 104% 4%, oklch(0.45 0.05 160 / 0.2), transparent 58%),
+    radial-gradient(52rem 40rem at 46% 118%, oklch(0.4 0.04 60 / 0.25), transparent 62%);
+  --rule: oklch(0.7 0.1 60 / 0.22);
+}
+
+/* ------------------------------- movement --------------------------------- */
+
+/*
+ * Motion here is the paper's: things settle onto the page, a leaf sways, a
+ * mark is drawn along its length. Nothing spins, nothing bounces, and every
+ * duration is under half a second — an animation you notice twice is an
+ * animation you will resent by the hundredth quote.
+ */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes unfurl {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(-0.35rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The active-page marker, drawn down its length like a vein. */
+@keyframes vein {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes sway {
+  0%,
+  100% {
+    transform: rotate(-3.5deg);
+  }
+  50% {
+    transform: rotate(3.5deg);
+  }
+}
+
+/* The auth screen's light, moving the way it would through leaves. */
+@keyframes drift {
+  from {
+    transform: translate3d(-2%, -1%, 0) scale(1.02);
+  }
+  to {
+    transform: translate3d(2%, 2%, 0) scale(1.06);
+  }
+}
+
+/* Something waiting on a person: a slow swell rather than a blink. */
+@keyframes ripen {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.72;
+    transform: scale(0.94);
+  }
+}
+
+/* -------------------------------- surfaces -------------------------------- */
+
+/** The page itself: grain over blotches over the flat parchment. */
+@utility paper {
+  background-color: var(--background);
+  background-image: var(--grain), var(--foxing);
+}
+
+/** A sheet laid on the page — a card, a panel, a menu. */
+@utility leaf {
+  background-color: var(--card);
+  background-image: var(--grain);
+}
+
+/**
+ * The ruled margin down a bound edge, the way a ledger has one.
+ *
+ * Drawn as a border image rather than an element so it costs nothing in the
+ * markup and cannot be scrolled away from what it belongs to.
+ */
+@utility margin-rule {
+  position: relative;
+
+  &::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    right: 0.5rem;
+    width: 1px;
+    background: linear-gradient(to bottom, transparent, var(--rule) 12%, var(--rule) 88%, transparent);
+    pointer-events: none;
+  }
+}
+
+/** A hairline second rule under a heading, the way a printed page sets one. */
+@utility double-rule {
+  box-shadow: 0 1px 0 var(--card), 0 2px 0 color-mix(in oklab, var(--border) 60%, transparent);
+}
+
+/** Anything that should lift slightly when it is pointed at. */
+@utility liftable {
+  transition:
+    transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.2s ease;
+  &:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px -10px oklch(0.3 0.04 60 / 0.5);
+  }
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground;
+  }
+
+  /* Printed matter sets its titles in a serif; so does this. */
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-serif);
+    letter-spacing: 0.005em;
+  }
+
+  /* Money and quantities line up in a column or they are not numbers. */
+  :where(td, th) {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--color-fern) 28%, transparent);
+  }
+}
+
+/*
+ * Anyone who has asked for less movement gets none of it — including the
+ * infinite ones, which are the animations that actually wear on people.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }

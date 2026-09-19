@@ -8,6 +8,7 @@
 import type { ReactNode } from "react";
 import { AlertCircle, AlertTriangle, Info } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { BrandWatermark } from "./Brand";
 import { Label } from "@/components/ui/label";
 import { formatMoney, formatPercent } from "@/lib/money";
 import type { CurrencyCode, QuoteStatus } from "@/lib/types";
@@ -112,10 +113,17 @@ export function Section({
   children: ReactNode;
 }) {
   return (
-    <section className={cn("rounded-lg border bg-card", className)}>
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
+    <section
+      className={cn(
+        "leaf motion-safe:animate-rise rounded-lg border shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]",
+        className,
+      )}
+    >
+      {/* A printed page rules twice under a heading: a firm line and a
+          hairline. `double-rule` is the second one. */}
+      <div className="double-rule flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold">{title}</h2>
+          <h2 className="font-serif text-[0.95rem] leading-tight font-semibold tracking-tight">{title}</h2>
           {description && <p className="text-xs text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -127,9 +135,12 @@ export function Section({
 
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="px-4 py-10 text-center">
-      <p className="text-sm font-medium">{title}</p>
-      {children && <div className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">{children}</div>}
+    <div className="relative overflow-hidden px-4 py-10 text-center">
+      {/* The one screen with room for decoration, and the one that most needs
+          to look deliberate rather than broken. */}
+      <BrandWatermark className="-top-3 left-1/2 size-28 -translate-x-1/2" />
+      <p className="relative font-serif text-base font-semibold">{title}</p>
+      {children && <div className="relative mx-auto mt-1 max-w-md text-xs text-muted-foreground">{children}</div>}
     </div>
   );
 }
@@ -137,9 +148,11 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
 /* --------------------------------- notices ------------------------------- */
 
 const NOTICE_STYLE = {
-  error: { className: "bg-destructive/10 text-destructive", Icon: AlertCircle },
-  warning: { className: "bg-amber-500/10 text-amber-700 dark:text-amber-300", Icon: AlertTriangle },
-  info: { className: "bg-sky-500/10 text-sky-700 dark:text-sky-300", Icon: Info },
+  error: { className: "bg-destructive/10 text-destructive border-destructive/20", Icon: AlertCircle },
+  warning: { className: "bg-chart-2/15 text-chart-3 border-chart-2/25 dark:text-chart-2", Icon: AlertTriangle },
+  // Slate rather than moss: green already means "this went well" on a badge,
+  // and an informational line is not a result.
+  info: { className: "bg-chart-4/12 text-chart-4 border-chart-4/25", Icon: Info },
 } as const;
 
 export type NoticeKind = keyof typeof NOTICE_STYLE;
@@ -156,7 +169,13 @@ export function Notice({ kind, lines, className }: { kind: NoticeKind; lines: st
   const { className: tone, Icon } = NOTICE_STYLE[kind];
 
   return (
-    <div className={cn("flex items-start gap-2 rounded-md p-2.5 text-xs", tone, className)}>
+    <div
+      className={cn(
+        "motion-safe:animate-settle flex items-start gap-2 rounded-md border p-2.5 text-xs",
+        tone,
+        className,
+      )}
+    >
       <Icon className="mt-px size-3.5 shrink-0" />
       <ul className="min-w-0 space-y-1">
         {lines.map((line, index) => (

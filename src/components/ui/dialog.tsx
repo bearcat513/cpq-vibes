@@ -35,18 +35,21 @@ export function Dialog({ title, description, onClose, children, footer, classNam
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:items-center"
+      className="animate-in fade-in fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[oklch(0.22_0.03_60/0.45)] p-4 backdrop-blur-[1px] duration-200 sm:items-center"
       onClick={event => event.target === event.currentTarget && onClose()}
     >
       <div
-        className={cn("my-auto w-full max-w-md rounded-lg border bg-background shadow-lg", className)}
+        className={cn(
+          "leaf animate-in zoom-in-95 slide-in-from-bottom-2 my-auto w-full max-w-md rounded-xl border shadow-2xl duration-250 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          className,
+        )}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
-        <div className="flex items-start justify-between gap-3 border-b px-4 py-3">
+        <div className="double-rule flex items-start justify-between gap-3 border-b px-4 py-3">
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold">{title}</h2>
+            <h2 className="truncate font-serif text-[0.95rem] font-semibold tracking-tight">{title}</h2>
             {description && <p className="text-xs text-muted-foreground">{description}</p>}
           </div>
           <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="Close">

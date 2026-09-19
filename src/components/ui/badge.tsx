@@ -9,16 +9,18 @@ import { cn } from "@/lib/utils";
  * glance, which is the only reason anyone scans a list of quotes.
  */
 const badgeVariants = cva(
-  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap [&_svg]:size-3",
+  "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap transition-colors duration-200 [&_svg]:size-3",
   {
     variants: {
+      // Tones out of the same wood as the rest of the palette: moss for
+      // settled, ochre for waiting, clay for gone wrong, lichen for in hand.
       tone: {
         neutral: "border-transparent bg-muted text-muted-foreground",
-        info: "border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300",
-        pending: "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-300",
-        success: "border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+        info: "border-transparent bg-chart-4/15 text-chart-4 dark:text-chart-4",
+        pending: "border-transparent bg-chart-2/20 text-chart-3 dark:text-chart-2",
+        success: "border-transparent bg-primary/15 text-primary",
         danger: "border-transparent bg-destructive/15 text-destructive",
-        outline: "border-border text-muted-foreground",
+        outline: "border-border/80 text-muted-foreground",
       },
     },
     defaultVariants: { tone: "neutral" },

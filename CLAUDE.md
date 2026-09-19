@@ -162,6 +162,24 @@ runs the same code for the record — never fork them.
 Each collection keeps real columns for what the database queries on and one JSON field for the
 nested domain object the app reads whole.
 
+**The look is parchment and nature, and it lives in `styles/globals.css`.** The palette is oklch —
+warm paper, walnut ink, forest and moss for anything live, clay and ochre for anything waiting or
+wrong — with a dark mode that is the same wood at dusk. Four utilities carry it: `paper` (the page:
+flat parchment, soft blotches and a laid-paper hatch), `leaf` (a sheet on it — cards, panels,
+menus), `margin-rule` (the ruled binding edge on the nav) and `double-rule` (the hairline a printed
+page sets under a heading). Use those rather than `bg-card` / `bg-background` for surfaces, and
+`font-serif` for titles and for a number meant to read as printed matter.
+
+**Texture is a background layer, never anything text sits on**, and it is built from repeating
+gradients rather than an SVG noise tile — a tiled `feTurbulence` seams visibly at the tile edges
+and puts a faint checkerboard across the page.
+
+**Motion is `motion-safe:` and under half a second.** The named animations (`rise`, `unfurl`,
+`settle`, `vein`, `sway`, `drift`, `ripen`) are declared as `--animate-*` in the theme, so use
+`animate-rise` rather than an inline keyframe. Entrance animations fill `both` and therefore start
+at `opacity: 0` — which is why a screenshot tool that does not run animations photographs an empty
+page. `prefers-reduced-motion` is honoured globally at the bottom of the stylesheet.
+
 **Forms are panels, previews are modals.** Every editor opens in `components/ui/sheet.tsx` — a
 right-hand, full-height panel. Only things meant to be read (a rendered proposal, a PDF) use
 `components/ui/dialog.tsx`. The sheet's body is a `@container`, so forms inside it use container

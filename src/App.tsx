@@ -15,6 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AccountsView } from "@/components/app/AccountsView";
+import { BrandLockup, BrandMark } from "@/components/app/Brand";
 import { ApprovalsQueue } from "@/components/app/ApprovalsQueue";
 import { AuthPanel } from "@/components/app/AuthPanel";
 import { CatalogView } from "@/components/app/CatalogView";
@@ -254,21 +255,31 @@ export function App() {
   const navCollapsed = preferences.navCollapsed;
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="paper min-h-screen text-foreground">
       <div className="mx-auto flex max-w-[110rem] flex-col gap-0 lg:flex-row">
         {/* ------------------------------ nav ------------------------------ */}
 
         <aside
           className={cn(
-            "shrink-0 border-b transition-[width] duration-200 lg:flex lg:h-screen lg:flex-col lg:border-r lg:border-b-0",
+            "bg-sidebar/70 text-sidebar-foreground shrink-0 border-b backdrop-blur-[2px]",
+            "transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+            "lg:margin-rule lg:flex lg:h-screen lg:flex-col lg:border-r lg:border-b-0",
             // Collapsing is a desktop affordance: on a phone the nav is
             // already a horizontal strip, and there is nothing to reclaim.
             navCollapsed ? "lg:w-16" : "lg:w-56",
           )}
         >
-          <div className={cn("flex items-center gap-2 px-4 py-3", navCollapsed && "lg:justify-center lg:px-0")}>
-            <ScrollText className="size-5 shrink-0 text-primary" />
-            <span className={cn("font-semibold", navCollapsed && "lg:hidden")}>CPQ</span>
+          <div className={cn("flex items-center px-4 py-3.5", navCollapsed && "lg:justify-center lg:px-0")}>
+            {navCollapsed ? (
+              <span className="group hidden lg:block">
+                <BrandMark />
+              </span>
+            ) : (
+              <BrandLockup />
+            )}
+            {/* Collapsed on a desktop, the lockup still belongs on a phone,
+                where the nav is a strip across the top and has the room. */}
+            {navCollapsed && <BrandLockup className="lg:hidden" />}
           </div>
 
           <nav className="flex gap-1 overflow-x-auto px-2 pb-2 lg:flex-col lg:overflow-visible">
@@ -290,19 +301,35 @@ export function App() {
                   title={navCollapsed ? label : undefined}
                   aria-label={label}
                   className={cn(
-                    "relative flex items-center gap-2 rounded-md px-3 py-2 text-sm whitespace-nowrap transition-colors",
+                    "group relative flex items-center gap-2 rounded-md px-3 py-2 text-sm whitespace-nowrap",
+                    "transition-[color,background-color,transform] duration-200",
                     navCollapsed && "lg:justify-center lg:px-0",
-                    active ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent/60",
+                    active
+                      ? "bg-accent text-accent-foreground font-medium"
+                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground motion-safe:hover:translate-x-0.5",
                   )}
                 >
-                  <Icon className="size-4 shrink-0" />
+                  {/* The page you are on is marked the way a leaf is veined:
+                      a stroke drawn down its length, not a filled block. */}
+                  {active && (
+                    <span
+                      aria-hidden="true"
+                      className="bg-primary motion-safe:animate-vein absolute top-1.5 bottom-1.5 left-0 w-[3px] origin-top rounded-full"
+                    />
+                  )}
+                  <Icon
+                    className={cn(
+                      "size-4 shrink-0 transition-transform duration-200",
+                      active ? "text-primary" : "motion-safe:group-hover:scale-110",
+                    )}
+                  />
                   <span className={cn(navCollapsed && "lg:hidden")}>{label}</span>
 
                   {badge > 0 &&
                     (navCollapsed ? (
                       // Collapsed, the count has nowhere to sit beside the
                       // label, so it becomes a corner dot with the number.
-                      <span className="absolute top-1 right-1 hidden size-4 items-center justify-center rounded-full bg-amber-500 text-[10px] font-medium text-white lg:flex">
+                      <span className="bg-clay motion-safe:animate-ripen absolute top-1 right-1 hidden size-4 items-center justify-center rounded-full text-[10px] font-medium text-white lg:flex">
                         {badge > 9 ? "9+" : badge}
                       </span>
                     ) : (
@@ -395,95 +422,103 @@ export function App() {
             </div>
           )}
 
-          {editingQuote ? (
-            <QuoteEditor
-              quote={openQuote}
-              me={me}
-              preferences={preferences}
-              products={products}
-              priceBooks={priceBooks}
-              accounts={accounts}
-              pricingRules={pricingRules}
-              approvalRules={approvalRules}
-              templates={templates}
-              onSaved={onQuoteSaved}
-              onDeleted={() => {
-                setOpenQuote(undefined);
-                void refresh().catch(fail);
-              }}
-              onBack={() => setOpenQuote(undefined)}
-              onShare={(id, title) => setSharing({ kind: "quotes", id, title })}
-              onError={fail}
-              onNotice={notice}
-              confirmed={confirmed}
-            />
-          ) : view === "quotes" ? (
-            <QuoteList
-              quotes={quotes}
-              preferences={preferences}
-              onOpen={id => void openQuoteById(id)}
-              onNew={() => setOpenQuote(null)}
-            />
-          ) : view === "approvals" ? (
-            <ApprovalsQueue quotes={awaiting} preferences={preferences} onOpen={id => void openQuoteById(id)} />
-          ) : view === "catalog" ? (
-            <CatalogView
-              products={products}
-              priceBooks={priceBooks}
-              preferences={preferences}
-              myId={me.id}
-              onChanged={refresh}
-              onShare={(kind, id, title) => setSharing({ kind, id, title })}
-              onError={fail}
-              onNotice={notice}
-              confirmed={confirmed}
-            />
-          ) : view === "rules" ? (
-            <RulesView
-              pricingRules={pricingRules}
-              approvalRules={approvalRules}
-              products={products}
-              directory={directory}
-              onChanged={refresh}
-              onError={fail}
-              confirmed={confirmed}
-            />
-          ) : view === "customers" ? (
-            <AccountsView
-              accounts={accounts}
-              priceBooks={priceBooks}
-              onChanged={refresh}
-              onError={fail}
-              confirmed={confirmed}
-            />
-          ) : view === "templates" ? (
-            <TemplatesView
-              templates={templates}
-              sellerName={me.name}
-              sellerEmail={me.email}
-              locale={preferences.locale}
-              myId={me.id}
-              onChanged={refresh}
-              onShare={(kind, id, title) => setSharing({ kind, id, title })}
-              onError={fail}
-              confirmed={confirmed}
-            />
-          ) : (
-            <SettingsPanel
-              me={me}
-              preferences={preferences}
-              saveState={preferenceSave}
-              priceBooks={priceBooks}
-              templates={templates}
-              meta={meta}
-              hasCatalogue={products.length > 0}
-              onChange={updatePreferences}
-              onReset={() => applyPreferences({ ...DEFAULT_PREFERENCES })}
-              onSampleInstalled={refresh}
-              onError={fail}
-              onNotice={notice}
-            />
-          )}
+          {/*
+           * Keyed on what is being shown, so React remounts the whole screen
+           * when you move between them and the entrance animation runs again.
+           * Without the key the class is applied once, at first paint, and
+           * every view after that arrives without ceremony.
+           */}
+          <div key={editingQuote ? `quote:${openQuote?.id ?? "new"}` : view} className="motion-safe:animate-unfurl">
+            {editingQuote ? (
+              <QuoteEditor
+                quote={openQuote}
+                me={me}
+                preferences={preferences}
+                products={products}
+                priceBooks={priceBooks}
+                accounts={accounts}
+                pricingRules={pricingRules}
+                approvalRules={approvalRules}
+                templates={templates}
+                onSaved={onQuoteSaved}
+                onDeleted={() => {
+                  setOpenQuote(undefined);
+                  void refresh().catch(fail);
+                }}
+                onBack={() => setOpenQuote(undefined)}
+                onShare={(id, title) => setSharing({ kind: "quotes", id, title })}
+                onError={fail}
+                onNotice={notice}
+                confirmed={confirmed}
+              />
+            ) : view === "quotes" ? (
+              <QuoteList
+                quotes={quotes}
+                preferences={preferences}
+                onOpen={id => void openQuoteById(id)}
+                onNew={() => setOpenQuote(null)}
+              />
+            ) : view === "approvals" ? (
+              <ApprovalsQueue quotes={awaiting} preferences={preferences} onOpen={id => void openQuoteById(id)} />
+            ) : view === "catalog" ? (
+              <CatalogView
+                products={products}
+                priceBooks={priceBooks}
+                preferences={preferences}
+                myId={me.id}
+                onChanged={refresh}
+                onShare={(kind, id, title) => setSharing({ kind, id, title })}
+                onError={fail}
+                onNotice={notice}
+                confirmed={confirmed}
+              />
+            ) : view === "rules" ? (
+              <RulesView
+                pricingRules={pricingRules}
+                approvalRules={approvalRules}
+                products={products}
+                directory={directory}
+                onChanged={refresh}
+                onError={fail}
+                confirmed={confirmed}
+              />
+            ) : view === "customers" ? (
+              <AccountsView
+                accounts={accounts}
+                priceBooks={priceBooks}
+                onChanged={refresh}
+                onError={fail}
+                confirmed={confirmed}
+              />
+            ) : view === "templates" ? (
+              <TemplatesView
+                templates={templates}
+                sellerName={me.name}
+                sellerEmail={me.email}
+                locale={preferences.locale}
+                myId={me.id}
+                onChanged={refresh}
+                onShare={(kind, id, title) => setSharing({ kind, id, title })}
+                onError={fail}
+                confirmed={confirmed}
+              />
+            ) : (
+              <SettingsPanel
+                me={me}
+                preferences={preferences}
+                saveState={preferenceSave}
+                priceBooks={priceBooks}
+                templates={templates}
+                meta={meta}
+                hasCatalogue={products.length > 0}
+                onChange={updatePreferences}
+                onReset={() => applyPreferences({ ...DEFAULT_PREFERENCES })}
+                onSampleInstalled={refresh}
+                onError={fail}
+                onNotice={notice}
+              />
+            )}
+          </div>
         </main>
       </div>
 
