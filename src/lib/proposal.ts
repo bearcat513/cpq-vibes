@@ -18,7 +18,7 @@
  * dead end with a dependency attached.
  */
 import { formatMoney, formatPercent } from "./money";
-import type { CurrencyCode, PricedLine, ProposalFormat, Quote } from "./types";
+import type { Address, CurrencyCode, PricedLine, ProposalFormat, Quote } from "./types";
 
 export const MAX_TEMPLATE_NAME_LENGTH = 120;
 export const MAX_TEMPLATE_BODY_LENGTH = 200_000;
@@ -73,9 +73,11 @@ export const PROPOSAL_TOKENS: { token: string; description: string }[] = [
   { token: "quote.notes", description: "The customer-facing note on the quote" },
   { token: "customer.name", description: "The account's name" },
   { token: "customer.contactName", description: "Who it is addressed to" },
+  { token: "customer.contactTitle", description: "Their job title" },
   { token: "customer.contactEmail", description: "Their email address" },
   { token: "customer.contactPhone", description: "Their phone number" },
   { token: "customer.address", description: "Billing address, one line per part" },
+  { token: "customer.shippingAddress", description: "Where it ships, one line per part" },
   { token: "customer.paymentTerms", description: "Payment terms, e.g. Net 30" },
   { token: "seller.name", description: "Your name" },
   { token: "seller.email", description: "Your email address" },
@@ -136,8 +138,8 @@ const escaper = (format: ProposalFormat) =>
 
 const isoDate = (value: string) => (value ? value.slice(0, 10) : "");
 
-function addressLines(quote: Quote): string[] {
-  const address = quote.customer.billingAddress;
+function addressLines(address: Address | undefined): string[] {
+  if (!address) return [];
   return [
     address.line1,
     address.line2,
@@ -153,6 +155,12 @@ function resolve(context: ProposalContext, format: ProposalFormat): Record<strin
   const money = (value: number) => formatMoney(value, currency, locale);
   const totals = quote.totals;
 
+  /** A multi-line address, already written in the target format. */
+  const address = (value: Address) =>
+    addressLines(value)
+      .map(part => (format === "html" ? escapeHtml(part) : part))
+      .join(format === "html" ? "<br />" : "\n");
+
   return {
     "quote.number": quote.number,
     "quote.name": quote.name,
@@ -165,13 +173,13 @@ function resolve(context: ProposalContext, format: ProposalFormat): Record<strin
     "quote.notes": quote.notes,
     "customer.name": quote.customer.name,
     "customer.contactName": quote.customer.contactName,
+    "customer.contactTitle": quote.customer.contactTitle,
     "customer.contactEmail": quote.customer.contactEmail,
     "customer.contactPhone": quote.customer.contactPhone,
     // Already carries the format's own line break, so it is rendered raw —
     // see RAW_TOKENS below.
-    "customer.address": addressLines(quote)
-      .map(part => (format === "html" ? escapeHtml(part) : part))
-      .join(format === "html" ? "<br />" : "\n"),
+    "customer.address": address(quote.customer.billingAddress),
+    "customer.shippingAddress": address(quote.customer.shippingAddress),
     "customer.paymentTerms": quote.customer.paymentTerms,
     "seller.name": context.sellerName,
     "seller.email": context.sellerEmail,
@@ -215,7 +223,7 @@ function resolveLine(line: PricedLine, index: number, currency: CurrencyCode, lo
  * angle brackets. Both are produced by this file, from data that was escaped
  * as it went in, so nothing user-written reaches the document unescaped.
  */
-const RAW_TOKENS = new Set([LINE_TABLE_TOKEN, "customer.address"]);
+const RAW_TOKENS = new Set([LINE_TABLE_TOKEN, "customer.address", "customer.shippingAddress"]);
 
 const TOKEN_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\}\}/g;
 

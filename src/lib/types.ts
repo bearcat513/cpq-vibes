@@ -436,15 +436,89 @@ export type Address = {
 
 export const EMPTY_ADDRESS: Address = { line1: "", line2: "", city: "", state: "", postalCode: "", country: "" };
 
+/**
+ * What one person at a customer is there for.
+ *
+ * A deal is rarely one relationship: the person who negotiates is not the one
+ * who pays the invoice, and neither is the one who signs. The role is what
+ * lets a proposal be addressed to the right one of them without anybody
+ * having to remember which line of the notes field said so.
+ */
+export type ContactRole = "commercial" | "billing" | "technical" | "signatory" | "other";
+
+export const CONTACT_ROLES: ContactRole[] = ["commercial", "billing", "technical", "signatory", "other"];
+
+export const CONTACT_ROLE_LABELS: Record<ContactRole, string> = {
+  commercial: "Commercial",
+  billing: "Billing",
+  technical: "Technical",
+  signatory: "Signatory",
+  other: "Other",
+};
+
+/** One person at a customer. */
+export type AccountContact = {
+  id: string;
+  name: string;
+  /** Their job title — "VP Operations". Shown, never matched on. */
+  title: string;
+  email: string;
+  phone: string;
+  role: ContactRole;
+  /**
+   * The one a quote is addressed to. Exactly one contact carries it, which
+   * `readAccount` enforces rather than trusting: a proposal addressed to two
+   * people or to none is a document nobody can send.
+   */
+  primary: boolean;
+};
+
+export const EMPTY_CONTACT: Omit<AccountContact, "id"> = {
+  name: "",
+  title: "",
+  email: "",
+  phone: "",
+  role: "commercial",
+  primary: false,
+};
+
+/**
+ * Where a customer stands with you.
+ *
+ * Three states rather than a pipeline: this is a quoting tool, not a CRM, and
+ * the only distinction it can honestly make is between somebody you are
+ * chasing, somebody who has bought, and somebody you have stopped quoting.
+ * `inactive` is the useful one — it keeps a customer's history without
+ * keeping them in the list you scroll every morning.
+ */
+export type AccountStatus = "prospect" | "customer" | "inactive";
+
+export const ACCOUNT_STATUSES: AccountStatus[] = ["prospect", "customer", "inactive"];
+
+export const ACCOUNT_STATUS_LABELS: Record<AccountStatus, string> = {
+  prospect: "Prospect",
+  customer: "Customer",
+  inactive: "Inactive",
+};
+
 export type Account = {
   id: string;
   name: string;
   industry: string;
   website: string;
-  contactName: string;
-  contactEmail: string;
-  contactPhone: string;
+  status: AccountStatus;
+  /** Free segmentation — "enterprise", "emea", "renewal-q3". Lowercased. */
+  tags: string[];
+  /** Everyone you deal with there. One of them is `primary`. */
+  contacts: AccountContact[];
   billingAddress: Address;
+  /**
+   * Where the goods go, which is not always where the invoice does. Kept
+   * equal to the billing address while `shippingSameAsBilling`, so everything
+   * downstream can read it without asking which flag is set.
+   */
+  shippingAddress: Address;
+  shippingSameAsBilling: boolean;
   currency: CurrencyCode;
   /** The price book quotes for this customer start on. Empty uses the default book. */
   priceBookId: string;
@@ -462,6 +536,16 @@ export type Account = {
 };
 
 /**
+ * The contact a quote is addressed to.
+ *
+ * The flagged one, falling back to the first — an account read from a record
+ * written before contacts existed, or one whose primary was just deleted in
+ * the editor, still has somebody to address.
+ */
+export const primaryContact = (account: Pick<Account, "contacts">): AccountContact | null =>
+  account.contacts.find(contact => contact.primary) ?? account.contacts[0] ?? null;
+
+/**
  * The customer details a quote carries itself.
  *
  * Copied from the account when the quote is created or the account is
@@ -471,10 +555,13 @@ export type Account = {
 export type CustomerSnapshot = {
   accountId: string | null;
   name: string;
+  /** The account's primary contact, flattened: a document addresses one person. */
   contactName: string;
+  contactTitle: string;
   contactEmail: string;
   contactPhone: string;
   billingAddress: Address;
+  shippingAddress: Address;
   paymentTerms: string;
 };
 
@@ -482,11 +569,26 @@ export const EMPTY_CUSTOMER: CustomerSnapshot = {
   accountId: null,
   name: "",
   contactName: "",
+  contactTitle: "",
   contactEmail: "",
   contactPhone: "",
   billingAddress: { ...EMPTY_ADDRESS },
+  shippingAddress: { ...EMPTY_ADDRESS },
   paymentTerms: "",
 };
+
+/**
+ * A blank snapshot, addresses and all.
+ *
+ * Spreading `EMPTY_CUSTOMER` copies the top level and shares the two address
+ * objects with every other quote that did the same — harmless while nothing
+ * writes to them, and a very confusing bug the first time something does.
+ */
+export const emptyCustomer = (): CustomerSnapshot => ({
+  ...EMPTY_CUSTOMER,
+  billingAddress: { ...EMPTY_ADDRESS },
+  shippingAddress: { ...EMPTY_ADDRESS },
+});
 
 /* --------------------------------- quotes -------------------------------- */
 

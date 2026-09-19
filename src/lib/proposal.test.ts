@@ -43,6 +43,7 @@ const quote = (overrides: Partial<Quote> = {}): Quote =>
       accountId: "acc_1",
       name: "Harbour Logistics",
       contactName: "Dana Okafor",
+      contactTitle: "VP Operations",
       contactEmail: "dana@harbour.example.com",
       contactPhone: "+1 415 555 0142",
       billingAddress: {
@@ -51,6 +52,14 @@ const quote = (overrides: Partial<Quote> = {}): Quote =>
         city: "San Francisco",
         state: "CA",
         postalCode: "94107",
+        country: "United States",
+      },
+      shippingAddress: {
+        line1: "3400 Pier 80 Access Road",
+        line2: "",
+        city: "San Francisco",
+        state: "CA",
+        postalCode: "94124",
         country: "United States",
       },
       paymentTerms: "Net 30",
@@ -115,6 +124,32 @@ describe("tokens", () => {
   test("an address takes the format's own line break", () => {
     expect(renderProposal("{{customer.address}}", "html", context()).text).toContain("<br />");
     expect(renderProposal("{{customer.address}}", "text", context()).text).toContain("\n");
+  });
+
+  test("where it ships is a separate token from where the invoice goes", () => {
+    // The two are the same on most customers and emphatically not on some,
+    // which is the whole reason a document can name both.
+    expect(renderProposal("{{customer.address}}", "text", context()).text).toContain("1200 Embarcadero");
+    const shipping = renderProposal("{{customer.shippingAddress}}", "text", context()).text;
+    expect(shipping).toContain("3400 Pier 80 Access Road");
+    expect(shipping).not.toContain("1200 Embarcadero");
+    expect(renderProposal("{{customer.shippingAddress}}", "html", context()).text).toContain("<br />");
+  });
+
+  test("a customer with no shipping address renders a blank, not a crash", () => {
+    // A quote stored before the field existed comes back without it.
+    const older = quote();
+    delete (older.customer as Partial<Quote["customer"]>).shippingAddress;
+
+    const result = renderProposal("[{{customer.shippingAddress}}]", "text", { ...context(), quote: older });
+    expect(result.text).toBe("[]");
+    expect(result.unknownTokens).toEqual([]);
+  });
+
+  test("the contact's job title is addressable", () => {
+    expect(renderProposal("{{customer.contactName}}, {{customer.contactTitle}}", "text", context()).text).toBe(
+      "Dana Okafor, VP Operations",
+    );
   });
 
   test("a token this app does not know renders as a blank, and is reported", () => {

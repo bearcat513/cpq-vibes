@@ -224,6 +224,8 @@ export const api = {
   createAccount: (payload: AccountInput) => send<Account>("/api/accounts", "POST", payload),
   updateAccount: (id: string, payload: AccountInput) => send<Account>(`/api/accounts/${id}`, "PUT", payload),
   deleteAccount: (id: string) => send<{ ok: true }>(`/api/accounts/${id}`, "DELETE"),
+  /** One customer's whole quote history — what the customer screen totals. */
+  accountQuotes: (id: string) => request<QuoteSummary[]>(`/api/accounts/${id}/quotes`),
 
   /* ------------------------------- catalogue ----------------------------- */
 

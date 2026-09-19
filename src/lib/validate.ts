@@ -47,10 +47,12 @@ import {
   type TotalsRow,
 } from "./pdfTemplate";
 import {
+  ACCOUNT_STATUSES,
   APPROVAL_METRICS,
   BILLING_PERIODS,
   CHARGE_TYPES,
   COMPARATORS,
+  CONTACT_ROLES,
   CURRENCIES,
   EMPTY_ADDRESS,
   PRICING_RULE_TARGETS,
@@ -58,6 +60,7 @@ import {
   PROPOSAL_FORMATS,
   TIER_KINDS,
   type Account,
+  type AccountContact,
   type Address,
   type ApprovalRule,
   type BillingPeriod,
@@ -526,6 +529,69 @@ function readAddress(raw: unknown): Address {
   };
 }
 
+/** More people than this at one customer is a directory, not a contact list. */
+export const MAX_CONTACTS = 25;
+
+/** More tags than this stop being segmentation and start being prose. */
+export const MAX_TAGS = 12;
+
+function readContact(raw: unknown, index: number): AccountContact {
+  const input = asRecord(raw);
+  return {
+    id: text(input.id, 60) || localId("con"),
+    name: text(input.name, 200) || `Contact ${index + 1}`,
+    title: text(input.title, 120),
+    email: email(input.email),
+    phone: text(input.phone, 60),
+    role: oneOf(input.role, CONTACT_ROLES, "commercial"),
+    primary: flag(input.primary, false),
+  };
+}
+
+/**
+ * The contact list, with exactly one primary.
+ *
+ * Two things are repaired here rather than refused. An account written before
+ * contacts existed — an old export, an API caller working from last year's
+ * docs — arrives with `contactName`/`contactEmail`/`contactPhone` and no
+ * list, and becomes a one-contact account. And a list with no primary, or
+ * several, is settled in favour of the first: the alternative is an account
+ * that cannot be saved because of a radio button nobody noticed.
+ */
+function readContacts(input: Record<string, unknown>): Validated<AccountContact[]> {
+  const raw = Array.isArray(input.contacts) ? input.contacts : null;
+
+  const contacts = raw
+    ? raw.slice(0, MAX_CONTACTS).map(readContact)
+    : // The legacy shape. A blank one is dropped, so an account that never
+      // named anybody comes out with no contacts rather than one empty row.
+      [{ name: input.contactName, email: input.contactEmail, phone: input.contactPhone, primary: true }]
+        .filter(entry => text(entry.name, 200) || email(entry.email) || text(entry.phone, 60))
+        .map(readContact);
+
+  for (const contact of contacts) {
+    if (contact.email && !contact.email.includes("@")) {
+      return invalid(`"${contact.email}" is not an email address.`);
+    }
+  }
+
+  const primary = contacts.find(contact => contact.primary) ?? contacts[0];
+  for (const contact of contacts) contact.primary = contact === primary;
+
+  return valid(contacts);
+}
+
+/** Lowercased, de-duplicated, and short enough to read as a chip. */
+function readTags(raw: unknown): string[] {
+  const seen = new Set<string>();
+  for (const entry of stringList(raw, 40)) {
+    const tag = entry.toLowerCase();
+    if (tag) seen.add(tag);
+    if (seen.size >= MAX_TAGS) break;
+  }
+  return [...seen].sort();
+}
+
 export type AccountInput = Omit<Account, "id" | "ownerId" | "createdAt" | "updatedAt">;
 
 export function readAccount(raw: unknown): Validated<AccountInput> {
@@ -534,17 +600,30 @@ export function readAccount(raw: unknown): Validated<AccountInput> {
   const name = text(input.name, 200);
   if (!name) return invalid("An account needs a name.");
 
-  const contactEmail = email(input.contactEmail);
-  if (contactEmail && !contactEmail.includes("@")) return invalid(`"${contactEmail}" is not an email address.`);
+  const contacts = readContacts(input);
+  if (!contacts.ok) return contacts;
+
+  const billingAddress = input.billingAddress ? readAddress(input.billingAddress) : { ...EMPTY_ADDRESS };
+  // Defaults to true, so an account that names one address is not quietly
+  // recorded as shipping to nowhere.
+  const shippingSameAsBilling = flag(input.shippingSameAsBilling, true);
 
   return valid({
     name,
     industry: text(input.industry, 120),
     website: text(input.website, 300),
-    contactName: text(input.contactName, 200),
-    contactEmail,
-    contactPhone: text(input.contactPhone, 60),
-    billingAddress: input.billingAddress ? readAddress(input.billingAddress) : { ...EMPTY_ADDRESS },
+    status: oneOf(input.status, ACCOUNT_STATUSES, "prospect"),
+    tags: readTags(input.tags),
+    contacts: contacts.value,
+    billingAddress,
+    // Resolved here rather than at every read: downstream never has to check
+    // the flag before using the address.
+    shippingAddress: shippingSameAsBilling
+      ? { ...billingAddress }
+      : input.shippingAddress
+        ? readAddress(input.shippingAddress)
+        : { ...EMPTY_ADDRESS },
+    shippingSameAsBilling,
     currency: asCurrency(input.currency),
     priceBookId: text(input.priceBookId, 40),
     paymentTerms: text(input.paymentTerms, 120),

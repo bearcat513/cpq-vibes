@@ -202,4 +202,20 @@ describe("what stays a modal", () => {
     const quoteEditor = await Bun.file(new URL("./app/QuoteEditor.tsx", import.meta.url)).text();
     expect(quoteEditor).toContain("components/ui/dialog");
   });
+
+  test("the customer editor sizes itself against the panel it is in", async () => {
+    // Contacts and two addresses make it the densest form in the app, and
+    // the one most likely to reach for a viewport breakpoint by habit.
+    const source = await Bun.file(new URL("./app/AccountsView.tsx", import.meta.url)).text();
+    expect(source).toContain("@md:grid-cols-2");
+    expect(source).not.toContain("sm:grid-cols-");
+  });
+
+  test("a customer's own page is a page, not a modal", async () => {
+    // It is read at length and linked out of — into a quote — which is
+    // everything a dialog is bad at.
+    const source = await Bun.file(new URL("./app/CustomerDetail.tsx", import.meta.url)).text();
+    expect(source).not.toContain("components/ui/dialog");
+    expect(source).not.toContain("components/ui/sheet");
+  });
 });

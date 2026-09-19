@@ -279,6 +279,119 @@ describe("the catalogue", () => {
   });
 });
 
+/* -------------------------------- customers ------------------------------ */
+
+describe("customers", () => {
+  /** A customer created by this block alone, so its quote history is knowable. */
+  let meridianId = "";
+
+  signedIn("a customer round-trips with its contacts, tags and two addresses", async () => {
+    const created = await post("/api/accounts", {
+      name: "Meridian Health",
+      status: "customer",
+      // Deliberately shouted, duplicated and out of order.
+      tags: ["Enterprise", "enterprise", "EMEA"],
+      contacts: [
+        { name: "Sam Ellery", title: "Procurement", email: "S.Ellery@meridian.example.org", role: "commercial" },
+        { name: "Accounts Payable", email: "ap@meridian.example.org", role: "billing", primary: true },
+      ],
+      billingAddress: { line1: "88 Longwood Avenue", city: "Boston", state: "MA", country: "United States" },
+      shippingSameAsBilling: false,
+      shippingAddress: { line1: "Dock 4", city: "Chelsea", state: "MA", country: "United States" },
+      currency: "USD",
+      paymentTerms: "Net 45",
+    });
+    meridianId = created.id;
+
+    expect(created.status).toBe("customer");
+    expect(created.tags).toEqual(["emea", "enterprise"]);
+    expect(created.contacts).toHaveLength(2);
+    expect(created.contacts[0].email).toBe("s.ellery@meridian.example.org");
+    // Each contact is given an id, since nothing in the body carried one.
+    expect(created.contacts[0].id).toBeString();
+    expect(created.shippingAddress.city).toBe("Chelsea");
+
+    // And it reads back the same way, which is the half that goes through
+    // the JSON column rather than through the validator.
+    const read = await json(`/api/accounts/${meridianId}`);
+    expect(read.contacts.map((contact: any) => contact.name)).toEqual(["Sam Ellery", "Accounts Payable"]);
+    expect(read.tags).toEqual(["emea", "enterprise"]);
+  });
+
+  signedIn("exactly one contact is primary, whatever the body claims", async () => {
+    const none = await post("/api/accounts", {
+      name: "No primary named",
+      currency: "USD",
+      contacts: [{ name: "First" }, { name: "Second" }],
+    });
+    expect(none.contacts.map((contact: any) => contact.primary)).toEqual([true, false]);
+
+    const several = await put(`/api/accounts/${none.id}`, {
+      name: "No primary named",
+      currency: "USD",
+      contacts: [{ name: "First", primary: true }, { name: "Second", primary: true }],
+    });
+    expect(several.contacts.map((contact: any) => contact.primary)).toEqual([true, false]);
+  });
+
+  signedIn("a body written before contacts existed becomes one contact", async () => {
+    // The shape `POST /api/accounts` took a version ago, and the shape the
+    // account every other test in this file uses was created with.
+    const legacy = await json(`/api/accounts/${accountId}`);
+    expect(legacy.contacts).toHaveLength(1);
+    expect(legacy.contacts[0].name).toBe("Dana Okafor");
+    expect(legacy.contacts[0].email).toBe("dana@harbour.example.com");
+    expect(legacy.contacts[0].primary).toBe(true);
+    // Nothing was said about shipping, so it goes where the invoice goes.
+    expect(legacy.shippingSameAsBilling).toBe(true);
+  });
+
+  signedIn("a contact with a broken address is refused with a sentence", async () => {
+    const payload = await post("/api/accounts", {
+      name: "Typo",
+      currency: "USD",
+      contacts: [{ name: "Nobody", email: "not-an-address" }],
+    });
+    expect(payload.error).toContain("is not an email address");
+  });
+
+  signedIn("the quote snapshots the primary contact, title and shipping address", async () => {
+    const quote = await post("/api/quotes", {
+      name: "Meridian pilot",
+      accountId: meridianId,
+      currency: "USD",
+      termMonths: 12,
+      lines: [{ id: "ln_1", productId: platformId, quantity: 10, selectedOptions: ["standard"] }],
+    });
+
+    // The billing contact was flagged primary, so that is who it is addressed to.
+    expect(quote.quote.customer.contactName).toBe("Accounts Payable");
+    expect(quote.quote.customer.contactEmail).toBe("ap@meridian.example.org");
+    expect(quote.quote.customer.shippingAddress.city).toBe("Chelsea");
+    expect(quote.quote.customer.billingAddress.city).toBe("Boston");
+  });
+
+  signedIn("GET /api/accounts/:id/quotes is that customer's history and nobody else's", async () => {
+    const history = await json(`/api/accounts/${meridianId}/quotes`);
+    expect(history).toHaveLength(1);
+    expect(history[0].name).toBe("Meridian pilot");
+    expect(history[0].customer.accountId).toBe(meridianId);
+
+    // A quote for the other customer stays out of it, and vice versa.
+    await post("/api/quotes", quoteBody({ name: "Harbour expansion" }));
+
+    const others = await json(`/api/accounts/${accountId}/quotes`);
+    expect(others.length).toBeGreaterThan(0);
+    expect(others.every((quote: any) => quote.customer.accountId === accountId)).toBe(true);
+    expect(await json(`/api/accounts/${meridianId}/quotes`)).toHaveLength(1);
+  });
+
+  signedIn("somebody else's customer has no history to read", async () => {
+    const response = await api(`/api/accounts/${meridianId}/quotes`, { cookie: bobCookie });
+    expect(response.status).toBe(404);
+  });
+});
+
 /* --------------------------------- pricing ------------------------------- */
 
 describe("pricing is the server's job", () => {

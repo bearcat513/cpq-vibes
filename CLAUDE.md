@@ -128,6 +128,9 @@ runs the same code for the record — never fork them.
 - `src/lib/formula.ts` — the expression language (no `eval`), shared by pricing, approvals and
   product validation
 - `src/lib/configurator.ts` — option groups and configuration rules
+- `src/lib/customers.ts` — the customer roll-up (open pipeline, won, win rate) and the searching
+  and sorting behind the customers list. Pure, and it **never adds up two currencies**: a quote
+  written in something other than the account's currency is counted and reported, never summed
 - `src/lib/approvals.ts` — the approval ladder. Levels are cumulative, an edit voids decisions, and
   a rule asks several people with separate approve/reject quorums. A request's `status` is derived
   by `requestStatus` from the votes it carries, never assigned
@@ -185,6 +188,16 @@ right-hand, full-height panel. Only things meant to be read (a rendered proposal
 `components/ui/dialog.tsx`. The sheet's body is a `@container`, so forms inside it use container
 queries (`@md:grid-cols-2`), never viewport ones — `sm:grid-cols-4` would still be four columns in
 a 500px panel. `src/components/sheet.test.tsx` asserts both halves of that rule.
+
+**A customer is a record with people in it.** An account carries a `contacts` list — one of them
+`primary`, which is who a quote is addressed to and what `snapshotCustomer` flattens onto the
+document — plus a lifecycle `status`, free-text `tags`, and a shipping address that is kept equal
+to the billing one while `shippingSameAsBilling`. `readAccount` repairs rather than refuses: a body
+written before contacts existed (`contactName`/`contactEmail`/`contactPhone`) becomes a one-contact
+account, and a list with no primary or several gets exactly one. `toAccount` does the same for rows
+stored before the list existed, which is why this shipped without a data migration. The customers
+screen is a list until you pick one, and then it is `CustomerDetail` — that customer's quote
+history from `GET /api/accounts/:id/quotes`, because `/api/quotes` is capped at a page.
 
 **A field that names another record is a `Combobox`, not an `Input`.** `components/ui/combobox.tsx`
 — searchable, portalled to `document.body` so the panel's `overflow-y-auto` cannot clip it, and

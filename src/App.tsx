@@ -486,8 +486,10 @@ export function App() {
               <AccountsView
                 accounts={accounts}
                 priceBooks={priceBooks}
+                preferences={preferences}
                 onChanged={refresh}
                 onError={fail}
+                onOpenQuote={id => void openQuoteById(id)}
                 confirmed={confirmed}
               />
             ) : view === "templates" ? (

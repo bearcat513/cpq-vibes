@@ -19,8 +19,9 @@
 import { allApproved, anyRejected, applyDecision, currentApprovers, evaluateApprovals } from "../lib/approvals";
 import { priceQuote, type PriceableLine } from "../lib/pricing";
 import {
-  EMPTY_CUSTOMER,
+  emptyCustomer,
   isEditableStatus,
+  primaryContact,
   QUOTE_TRANSITIONS,
   type Account,
   type ApprovalRequest,
@@ -98,14 +99,20 @@ export function resolvePriceBook(books: PriceBook[], requestedId: string, curren
  * cannot read your accounts still renders at all.
  */
 export function snapshotCustomer(account: Account | null): CustomerSnapshot {
-  if (!account) return { ...EMPTY_CUSTOMER };
+  if (!account) return emptyCustomer();
+  // A document is addressed to one person, so the contact list flattens to
+  // its primary here. Which one that is can change on the account tomorrow;
+  // who this quote was addressed to cannot.
+  const contact = primaryContact(account);
   return {
     accountId: account.id,
     name: account.name,
-    contactName: account.contactName,
-    contactEmail: account.contactEmail,
-    contactPhone: account.contactPhone,
+    contactName: contact?.name ?? "",
+    contactTitle: contact?.title ?? "",
+    contactEmail: contact?.email ?? "",
+    contactPhone: contact?.phone ?? "",
     billingAddress: { ...account.billingAddress },
+    shippingAddress: { ...account.shippingAddress },
     paymentTerms: account.paymentTerms,
   };
 }
@@ -312,7 +319,7 @@ export async function saveQuote(
       ? snapshotCustomer(account)
       : header.accountId
         ? existing.customer
-        : { ...EMPTY_CUSTOMER };
+        : emptyCustomer();
 
   const priced = repriceQuote(
     {

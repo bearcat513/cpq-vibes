@@ -32,6 +32,7 @@ import {
   listProposalTemplates,
   listQuotes,
   listQuotesAwaiting,
+  listQuotesForAccount,
   updateAccount,
   updateApprovalRule,
   updatePriceBook,
@@ -290,6 +291,7 @@ const server = serve({
             "GET    /api/accounts": "List customers",
             "POST   /api/accounts": "Create a customer",
             "GET    /api/accounts/:id": "Read one customer",
+            "GET    /api/accounts/:id/quotes": "Every quote written for one customer, newest first",
             "PUT    /api/accounts/:id": "Replace one customer",
             "DELETE /api/accounts/:id": "Delete one customer",
             "GET    /api/products": "List products you own or that are shared with you",
@@ -507,6 +509,22 @@ const server = serve({
 
     "/api/accounts": accounts.collection,
     "/api/accounts/:id": accounts.record,
+
+    /**
+     * One customer's quote history, newest first.
+     *
+     * Separate from `/api/quotes` because that list is capped at a page and
+     * sorted by recency across everybody: a customer with a long history
+     * would show whichever of their quotes happened to be recent. This is
+     * every one of them, and it is what the customer screen totals.
+     */
+    "/api/accounts/:id/quotes": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const account = await getAccount(token, req.params.id);
+        if (!account) return fail("Account not found.", 404);
+        return Response.json(await listQuotesForAccount(token, account.id));
+      }),
+    },
 
     "/api/products": products.collection,
 

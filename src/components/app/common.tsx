@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { BrandWatermark } from "./Brand";
 import { Label } from "@/components/ui/label";
 import { formatMoney, formatPercent } from "@/lib/money";
-import type { CurrencyCode, QuoteStatus } from "@/lib/types";
+import { ACCOUNT_STATUS_LABELS, type AccountStatus, type CurrencyCode, type QuoteStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /* -------------------------------- status --------------------------------- */
@@ -46,6 +46,21 @@ export const statusLabel = (status: QuoteStatus) => STATUS_LABEL[status] ?? stat
 
 export function StatusBadge({ status }: { status: QuoteStatus }) {
   return <Badge tone={STATUS_TONE[status] ?? "neutral"}>{statusLabel(status)}</Badge>;
+}
+
+/**
+ * A customer's standing, coloured the same way: ochre for somebody you are
+ * still chasing, moss for somebody who has bought, and nothing at all for
+ * somebody you have stopped quoting.
+ */
+const ACCOUNT_STATUS_TONE: Record<AccountStatus, "neutral" | "pending" | "success"> = {
+  prospect: "pending",
+  customer: "success",
+  inactive: "neutral",
+};
+
+export function AccountStatusBadge({ status }: { status: AccountStatus }) {
+  return <Badge tone={ACCOUNT_STATUS_TONE[status] ?? "neutral"}>{ACCOUNT_STATUS_LABELS[status] ?? status}</Badge>;
 }
 
 /* ------------------------------- formatting ------------------------------ */

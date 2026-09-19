@@ -18,8 +18,10 @@
  * field to allow them.
  */
 import { normalizePreferences } from "../lib/preferences";
+import { EMPTY_ADDRESS, emptyCustomer, primaryContact } from "../lib/types";
 import type {
   Account,
+  AccountContact,
   ApprovalDecision,
   ApprovalRequest,
   ApprovalRule,
@@ -233,24 +235,43 @@ function toApprovalRule(row: Record_): ApprovalRule {
   };
 }
 
+/**
+ * An account's contact list, including one written before the list existed.
+ *
+ * Records saved by an earlier version carry a single contact spread across
+ * `details.contactName`, `details.contactPhone` and the `contactEmail`
+ * column. Reading them as a one-contact list is what lets the contact list
+ * ship without a data migration: the next save writes the new shape, and a
+ * record nobody edits keeps working in the meantime.
+ */
+function toContacts(row: Record_, details: Record<string, unknown>): AccountContact[] {
+  const stored = details.contacts;
+  if (Array.isArray(stored)) return stored as AccountContact[];
+
+  const name = String(details.contactName ?? "");
+  const email = String(row.contactEmail ?? "");
+  const phone = String(details.contactPhone ?? "");
+  if (!name && !email && !phone) return [];
+
+  return [{ id: "con_legacy", name, title: "", email, phone, role: "commercial", primary: true }];
+}
+
 function toAccount(row: Record_): Account {
-  const details = jsonObject<Partial<Account>>(row.details, {});
+  const details = jsonObject<Partial<Account> & Record<string, unknown>>(row.details, {});
+  const billingAddress = details.billingAddress ?? { ...EMPTY_ADDRESS };
+  const shippingSameAsBilling = details.shippingSameAsBilling !== false;
+
   return {
     id: String(row.id),
     name: String(row.name ?? ""),
     industry: details.industry ?? "",
     website: details.website ?? "",
-    contactName: details.contactName ?? "",
-    contactEmail: String(row.contactEmail ?? ""),
-    contactPhone: details.contactPhone ?? "",
-    billingAddress: details.billingAddress ?? {
-      line1: "",
-      line2: "",
-      city: "",
-      state: "",
-      postalCode: "",
-      country: "",
-    },
+    status: (details.status ?? "prospect") as Account["status"],
+    tags: jsonArray<string>(details.tags),
+    contacts: toContacts(row, details),
+    billingAddress,
+    shippingAddress: shippingSameAsBilling ? { ...billingAddress } : (details.shippingAddress ?? { ...EMPTY_ADDRESS }),
+    shippingSameAsBilling,
     currency: asCurrency(row.currency),
     priceBookId: relationId(row.priceBook),
     paymentTerms: details.paymentTerms ?? "",
@@ -328,15 +349,10 @@ function toQuote(row: Record_): Quote {
     status: (String(row.status ?? "draft") || "draft") as QuoteStatus,
     version: Number(row.version ?? 1),
     supersedesId: relationId(row.supersedes) || null,
-    customer: header.customer ?? {
-      accountId: null,
-      name: "",
-      contactName: "",
-      contactEmail: "",
-      contactPhone: "",
-      billingAddress: { line1: "", line2: "", city: "", state: "", postalCode: "", country: "" },
-      paymentTerms: "",
-    },
+    // Spread over the empty snapshot rather than trusting what is stored: a
+    // quote written before shipping addresses existed has a header with
+    // fewer keys, and everything downstream reads the fields unguarded.
+    customer: { ...emptyCustomer(), ...(header.customer ?? {}) },
     priceBookId: relationId(row.priceBook),
     currency: asCurrency(row.currency),
     termMonths: Number(header.termMonths ?? 0),
@@ -542,16 +558,21 @@ export const deleteApprovalRule = (token: string, id: string) => remove(token, "
 
 const accountBody = (input: AccountInput): Record_ => ({
   name: input.name,
-  contactEmail: input.contactEmail,
+  // The column holds the primary contact's address, which is the one anything
+  // outside the app would mean by "the account's email".
+  contactEmail: primaryContact(input)?.email ?? "",
   currency: input.currency,
   // PocketBase wants "" for an unset relation, not null.
   priceBook: input.priceBookId || "",
   details: {
     industry: input.industry,
     website: input.website,
-    contactName: input.contactName,
-    contactPhone: input.contactPhone,
+    status: input.status,
+    tags: input.tags,
+    contacts: input.contacts,
     billingAddress: input.billingAddress,
+    shippingAddress: input.shippingAddress,
+    shippingSameAsBilling: input.shippingSameAsBilling,
     paymentTerms: input.paymentTerms,
     defaultDiscountPercent: input.defaultDiscountPercent,
     taxExempt: input.taxExempt,
@@ -677,6 +698,29 @@ function quoteBody(input: QuoteRecordInput): Record_ {
 
 export const listQuotes = async (token: string, limit = 50): Promise<QuoteSummary[]> =>
   (await readMany(token, "quotes", { limit, sort: "-updated", fields: QUOTE_SUMMARY_FIELDS })).map(toQuoteSummary);
+
+/**
+ * Every quote written for one customer, newest first.
+ *
+ * The customer lives inside the quote's `header` JSON rather than in a column
+ * — a quote carries a snapshot, not a relation, precisely so it keeps
+ * rendering after the account changes or goes away — so this filters on the
+ * JSON path. PocketBase reads that with SQLite's `json_extract`, which is a
+ * scan; it is a page of quotes for one account, not a report, and the
+ * alternative is a column that would have to be kept honest on every save.
+ *
+ * Unfiltered by owner, like everything else here: the collection rules decide
+ * which of them the caller may see.
+ */
+export const listQuotesForAccount = async (token: string, accountId: string, limit = 0): Promise<QuoteSummary[]> =>
+  (
+    await readMany(token, "quotes", {
+      limit,
+      sort: "-updated",
+      fields: QUOTE_SUMMARY_FIELDS,
+      filter: `header.customer.accountId = "${accountId.replace(/"/g, "")}"`,
+    })
+  ).map(toQuoteSummary);
 
 /** Quotes waiting on this caller, for the approvals queue. */
 export const listQuotesAwaiting = async (token: string, userId: string): Promise<QuoteSummary[]> =>
