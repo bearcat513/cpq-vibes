@@ -8,7 +8,7 @@
  * the caller's own token along, so PocketBase still decides whether they own
  * the record they are talking about.
  *
- *   sharing    — who else may read a product, price book, quote or template
+ *   sharing    — who else may read a product, price book, quote, invoice or template
  *   approvers  — which accounts a submitted quote is waiting on
  *
  * The second one exists for the same reason as the first, and has the same
@@ -24,6 +24,7 @@ const COLLECTIONS = {
   products: "products",
   "price-books": "price_books",
   quotes: "quotes",
+  invoices: "invoices",
   "proposal-templates": "proposal_templates",
 } as const;
 

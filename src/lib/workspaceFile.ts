@@ -1,7 +1,7 @@
 /**
  * The workspace file: one JSON document holding everything an account has —
- * the catalogue, the customers, the proposal templates, the quotes, and the
- * preferences.
+ * the catalogue, the customers, the proposal templates, the quotes, the
+ * receivables ledger, and the preferences.
  *
  * Where a `*.cpq.json` file moves a catalogue between instances, this moves
  * the whole workspace: a backup to keep in a repository, the thing you hand
@@ -17,10 +17,24 @@
  * left behind. A quote is a few kilobytes and it is the point of the app —
  * an export that dropped them would be a backup of the filing cabinet without
  * the contracts.
+ *
+ * So are invoices, and with their ledgers. An export that kept what you
+ * offered but not what you are owed would be the half of the filing cabinet
+ * nobody chases, and a payment that exists only in this app is a payment you
+ * cannot prove you received.
  */
 import { buildCatalogFile, type CatalogFile } from "./catalogFile";
 import type { Preferences } from "./preferences";
-import type { Account, ApprovalRule, PriceBook, PricingRule, Product, ProposalTemplate, Quote } from "./types";
+import type {
+  Account,
+  ApprovalRule,
+  Invoice,
+  PriceBook,
+  PricingRule,
+  Product,
+  ProposalTemplate,
+  Quote,
+} from "./types";
 
 export const WORKSPACE_FILE_KIND = "cpq/workspace";
 export const WORKSPACE_FILE_VERSION = 1;
@@ -40,6 +54,16 @@ export type WorkspaceAccountEntry = Omit<Account, "id" | "ownerId" | "createdAt"
  */
 export type WorkspaceQuoteEntry = Omit<Quote, "ownerId" | "sharedWith" | "approverIds"> & Shared;
 
+/**
+ * An invoice as exported: the document, its lines and its whole ledger.
+ *
+ * Derived fields are conspicuously absent, because there are none stored to
+ * export — an invoice's status and its aging are worked out from what is here
+ * by `src/lib/receivable.ts`, so a file read back in a year ages itself
+ * against that day rather than carrying yesterday's answer.
+ */
+export type WorkspaceInvoiceEntry = Omit<Invoice, "ownerId" | "sharedWith"> & Shared;
+
 export type WorkspaceFile = {
   kind: typeof WORKSPACE_FILE_KIND;
   version: number;
@@ -51,6 +75,7 @@ export type WorkspaceFile = {
   accounts: WorkspaceAccountEntry[];
   proposalTemplates: WorkspaceTemplateEntry[];
   quotes: WorkspaceQuoteEntry[];
+  invoices: WorkspaceInvoiceEntry[];
 };
 
 export type WorkspaceInput = {
@@ -64,6 +89,7 @@ export type WorkspaceInput = {
   accounts: Account[];
   templates: ProposalTemplate[];
   quotes: Quote[];
+  invoices: Invoice[];
   preferences: Preferences;
 };
 
@@ -94,6 +120,10 @@ export function buildWorkspaceFile(input: WorkspaceInput): WorkspaceFile {
     quotes: input.quotes.map(quote => {
       const { ownerId, sharedWith, approverIds, ...rest } = quote;
       return { ...rest, ...shared(quote) };
+    }),
+    invoices: input.invoices.map(invoice => {
+      const { ownerId, sharedWith, ...rest } = invoice;
+      return { ...rest, ...shared(invoice) };
     }),
   };
 }

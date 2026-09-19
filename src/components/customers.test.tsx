@@ -41,6 +41,8 @@ const harbour = (): Account => ({
   currency: "USD",
   priceBookId: "pb_1",
   paymentTerms: "Net 30",
+  paymentTermDays: 30,
+  creditLimit: 0,
   defaultDiscountPercent: 0,
   taxExempt: false,
   taxPercent: 8.5,
@@ -89,6 +91,7 @@ const list = (accounts: Account[]) =>
       onChanged={asyncNoop}
       onError={noop}
       onOpenQuote={noop}
+      onOpenReceivables={noop}
       confirmed={() => true}
     />,
   );
@@ -144,6 +147,7 @@ describe("a customer's own page", () => {
         onBack={noop}
         onEdit={noop}
         onOpenQuote={noop}
+        onOpenReceivables={noop}
         onError={noop}
       />,
     );

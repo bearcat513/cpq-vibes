@@ -23,6 +23,12 @@ import type {
   Account,
   AccountContact,
   ApprovalDecision,
+  Invoice,
+  InvoiceCredit,
+  InvoiceLine,
+  InvoicePayment,
+  InvoiceSummary,
+  InvoiceTotals,
   ApprovalRequest,
   ApprovalRule,
   PriceBook,
@@ -35,6 +41,7 @@ import type {
   QuoteSummary,
   QuoteTotals,
 } from "../lib/types";
+import { readPaymentTermDays } from "../lib/validate";
 import type {
   AccountInput,
   ApprovalRuleInput,
@@ -275,6 +282,10 @@ function toAccount(row: Record_): Account {
     currency: asCurrency(row.currency),
     priceBookId: relationId(row.priceBook),
     paymentTerms: details.paymentTerms ?? "",
+    // Seeded from the terms text for a row written before receivables, the
+    // same way the validator does it for a body from the same era.
+    paymentTermDays: readPaymentTermDays(details.paymentTermDays, String(details.paymentTerms ?? "")),
+    creditLimit: Number(details.creditLimit ?? 0),
     defaultDiscountPercent: Number(details.defaultDiscountPercent ?? 0),
     taxExempt: details.taxExempt === true,
     taxPercent: Number(details.taxPercent ?? 0),
@@ -574,6 +585,8 @@ const accountBody = (input: AccountInput): Record_ => ({
     shippingAddress: input.shippingAddress,
     shippingSameAsBilling: input.shippingSameAsBilling,
     paymentTerms: input.paymentTerms,
+    paymentTermDays: input.paymentTermDays,
+    creditLimit: input.creditLimit,
     defaultDiscountPercent: input.defaultDiscountPercent,
     taxExempt: input.taxExempt,
     taxPercent: input.taxPercent,
@@ -782,18 +795,27 @@ export const databaseUrl = (): string => POCKETBASE_URL;
 export async function databaseMeta(token: string) {
   const status = await pocketbaseStatus();
   if (!status.reachable) {
-    return { ...status, accounts: null, products: null, priceBooks: null, quotes: null, proposalTemplates: null };
+    return {
+      ...status,
+      accounts: null,
+      products: null,
+      priceBooks: null,
+      quotes: null,
+      invoices: null,
+      proposalTemplates: null,
+    };
   }
 
   try {
-    const [accounts, products, priceBooks, quotes, proposalTemplates] = await Promise.all([
+    const [accounts, products, priceBooks, quotes, invoices, proposalTemplates] = await Promise.all([
       countRecords(token, "accounts"),
       countRecords(token, "products"),
       countRecords(token, "price_books"),
       countRecords(token, "quotes"),
+      countRecords(token, "invoices"),
       countRecords(token, "proposal_templates"),
     ]);
-    return { ...status, accounts, products, priceBooks, quotes, proposalTemplates };
+    return { ...status, accounts, products, priceBooks, quotes, invoices, proposalTemplates };
   } catch (error) {
     throw toApiError(error, "Could not read the record counts");
   }
@@ -801,3 +823,186 @@ export async function databaseMeta(token: string) {
 
 /** Re-exported so callers reading a session get a normalized preference set. */
 export { normalizePreferences };
+
+/* ------------------------------ receivables ------------------------------ */
+
+/**
+ * Matches `maxSize` on the invoices `lines` field in the migration. Checked
+ * here so an enormous invoice fails with a sentence about the invoice.
+ */
+const MAX_INVOICE_BYTES = 1024 * 1024;
+
+const INVOICE_SUMMARY_FIELDS =
+  "id,number,state,currency,issueDate,dueDate,total,balance,lineCount,quote,header,totals,owner,sharedWith,created,updated";
+
+function toInvoice(row: Record_): Invoice {
+  const header = jsonObject<Record<string, unknown>>(row.header, {});
+  const ledger = jsonObject<{ payments?: unknown; credits?: unknown }>(row.ledger, {});
+
+  return {
+    id: String(row.id),
+    number: String(row.number ?? ""),
+    quoteId: relationId(row.quote) || null,
+    quoteNumber: String(header.quoteNumber ?? ""),
+    // Spread over a blank one, so an invoice stored before a snapshot field
+    // existed still has every key the renderers read unguarded.
+    customer: { ...emptyCustomer(), ...jsonObject<Record<string, unknown>>(header.customer, {}) },
+    currency: asCurrency(row.currency),
+    state: (String(row.state ?? "draft") || "draft") as Invoice["state"],
+    issueDate: String(row.issueDate ?? ""),
+    dueDate: String(row.dueDate ?? ""),
+    paymentTermDays: Number(header.paymentTermDays ?? 30),
+    poNumber: String(header.poNumber ?? ""),
+    notes: String(header.notes ?? ""),
+    internalNotes: String(header.internalNotes ?? ""),
+    lines: jsonArray<InvoiceLine>(row.lines),
+    payments: jsonArray<InvoicePayment>(ledger.payments),
+    credits: jsonArray<InvoiceCredit>(ledger.credits),
+    totals: jsonObject<InvoiceTotals>(row.totals, {} as InvoiceTotals),
+    ...ownership(row),
+    ...stamps(row),
+  };
+}
+
+function toInvoiceSummary(row: Record_): InvoiceSummary {
+  const invoice = toInvoice(row);
+  const { lines, payments, credits, ...rest } = invoice;
+  return {
+    ...rest,
+    lineCount: Number(row.lineCount ?? lines.length),
+    paymentCount: payments.length,
+  };
+}
+
+/** Everything an invoice record holds. Totals are the server's, never a client's. */
+export type InvoiceRecordInput = {
+  number: string;
+  quoteId: string | null;
+  quoteNumber: string;
+  customer: Invoice["customer"];
+  currency: Invoice["currency"];
+  state: Invoice["state"];
+  issueDate: string;
+  dueDate: string;
+  paymentTermDays: number;
+  poNumber: string;
+  notes: string;
+  internalNotes: string;
+  lines: InvoiceLine[];
+  payments: InvoicePayment[];
+  credits: InvoiceCredit[];
+  totals: InvoiceTotals;
+};
+
+function invoiceBody(input: InvoiceRecordInput): Record_ {
+  const lines = JSON.stringify(input.lines);
+  if (lines.length > MAX_INVOICE_BYTES) {
+    throw new ApiError(
+      `This invoice is ${(lines.length / 1024).toFixed(0)} KB of line items, over the ` +
+        `${MAX_INVOICE_BYTES / 1024} KB a stored invoice may occupy. Split it into several invoices.`,
+      413,
+    );
+  }
+
+  return {
+    number: input.number,
+    state: input.state,
+    currency: input.currency,
+    issueDate: input.issueDate,
+    dueDate: input.dueDate,
+    // Denormalised so an aging query never has to open the JSON.
+    total: input.totals.total,
+    balance: input.totals.balance,
+    lineCount: input.lines.length,
+    quote: input.quoteId ?? "",
+    lines: input.lines,
+    ledger: { payments: input.payments, credits: input.credits },
+    totals: input.totals,
+    header: {
+      customer: input.customer,
+      quoteNumber: input.quoteNumber,
+      paymentTermDays: input.paymentTermDays,
+      poNumber: input.poNumber,
+      notes: input.notes,
+      internalNotes: input.internalNotes,
+    },
+  };
+}
+
+/**
+ * Invoices, newest first.
+ *
+ * Unlike quotes this defaults to everything: an aging report that silently
+ * stopped at fifty invoices would understate the book, and understating what
+ * you are owed is the one direction a finance number must not be wrong in.
+ */
+export const listInvoices = async (token: string, limit = 0): Promise<InvoiceSummary[]> =>
+  (await readMany(token, "invoices", { limit, sort: "-created", fields: INVOICE_SUMMARY_FIELDS })).map(
+    toInvoiceSummary,
+  );
+
+/**
+ * One customer's invoices. Filtered on the snapshot inside `header`, the same
+ * way `listQuotesForAccount` is and for the same reason: an invoice carries
+ * its customer rather than pointing at one.
+ */
+export const listInvoicesForAccount = async (token: string, accountId: string): Promise<InvoiceSummary[]> =>
+  (
+    await readMany(token, "invoices", {
+      limit: 0,
+      sort: "-created",
+      fields: INVOICE_SUMMARY_FIELDS,
+      filter: `header.customer.accountId = "${accountId.replace(/"/g, "")}"`,
+    })
+  ).map(toInvoiceSummary);
+
+/** The invoices already raised from one quote — what stops it being billed twice. */
+export const listInvoicesForQuote = async (token: string, quoteId: string): Promise<InvoiceSummary[]> =>
+  (
+    await readMany(token, "invoices", {
+      limit: 0,
+      sort: "-created",
+      fields: INVOICE_SUMMARY_FIELDS,
+      filter: `quote = "${quoteId.replace(/"/g, "")}"`,
+    })
+  ).map(toInvoiceSummary);
+
+export async function getInvoice(token: string, id: string): Promise<Invoice | null> {
+  const row = await readOne(token, "invoices", id);
+  return row ? toInvoice(row) : null;
+}
+
+export async function createInvoice(token: string, input: InvoiceRecordInput): Promise<Invoice> {
+  const row = await write(token, "invoices", null, { id: newId("inv"), ...invoiceBody(input) }, "Could not save the invoice");
+  return toInvoice(row!);
+}
+
+export async function updateInvoice(token: string, id: string, input: InvoiceRecordInput): Promise<Invoice | null> {
+  const row = await write(token, "invoices", id, invoiceBody(input), "Could not update the invoice");
+  return row ? toInvoice(row) : null;
+}
+
+export const deleteInvoice = (token: string, id: string) => remove(token, "invoices", id);
+
+/**
+ * The next invoice number: `INV-2026-0007`.
+ *
+ * Counted rather than sequenced, exactly like `nextQuoteNumber`, and with the
+ * same escape hatch: the unique index on (owner, number) catches a collision
+ * and `src/server/invoices.ts` retries with the next one along.
+ *
+ * Invoice numbers matter more than quote numbers — in most jurisdictions they
+ * are supposed to be sequential and gapless — and a count satisfies that
+ * while nothing is ever deleted. Deleting a draft leaves a gap, which is why
+ * `src/server/invoices.ts` refuses to delete anything that was ever issued.
+ */
+export async function nextInvoiceNumber(token: string, attempt = 0): Promise<string> {
+  const year = new Date().getFullYear();
+  let count = 0;
+  try {
+    count = await countRecords(token, "invoices");
+  } catch (error) {
+    throw toApiError(error, "Could not work out the next invoice number");
+  }
+  return `INV-${year}-${String(count + 1 + attempt).padStart(4, "0")}`;
+}

@@ -2,9 +2,10 @@
  * Installing the worked example from `src/lib/samples.ts`.
  *
  * One call fills an empty account with a catalogue, the policy around it, two
- * customers, seven proposal templates and a quote that actually trips the
- * approval ladder — so the first thing a new account sees is the app doing its
- * job rather than eight empty lists.
+ * customers, seven proposal templates, a quote that actually trips the
+ * approval ladder and a receivables book spread across the aging — so the
+ * first thing a new account sees is the app doing its job rather than nine
+ * empty lists.
  *
  * Everything goes in through the same validators and the same pricing engine
  * as anything else. The sample has no privileged path: if it would not import
@@ -17,6 +18,7 @@
  */
 import {
   SAMPLE_ACCOUNTS,
+  SAMPLE_INVOICES,
   SAMPLE_PRICE_BOOKS,
   SAMPLE_PRICING_RULES,
   SAMPLE_PRODUCTS,
@@ -25,6 +27,7 @@ import {
   sampleApprovalRules,
 } from "../lib/samples";
 import { defaultSelection } from "../lib/configurator";
+import { round } from "../lib/money";
 import { readAccount, readApprovalRule, readPriceBook, readPricingRule, readProduct, readProposalTemplate, localId } from "../lib/validate";
 import type { PriceableLine } from "../lib/pricing";
 import {
@@ -36,12 +39,15 @@ import {
   createProposalTemplate,
   listAccounts,
   listApprovalRules,
+  listInvoices,
   listPriceBooks,
   listPricingRules,
   listProducts,
   listProposalTemplates,
 } from "./db";
 import { createPricedQuote } from "./quotes";
+import { createBlankInvoice, discardInvoice, issueInvoice, recordPayment } from "./invoices";
+import { addDays, today } from "../lib/receivable";
 import { ApiError } from "./http";
 
 export type SeedReport = {
@@ -226,6 +232,92 @@ export async function installSample(token: string, approverEmail: string, validD
     );
   } else if (!account) {
     notes.push("The sample quote was skipped: its customer already exists under a different name.");
+  }
+
+  /* ------------------------------ receivables ----------------------------- */
+
+  /*
+   * Invoices go in through the ordinary path — raised as drafts, issued, then
+   * paid against — rather than being written straight to storage with their
+   * totals filled in. The sample has no privileged route, so an invoice that
+   * would not reconcile through the API does not install either.
+   *
+   * Idempotency is by customer and PO reference, like everything above: a
+   * second install finds them and leaves them alone.
+   */
+  const existingInvoices = await listInvoices(token);
+  const invoiceSeen = new Set(
+    existingInvoices.map(one => `${one.customer.name.toLowerCase()}|${one.poNumber}|${one.totals.total}`),
+  );
+
+  for (const sample of SAMPLE_INVOICES) {
+    const customer = haveAccount.get(sample.accountName.toLowerCase());
+    if (!customer) {
+      count(skipped, "invoices");
+      continue;
+    }
+
+    const lines = sample.lines.map((entry, index) => ({
+      id: localId("inl"),
+      sourceLineId: null,
+      sku: entry.sku,
+      description: entry.description,
+      quantity: entry.quantity,
+      unitPrice: entry.unitPrice,
+      amount: 0,
+      taxPercent: customer.taxExempt ? 0 : entry.taxPercent,
+      taxAmount: 0,
+      sortOrder: index,
+    }));
+
+    try {
+      const raised = await createBlankInvoice(
+        token,
+        {
+          accountId: customer.id,
+          quoteId: null,
+          currency: customer.currency,
+          issueDate: "",
+          paymentTermDays: customer.paymentTermDays,
+          poNumber: sample.poNumber,
+          notes: sample.notes,
+          internalNotes: "Part of the worked example.",
+        },
+        lines,
+      );
+
+      // Same customer, same reference, same money: this one is already here.
+      const fingerprint = `${customer.name.toLowerCase()}|${sample.poNumber}|${raised.invoice.totals.total}`;
+      if (invoiceSeen.has(fingerprint)) {
+        await discardInvoice(token, raised.invoice.id);
+        count(skipped, "invoices");
+        continue;
+      }
+      invoiceSeen.add(fingerprint);
+
+      const issued = await issueInvoice(token, raised.invoice.id, addDays(today(), -sample.issuedDaysAgo));
+      count(created, "invoices");
+
+      if (sample.paidFraction > 0) {
+        const amount = round(issued.totals.total * sample.paidFraction, issued.currency);
+        if (amount > 0) {
+          await recordPayment(token, issued.id, {
+            receivedOn: addDays(today(), -sample.paidDaysAgo),
+            amount,
+            method: "bank_transfer",
+            reference: `FT-${sample.issuedDaysAgo}${sample.poNumber.slice(-3)}`,
+            note: "",
+          });
+        }
+      }
+    } catch (error) {
+      // An invoice that will not install is not worth failing the sample over.
+      count(skipped, "invoices");
+    }
+  }
+
+  if (created.invoices) {
+    notes.push("The receivables book has one settled invoice, one a fortnight late and one badly overdue.");
   }
 
   return { created, skipped, quoteId, notes };

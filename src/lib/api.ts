@@ -6,8 +6,11 @@
  * token handling anywhere in here.
  */
 import type { Preferences } from "./preferences";
+import type { AgingReport } from "./receivable";
 import type {
   Account,
+  Invoice,
+  InvoiceSummary,
   ApprovalRequest,
   ApprovalRule,
   PriceBook,
@@ -24,6 +27,9 @@ import type {
 import type {
   AccountInput,
   ApprovalRuleInput,
+  CreditInput,
+  InvoiceHeaderInput,
+  PaymentInput,
   PriceBookInput,
   PricingRuleInput,
   ProductInput,
@@ -161,6 +167,12 @@ export type RenderedDocument = {
   unknownTokens: string[];
 };
 
+/** The body both invoice write endpoints take. Totals are the server's. */
+export type InvoiceBody = Partial<InvoiceHeaderInput> & { lines?: unknown[] };
+
+/** What the invoice endpoints answer with: the record, and anything worth saying. */
+export type SavedInvoice = { invoice: Invoice; warnings: string[] };
+
 /** An account, as the pickers that name a person see it. */
 export type DirectoryUser = { id: string; email: string; name: string };
 
@@ -171,6 +183,7 @@ export type Meta = {
   products: number | null;
   priceBooks: number | null;
   quotes: number | null;
+  invoices: number | null;
   proposalTemplates: number | null;
 };
 
@@ -179,6 +192,8 @@ export type Meta = {
 const sharesUrl = (kind: Shareable, id: string) => `/api/${kind}/${encodeURIComponent(id)}/shares`;
 
 const quoteExportUrl = (id: string, format: "csv" | "json") => `/api/quotes/${id}/export?format=${format}`;
+
+const invoiceExportUrl = (id: string, format: "csv" | "json") => `/api/invoices/${id}/export?format=${format}`;
 
 const documentUrl = (quoteId: string, templateId: string) =>
   `/api/quotes/${quoteId}/document?templateId=${encodeURIComponent(templateId)}`;
@@ -270,6 +285,34 @@ export const api = {
     send<{ quote: Quote; changed: number }>(`/api/quotes/${id}/decision`, "POST", { decision, comment }),
   setQuoteStatus: (id: string, status: QuoteStatus) => send<Quote>(`/api/quotes/${id}/status`, "POST", { status }),
   reviseQuote: (id: string) => send<SavedQuote>(`/api/quotes/${id}/revise`, "POST"),
+
+  /* ------------------------------ receivables ---------------------------- */
+
+  listInvoices: () => request<InvoiceSummary[]>("/api/invoices"),
+  accountInvoices: (id: string) => request<InvoiceSummary[]>(`/api/accounts/${id}/invoices`),
+  getInvoice: (id: string) => request<Invoice>(`/api/invoices/${id}`),
+  createInvoice: (payload: InvoiceBody) => send<SavedInvoice>("/api/invoices", "POST", payload),
+  updateInvoice: (id: string, payload: InvoiceBody) => send<SavedInvoice>(`/api/invoices/${id}`, "PUT", payload),
+  /** Drafts only — the server refuses anything that was ever issued. */
+  deleteInvoice: (id: string) => send<{ ok: true }>(`/api/invoices/${id}`, "DELETE"),
+  invoiceQuote: (quoteId: string) => send<SavedInvoice>(`/api/quotes/${quoteId}/invoice`, "POST"),
+
+  issueInvoice: (id: string, issueDate?: string) => send<Invoice>(`/api/invoices/${id}/issue`, "POST", { issueDate }),
+  voidInvoice: (id: string) => send<Invoice>(`/api/invoices/${id}/void`, "POST"),
+
+  recordPayment: (id: string, payload: PaymentInput) =>
+    send<SavedInvoice>(`/api/invoices/${id}/payments`, "POST", payload),
+  removePayment: (id: string, paymentId: string) =>
+    send<Invoice>(`/api/invoices/${id}/payments/${paymentId}`, "DELETE"),
+  recordCredit: (id: string, payload: CreditInput) => send<SavedInvoice>(`/api/invoices/${id}/credits`, "POST", payload),
+  removeCredit: (id: string, creditId: string) => send<Invoice>(`/api/invoices/${id}/credits/${creditId}`, "DELETE"),
+
+  aging: (currency: string, asOf?: string) =>
+    request<AgingReport>(`/api/receivables/aging?currency=${currency}${asOf ? `&asOf=${asOf}` : ""}`),
+
+  receivablesCsvUrl: "/api/invoices/export?format=csv",
+  invoiceExportUrl,
+  invoiceExportText: (id: string, format: "csv" | "json") => fetchText(invoiceExportUrl(id, format), "Export"),
 
   /* ------------------------------- documents ----------------------------- */
 

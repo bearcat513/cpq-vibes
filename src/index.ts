@@ -23,6 +23,7 @@ import {
   getPricingRule,
   getProduct,
   getProposalTemplate,
+  getInvoice,
   getQuote,
   listAccounts,
   listApprovalRules,
@@ -31,6 +32,8 @@ import {
   listProducts,
   listProposalTemplates,
   listQuotes,
+  listInvoices,
+  listInvoicesForAccount,
   listQuotesAwaiting,
   listQuotesForAccount,
   updateAccount,
@@ -40,7 +43,15 @@ import {
   updateProduct,
   updateProposalTemplate,
 } from "./server/db";
-import { exportResponse, fileResponse, productRows, quoteRows } from "./server/export";
+import {
+  agingRows,
+  exportResponse,
+  fileResponse,
+  invoiceLineRows,
+  invoiceRows,
+  productRows,
+  quoteRows,
+} from "./server/export";
 import { ApiError, asRecord, fail, formatParam, handler, intParam, query, readJson } from "./server/http";
 import { readPreferences, writePreferences } from "./server/preferences";
 import {
@@ -55,6 +66,19 @@ import {
   transitionQuote,
   withExpiry,
 } from "./server/quotes";
+import {
+  ageReceivables,
+  createBlankInvoice,
+  discardInvoice,
+  invoiceQuote,
+  issueInvoice,
+  recordCredit,
+  recordPayment,
+  removeCredit,
+  removePayment,
+  saveInvoice,
+  voidInvoice,
+} from "./server/invoices";
 import { installSample } from "./server/seed";
 import { requireToken } from "./server/session";
 import {
@@ -93,15 +117,24 @@ import {
   BILLING_PERIODS,
   CHARGE_TYPES,
   CURRENCIES,
+  INVOICE_STATES,
+  PAYMENT_METHODS,
+  CREDIT_REASONS,
   PRODUCT_RULE_KINDS,
   PROPOSAL_FORMATS,
   QUOTE_STATUSES,
   QUOTE_TRANSITIONS,
   type QuoteStatus,
 } from "./lib/types";
+import { asCurrency } from "./lib/money";
+import { today } from "./lib/receivable";
 import {
   readAccount,
   readApprovalRule,
+  readCredit,
+  readInvoiceHeader,
+  readInvoiceLines,
+  readPayment,
   readPdfTemplate,
   readPriceBook,
   readPricingRule,
@@ -340,6 +373,25 @@ const server = serve({
             "GET    /api/quotes/:id/shares": "Who a quote is shared with",
             "POST   /api/quotes/:id/shares": "{ email } → share it read-only (owner only)",
             "DELETE /api/quotes/:id/shares": "?email= → stop sharing it",
+            "GET    /api/receivables/aging": "The aging report (?currency=, ?asOf=, ?format=csv)",
+            "GET    /api/invoices": "List invoices",
+            "POST   /api/invoices": "Create a draft invoice for a customer",
+            "GET    /api/invoices/export": "Download every invoice with its aging (?format=csv|json)",
+            "GET    /api/invoices/:id": "Read one invoice, with its lines and ledger",
+            "PUT    /api/invoices/:id": "Replace a draft invoice — the server re-totals it",
+            "DELETE /api/invoices/:id": "Discard a draft. An issued invoice is voided, never deleted",
+            "POST   /api/invoices/:id/issue": "{ issueDate? } → date it, set its due date, make it a receivable",
+            "POST   /api/invoices/:id/void": "Cancel one. Refused once a payment is recorded",
+            "POST   /api/invoices/:id/payments": "{ amount, receivedOn?, method?, reference? } → record cash received",
+            "DELETE /api/invoices/:id/payments/:paymentId": "Remove a payment entered in error",
+            "POST   /api/invoices/:id/credits": "{ amount, reason?, issuedOn? } → credit or write off",
+            "DELETE /api/invoices/:id/credits/:creditId": "Remove a credit entered in error",
+            "GET    /api/invoices/:id/export": "Download one invoice (?format=csv|json)",
+            "GET    /api/invoices/:id/shares": "Who an invoice is shared with",
+            "POST   /api/invoices/:id/shares": "{ email } → share it read-only (owner only)",
+            "DELETE /api/invoices/:id/shares": "?email= → stop sharing it",
+            "POST   /api/quotes/:id/invoice": "Raise an invoice for a sent or accepted quote",
+            "GET    /api/accounts/:id/invoices": "One customer's invoices",
             "GET    /api/proposal-templates": "List templates you own or that are shared with you",
             "POST   /api/proposal-templates": "Create a proposal template",
             "GET    /api/proposal-templates/:id": "Read one template",
@@ -378,6 +430,25 @@ const server = serve({
             editable: "draft and rejected. Anything else is revised, not edited.",
             expiry: "A sent quote past validUntil reads as expired without being rewritten.",
             numbering: "Q-<year>-<sequence> per account; a revision appends -r<version>.",
+          },
+          receivables: {
+            what: "The server totals every invoice it stores. Totals and balances in a request body are ignored.",
+            states: INVOICE_STATES,
+            derived:
+              "Nothing about an invoice's condition is stored. open, part paid, paid and overdue are worked out " +
+              "from the ledger and the date, every time they are asked for — a stored 'overdue' is wrong the " +
+              "morning after it is written.",
+            balance: "total − payments − credits. It may go negative: an overpaid invoice owes money back.",
+            editing: "draft only. An issued invoice is changed with a credit, never an edit.",
+            numbering: "INV-<year>-<sequence> per account. Nothing ever issued is deleted, so the run stays gapless.",
+            paymentMethods: PAYMENT_METHODS,
+            creditReasons: CREDIT_REASONS,
+            aging: "Five buckets on the balance, not the total: not yet due, 1–30, 31–60, 61–90, 90+ days past due.",
+            currency: "Nothing adds two currencies. Invoices in another are counted and reported, never summed.",
+            fromQuotes:
+              "A sent or accepted quote raises a draft invoice for its whole contract value, with the quote " +
+              "discount, any adjustment and shipping as their own lines. Billing a subscription period by " +
+              "period is a billing schedule, which this does not do.",
           },
           proposals: {
             what: "A quote rendered through a template — HTML, Markdown, plain text or PDF.",
@@ -509,6 +580,21 @@ const server = serve({
 
     "/api/accounts": accounts.collection,
     "/api/accounts/:id": accounts.record,
+
+    /**
+     * One customer's invoices — what they owe, and what they have paid.
+     *
+     * The aging of it is worked out by src/lib/receivable.ts from these
+     * records, in the browser and on the server alike, rather than being a
+     * number this endpoint asserts.
+     */
+    "/api/accounts/:id/invoices": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const account = await getAccount(token, req.params.id);
+        if (!account) return fail("Account not found.", 404);
+        return Response.json(await listInvoicesForAccount(token, account.id));
+      }),
+    },
 
     /**
      * One customer's quote history, newest first.
@@ -770,6 +856,21 @@ const server = serve({
       ),
     },
 
+    /**
+     * Raises an invoice for a whole quote.
+     *
+     * The quote has to have been sent or accepted — a deposit invoice before
+     * the signature comes back is ordinary, billing a draft is not. The
+     * invoice arrives as a draft, with warnings naming anything worth reading
+     * before it is issued: a quote already invoiced, or a total that does not
+     * match the quote's to the penny.
+     */
+    "/api/quotes/:id/invoice": {
+      POST: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await invoiceQuote(token, req.params.id), { status: 201 }),
+      ),
+    },
+
     "/api/quotes/:id/submit": {
       POST: guarded<{ params: { id: string } }>(async (token, req) =>
         Response.json(await submitQuote(token, req.params.id)),
@@ -886,6 +987,133 @@ const server = serve({
 
     "/api/quotes/:id/shares": shareRoutes("quotes"),
 
+    /* ------------------------------ receivables -------------------------- */
+
+    /**
+     * The aging report: what is owed, in five columns, as of a date.
+     *
+     * `?currency=` because nothing here adds two currencies together — an
+     * account is denominated in one, but it can hold an invoice in another,
+     * and a book that quietly summed them would be a confident wrong number.
+     * `?asOf=` ages it against a date other than today, which is how last
+     * month's report gets reproduced.
+     */
+    "/api/receivables/aging": {
+      GET: guarded(async (token, req) => {
+        const parameters = query(req);
+        const currency = asCurrency(parameters.get("currency") ?? undefined);
+        const asOf = parameters.get("asOf") || today();
+        const report = await ageReceivables(token, currency, asOf);
+
+        const format = formatParam(parameters);
+        if (format === "csv") return exportResponse(agingRows(report), "csv", `aging-${report.asOf}`);
+        return Response.json(report);
+      }),
+    },
+
+    "/api/invoices": {
+      GET: guarded(async token => Response.json(await listInvoices(token))),
+
+      /**
+       * A blank invoice for a customer.
+       *
+       * Raised as a draft, always: an invoice is issued by a separate,
+       * deliberate act, because issuing is what makes it a receivable and
+       * fixes its lines.
+       */
+      POST: guarded(async (token, req) => {
+        const raw = await body(req);
+        const header = must(readInvoiceHeader(raw));
+        const lines = must(readInvoiceLines(raw.lines));
+        return Response.json(await createBlankInvoice(token, header, lines), { status: 201 });
+      }),
+    },
+
+    /** Every invoice as a spreadsheet, with its derived status and aging. */
+    "/api/invoices/export": {
+      GET: guarded(async (token, req) => {
+        const all = await listInvoices(token);
+        const format = formatParam(query(req));
+        const asOf = query(req).get("asOf") || today();
+        if (format === "csv") return exportResponse(invoiceRows(all, asOf), "csv", "receivables");
+        return exportResponse(invoiceRows(all, asOf), "json", "receivables", all);
+      }),
+    },
+
+    "/api/invoices/:id": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const invoice = await getInvoice(token, req.params.id);
+        return invoice ? Response.json(invoice) : fail("Invoice not found.", 404);
+      }),
+      /** Draft only — an issued invoice is changed with a credit, not an edit. */
+      PUT: guarded<{ params: { id: string } }>(async (token, req) => {
+        const raw = await body(req);
+        const header = must(readInvoiceHeader(raw));
+        const lines = must(readInvoiceLines(raw.lines));
+        return Response.json(await saveInvoice(token, req.params.id, header, lines));
+      }),
+      /** Draft only. Anything ever issued is voided instead, to keep the numbers gapless. */
+      DELETE: guarded<{ params: { id: string } }>(async (token, req) => {
+        await discardInvoice(token, req.params.id);
+        return Response.json({ ok: true });
+      }),
+    },
+
+    "/api/invoices/:id/export": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const invoice = await getInvoice(token, req.params.id);
+        if (!invoice) return fail("Invoice not found.", 404);
+        return exportResponse(
+          invoiceLineRows(invoice),
+          formatParam(query(req)) ?? "json",
+          invoice.number,
+          invoice,
+        );
+      }),
+    },
+
+    /** Dates it, works out when it falls due, and makes it a receivable. */
+    "/api/invoices/:id/issue": {
+      POST: guarded<{ params: { id: string } }>(async (token, req) => {
+        const on = String((await body(req)).issueDate ?? "").slice(0, 10);
+        return Response.json(await issueInvoice(token, req.params.id, on));
+      }),
+    },
+
+    /** The admission that it should never have been raised. Refused once anything is paid. */
+    "/api/invoices/:id/void": {
+      POST: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await voidInvoice(token, req.params.id)),
+      ),
+    },
+
+    "/api/invoices/:id/payments": {
+      POST: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await recordPayment(token, req.params.id, must(readPayment(await body(req)))), { status: 201 }),
+      ),
+    },
+
+    /** Removes a bookkeeping entry that should not have existed. Not a refund. */
+    "/api/invoices/:id/payments/:paymentId": {
+      DELETE: guarded<{ params: { id: string; paymentId: string } }>(async (token, req) =>
+        Response.json(await removePayment(token, req.params.id, req.params.paymentId)),
+      ),
+    },
+
+    "/api/invoices/:id/credits": {
+      POST: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await recordCredit(token, req.params.id, must(readCredit(await body(req)))), { status: 201 }),
+      ),
+    },
+
+    "/api/invoices/:id/credits/:creditId": {
+      DELETE: guarded<{ params: { id: string; creditId: string } }>(async (token, req) =>
+        Response.json(await removeCredit(token, req.params.id, req.params.creditId)),
+      ),
+    },
+
+    "/api/invoices/:id/shares": shareRoutes("invoices"),
+
     /* --------------------------- proposal templates ---------------------- */
 
     "/api/proposal-templates": proposalTemplates.collection,
@@ -904,21 +1132,25 @@ const server = serve({
         const me = await sessionUser(req);
         if (!me) return fail("Sign in to continue.", 401);
 
-        const [productList, books, pricing, approvals, accountList, templates, quoteList] = await Promise.all([
-          listProducts(token),
-          listPriceBooks(token),
-          listPricingRules(token),
-          listApprovalRules(token),
-          listAccounts(token),
-          listProposalTemplates(token),
-          listQuotes(token, 0),
-        ]);
+        const [productList, books, pricing, approvals, accountList, templates, quoteList, invoiceList] =
+          await Promise.all([
+            listProducts(token),
+            listPriceBooks(token),
+            listPricingRules(token),
+            listApprovalRules(token),
+            listAccounts(token),
+            listProposalTemplates(token),
+            listQuotes(token, 0),
+            listInvoices(token),
+          ]);
 
-        // The list view drops the lines, and a workspace export without them
-        // would be a list of quote numbers. Read each one whole.
-        const quotes = (await Promise.all(quoteList.map(summary => getQuote(token, summary.id)))).filter(
-          (quote): quote is NonNullable<typeof quote> => quote !== null,
-        );
+        // The list views drop the lines, and a workspace export without them
+        // would be a list of numbers. Read each one whole — an invoice for its
+        // ledger as much as its lines.
+        const [quotes, invoices] = await Promise.all([
+          Promise.all(quoteList.map(summary => getQuote(token, summary.id))),
+          Promise.all(invoiceList.map(summary => getInvoice(token, summary.id))),
+        ]);
 
         return fileResponse(
           serializeWorkspaceFile({
@@ -930,7 +1162,8 @@ const server = serve({
             approvalRules: approvals,
             accounts: accountList,
             templates,
-            quotes,
+            quotes: quotes.filter((quote): quote is NonNullable<typeof quote> => quote !== null),
+            invoices: invoices.filter((invoice): invoice is NonNullable<typeof invoice> => invoice !== null),
             preferences: me.preferences,
           }),
           "application/json; charset=utf-8",

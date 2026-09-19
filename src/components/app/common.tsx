@@ -11,7 +11,14 @@ import { Badge } from "@/components/ui/badge";
 import { BrandWatermark } from "./Brand";
 import { Label } from "@/components/ui/label";
 import { formatMoney, formatPercent } from "@/lib/money";
-import { ACCOUNT_STATUS_LABELS, type AccountStatus, type CurrencyCode, type QuoteStatus } from "@/lib/types";
+import {
+  ACCOUNT_STATUS_LABELS,
+  INVOICE_STATUS_LABELS,
+  type AccountStatus,
+  type CurrencyCode,
+  type InvoiceStatus,
+  type QuoteStatus,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /* -------------------------------- status --------------------------------- */
@@ -61,6 +68,26 @@ const ACCOUNT_STATUS_TONE: Record<AccountStatus, "neutral" | "pending" | "succes
 
 export function AccountStatusBadge({ status }: { status: AccountStatus }) {
   return <Badge tone={ACCOUNT_STATUS_TONE[status] ?? "neutral"}>{ACCOUNT_STATUS_LABELS[status] ?? status}</Badge>;
+}
+
+/**
+ * An invoice's condition — worked out by `invoiceStatus`, never stored.
+ *
+ * Clay for overdue, because it is the one that needs somebody to pick up the
+ * phone; moss for paid; and nothing for a draft, which is not yet a
+ * receivable and should not look like one.
+ */
+const INVOICE_STATUS_TONE: Record<InvoiceStatus, "neutral" | "info" | "pending" | "success" | "danger"> = {
+  draft: "neutral",
+  open: "info",
+  part_paid: "pending",
+  paid: "success",
+  overdue: "danger",
+  void: "neutral",
+};
+
+export function InvoiceStatusBadge({ status }: { status: InvoiceStatus }) {
+  return <Badge tone={INVOICE_STATUS_TONE[status] ?? "neutral"}>{INVOICE_STATUS_LABELS[status] ?? status}</Badge>;
 }
 
 /* ------------------------------- formatting ------------------------------ */

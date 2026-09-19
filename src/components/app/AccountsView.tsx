@@ -38,6 +38,8 @@ type Props = {
   onChanged: () => Promise<void>;
   onError: (error: unknown) => void;
   onOpenQuote: (id: string) => void;
+  /** Switches to the receivables screen, where an invoice can be acted on. */
+  onOpenReceivables: () => void;
   confirmed: (message: string) => boolean;
 };
 
@@ -54,7 +56,16 @@ type Props = {
  * same shape the quote editor uses, because a customer with a history is a
  * thing you read rather than a row you edit in place.
  */
-export function AccountsView({ accounts, priceBooks, preferences, onChanged, onError, onOpenQuote, confirmed }: Props) {
+export function AccountsView({
+  accounts,
+  priceBooks,
+  preferences,
+  onChanged,
+  onError,
+  onOpenQuote,
+  onOpenReceivables,
+  confirmed,
+}: Props) {
   const [editing, setEditing] = useState<Account | null | undefined>(undefined);
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -114,6 +125,7 @@ export function AccountsView({ accounts, priceBooks, preferences, onChanged, onE
           onBack={() => setOpenId(null)}
           onEdit={() => setEditing(open)}
           onOpenQuote={onOpenQuote}
+          onOpenReceivables={onOpenReceivables}
           onError={onError}
         />
         {editor}
@@ -323,6 +335,8 @@ const BLANK: AccountInput = {
   currency: "USD",
   priceBookId: "",
   paymentTerms: "Net 30",
+  paymentTermDays: 30,
+  creditLimit: 0,
   defaultDiscountPercent: 0,
   taxExempt: false,
   taxPercent: 0,

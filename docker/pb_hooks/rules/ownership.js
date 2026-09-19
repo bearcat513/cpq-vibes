@@ -18,7 +18,16 @@
  * left alone too: the dashboard, migrations and maintenance scripts are the
  * one place ownership is set by hand.
  */
-const OWNED = ["accounts", "products", "price_books", "pricing_rules", "approval_rules", "proposal_templates", "quotes"];
+const OWNED = [
+  "accounts",
+  "products",
+  "price_books",
+  "pricing_rules",
+  "approval_rules",
+  "proposal_templates",
+  "quotes",
+  "invoices",
+];
 
 /** Quotes are updated under rules/approvals.js instead. */
 const UPDATE_GUARDED = OWNED.filter(name => name !== "quotes");

@@ -513,6 +513,8 @@ export const SAMPLE_ACCOUNTS: AccountInput[] = [
     currency: "USD",
     priceBookId: "",
     paymentTerms: "Net 30",
+    paymentTermDays: 30,
+    creditLimit: 250_000,
     defaultDiscountPercent: 0,
     taxExempt: false,
     taxPercent: 8.5,
@@ -564,6 +566,8 @@ export const SAMPLE_ACCOUNTS: AccountInput[] = [
     currency: "USD",
     priceBookId: "",
     paymentTerms: "Net 45",
+    paymentTermDays: 45,
+    creditLimit: 0,
     defaultDiscountPercent: 5,
     taxExempt: true,
     taxPercent: 0,
@@ -1071,6 +1075,68 @@ export const SAMPLE_QUOTE = {
     { sku: "TRAIN", quantity: 12, discountPercent: 0, options: [] },
   ],
 } as const;
+
+/* ------------------------------ receivables ------------------------------ */
+
+/**
+ * Three invoices, so the receivables screen arrives with a book on it rather
+ * than five empty columns.
+ *
+ * Deliberately spread across the aging: one settled, one a fortnight late and
+ * part paid, one badly overdue. The dates are relative to the day the sample
+ * is installed, so the aging always reads the same however long the app has
+ * been sitting there — an example whose numbers depend on when you clicked it
+ * teaches nothing.
+ */
+export const SAMPLE_INVOICES: {
+  accountName: string;
+  /** Issued this many days before the install. Its terms decide when it fell due. */
+  issuedDaysAgo: number;
+  poNumber: string;
+  notes: string;
+  lines: { sku: string; description: string; quantity: number; unitPrice: number; taxPercent: number }[];
+  /** Cash received against it, as a fraction of the total. 1 settles it. */
+  paidFraction: number;
+  paidDaysAgo: number;
+}[] = [
+  {
+    accountName: "Harbour Logistics",
+    // Net 30, issued 20 days ago: not yet due, and already paid in full.
+    issuedDaysAgo: 20,
+    poNumber: "PO-88213",
+    notes: "Thank you — this covers the first year of the platform subscription.",
+    lines: [
+      { sku: "PLAT-CORE", description: "Platform — Enterprise, 40 users × 12 months", quantity: 480, unitPrice: 93.6, taxPercent: 8.5 },
+    ],
+    paidFraction: 1,
+    paidDaysAgo: 6,
+  },
+  {
+    accountName: "Harbour Logistics",
+    // Net 30, issued 45 days ago: a fortnight past due, half paid.
+    issuedDaysAgo: 45,
+    poNumber: "PO-88110",
+    notes: "Onboarding delivered in March. Balance due on the agreed terms.",
+    lines: [
+      { sku: "ONBOARD", description: "Guided onboarding — standard scope", quantity: 1, unitPrice: 9_500, taxPercent: 8.5 },
+      { sku: "TRAIN", description: "Administrator training, 12 seats", quantity: 12, unitPrice: 450, taxPercent: 8.5 },
+    ],
+    paidFraction: 0.5,
+    paidDaysAgo: 12,
+  },
+  {
+    accountName: "Meridian Health",
+    // Net 45, issued 160 days ago: comfortably into the 90+ column, untouched.
+    issuedDaysAgo: 160,
+    poNumber: "",
+    notes: "Storage overage for the prior quarter.",
+    lines: [
+      { sku: "STOR", description: "Managed storage overage — Q4", quantity: 60, unitPrice: 38, taxPercent: 0 },
+    ],
+    paidFraction: 0,
+    paidDaysAgo: 0,
+  },
+];
 
 /* ----------------------------- the specimen ------------------------------ */
 

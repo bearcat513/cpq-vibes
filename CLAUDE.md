@@ -108,7 +108,8 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 ## This project
 
 A CPQ app: catalogue (products with options, configuration rules, volume tiers and bundles), price
-books, pricing and approval rules, quotes, and proposal documents.
+books, pricing and approval rules, quotes, proposal documents, and the receivables ledger the
+accepted ones turn into.
 
 Storage is **PocketBase**, not `bun:sqlite`. The app and the database run together under Docker
 Compose (`bun run docker:up`).
@@ -119,9 +120,10 @@ may see — the server holds no credentials and can grant nothing on its own. Ne
 superuser client for ordinary reads and writes; if something needs privilege, it belongs in
 `docker/pb_hooks/` as a route, the way sharing and approver stamping do.
 
-**The server prices every quote it stores.** Totals in a request body are ignored and overwritten.
-The engine is pure and lives in `src/lib/`, so the browser runs it for live feedback and the server
-runs the same code for the record — never fork them.
+**The server prices every quote and totals every invoice it stores.** Totals in a request body are
+ignored and overwritten. The engine is pure and lives in `src/lib/`, so the browser runs it for live
+feedback and the server runs the same code for the record — never fork them. For an invoice the
+stakes are sharper: a client that could set its own balance could mark its own debts paid.
 
 - `src/lib/pricing.ts` — the pricing pipeline, and `PRICING_VARIABLES` for the rule editors
 - `src/lib/money.ts` — round at every step, to the currency's precision; sum rounded numbers only
@@ -134,6 +136,13 @@ runs the same code for the record — never fork them.
 - `src/lib/approvals.ts` — the approval ladder. Levels are cumulative, an edit voids decisions, and
   a rule asks several people with separate approve/reject quorums. A request's `status` is derived
   by `requestStatus` from the votes it carries, never assigned
+- `src/lib/receivable.ts` — accounts receivable, and the one file to read before touching an
+  invoice. **Nothing about an invoice's condition is stored**: only `state` (draft / issued / void)
+  is recorded, and `invoiceStatus` derives open, part paid, paid and overdue from the ledger and the
+  date every time they are asked for — a stored "overdue" is wrong the morning after it is written.
+  A balance is `total − payments − credits` and **may go negative**: an overpaid invoice owes money
+  back, and clamping it at zero loses a customer's money. Aging buckets the **balance**, not the
+  total, and never adds two currencies — invoices in another are counted and reported
 - `src/lib/proposal.ts` — `{{token}}` rendering, escaped per format; owns the token vocabulary
 - `src/lib/pdf.ts` / `pdfFonts.ts` — a dependency-free PDF writer: a top-down cursor, tables that
   paginate, the standard 14 fonts and WinAnsi encoding, and image XObjects. No embedded fonts
@@ -149,6 +158,16 @@ runs the same code for the record — never fork them.
   an export, a share and an import; `tools/sampleBrand.ts` draws the sample workspace's logo
 - `src/lib/validate.ts` — every untrusted input, shared by the REST API and the file importer
 - `src/server/quotes.ts` — pricing orchestration, lifecycle and revisions
+- `src/server/invoices.ts` — the receivables orchestration, and where three rules are enforced
+  rather than left to the UI: **an issued invoice's lines are fixed** (change what is owed with a
+  credit, not an edit), **only an issued invoice has a ledger** (nothing to pay against a draft),
+  and **nothing ever issued is deleted** — invoice numbers have to be gapless, so a draft may be
+  discarded and anything past that is voided. Voiding is refused once a payment exists; an
+  over-credit is refused because unlike an overpayment it is always a typo on your own side.
+  `invoiceQuote` bills a sent or accepted quote for its whole contract value, with the quote
+  discount, any adjustment and shipping as their own lines, and warns rather than hides it when the
+  total lands a penny off the quote's. Billing a subscription period by period is a billing
+  schedule — the obvious next layer, and deliberately not here
 - `src/server/db.ts` — the collections. Every call takes a token and is async
 - `src/server/share.ts` — proxies to PocketBase's `/api/cpq/...` hook routes: sharing, approver
   stamping, and the account directory (`GET /api/directory`, id/email/name only). All three need to
@@ -188,6 +207,16 @@ right-hand, full-height panel. Only things meant to be read (a rendered proposal
 `components/ui/dialog.tsx`. The sheet's body is a `@container`, so forms inside it use container
 queries (`@md:grid-cols-2`), never viewport ones — `sm:grid-cols-4` would still be four columns in
 a 500px panel. `src/components/sheet.test.tsx` asserts both halves of that rule.
+
+**Receivables are a separate collection, not a quote state.** A quote is an offer that gets revised
+and superseded; an invoice is a number sitting in somebody's accounts payable. `invoices` keeps
+`state`, `dueDate` and `balance` as real columns because those three are what an aging query filters
+and sorts on — and keeps no `status` column at all, for the reason in `src/lib/receivable.ts`. An
+account carries `paymentTermDays` (the number an invoice's due date is computed from, seeded out of
+the free-text "Net 30" for rows written before receivables) and an advisory `creditLimit`: nothing
+here blocks a quote on it, because a limit somebody typed last year would be wrong more often than
+right. A new collection needs adding to `OWNED` in `docker/pb_hooks/rules/ownership.js`, or its
+records are created with no owner and every rule misses them.
 
 **A customer is a record with people in it.** An account carries a `contacts` list — one of them
 `primary`, which is who a quote is addressed to and what `snapshotCustomer` flattens onto the

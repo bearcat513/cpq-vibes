@@ -524,6 +524,20 @@ export type Account = {
   priceBookId: string;
   /** "Net 30". Copied onto the quote and rendered on the proposal. */
   paymentTerms: string;
+  /**
+   * The same terms as a number, which is the form anything can calculate
+   * with: an invoice's due date is its issue date plus this. Kept beside the
+   * text rather than parsed out of it at the point of use, because "Net 30
+   * from end of month" is a sentence no due-date function should be reading.
+   * `readAccount` seeds it from the text when the text names a number.
+   */
+  paymentTermDays: number;
+  /**
+   * The most this customer may owe at once, in their currency. 0 is "no
+   * limit set" rather than "no credit": a limit nobody has thought about
+   * should not stop a sale, it should just not claim to be a limit.
+   */
+  creditLimit: number;
   /** A standing discount every quote for this account starts with, 0-100. */
   defaultDiscountPercent: number;
   taxExempt: boolean;
@@ -834,4 +848,204 @@ export type ProposalTemplate = {
   sharedWith: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+/* ------------------------------ receivables ------------------------------ */
+
+/**
+ * An invoice: what a customer owes, and what has come back against it.
+ *
+ * A quote is an offer and an invoice is a demand, which is why they are
+ * separate records rather than two states of one. The quote can be revised,
+ * superseded and re-priced; the invoice is a number sent to an accounts
+ * payable department, and the only honest way to change it is to credit it.
+ *
+ * Two conventions, both borrowed from elsewhere in this app because they
+ * earned their keep there.
+ *
+ * **The invoice carries its own copy of everything.** The customer, their
+ * address, the payment terms it was raised under, the price of every line.
+ * The account can move to Net 60 tomorrow; an invoice already issued is still
+ * due when it was always due.
+ *
+ * **Its status is derived, never assigned.** Only `state` is recorded — is it
+ * a draft, has it been issued, was it voided — and everything a person
+ * actually reads (open, part paid, paid, overdue) is worked out from the
+ * ledger it carries and the date, by `invoiceStatus` in src/lib/receivable.ts.
+ * The alternative is a stored status that disagrees with the arithmetic, and
+ * in accounts receivable that is the one bug nobody forgives.
+ */
+
+/** How the money arrived. Reporting only — none of it changes the maths. */
+export type PaymentMethod = "bank_transfer" | "card" | "cheque" | "cash" | "other";
+
+export const PAYMENT_METHODS: PaymentMethod[] = ["bank_transfer", "card", "cheque", "cash", "other"];
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  bank_transfer: "Bank transfer",
+  card: "Card",
+  cheque: "Cheque",
+  cash: "Cash",
+  other: "Other",
+};
+
+/** Cash actually received against one invoice. */
+export type InvoicePayment = {
+  id: string;
+  /**
+   * ISO date the money arrived — not the day somebody keyed it in. Aging is
+   * measured against the calendar, so the difference is a real one.
+   */
+  receivedOn: string;
+  amount: number;
+  method: PaymentMethod;
+  /** Bank reference, cheque number, processor id — whatever ties it to a statement. */
+  reference: string;
+  note: string;
+  /** When this row was added here, which is an audit fact rather than a money one. */
+  recordedAt: string;
+};
+
+/**
+ * Why an amount was taken off an invoice without anybody paying it.
+ *
+ * `write_off` is the one that matters to a finance team: it is the admission
+ * that the money is not coming, and it is deliberately not the same thing as
+ * an `adjustment` that corrects an invoice raised wrongly.
+ */
+export type CreditReason = "adjustment" | "return" | "goodwill" | "write_off";
+
+export const CREDIT_REASONS: CreditReason[] = ["adjustment", "return", "goodwill", "write_off"];
+
+export const CREDIT_REASON_LABELS: Record<CreditReason, string> = {
+  adjustment: "Adjustment",
+  return: "Return",
+  goodwill: "Goodwill",
+  write_off: "Write-off",
+};
+
+/** An amount forgiven, corrected or written off. Reduces the balance; no cash moved. */
+export type InvoiceCredit = {
+  id: string;
+  issuedOn: string;
+  amount: number;
+  reason: CreditReason;
+  note: string;
+  recordedAt: string;
+};
+
+/**
+ * One billable line.
+ *
+ * Tax is per line rather than per invoice, because a single invoice very
+ * often mixes rates — zero-rated services beside standard-rated goods — and
+ * an invoice that can only hold one rate forces the seller to split the
+ * document to stay correct.
+ */
+export type InvoiceLine = {
+  id: string;
+  /** The quote line this was raised from, when it came from a quote. */
+  sourceLineId: string | null;
+  sku: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  /** `quantity × unitPrice`, rounded. Recomputed on every save, never trusted. */
+  amount: number;
+  taxPercent: number;
+  taxAmount: number;
+};
+
+/**
+ * What is recorded about an invoice — the whole of what anyone sets.
+ *
+ * `draft` is still the seller's to change. `issued` has gone to the customer
+ * and is now a receivable. `void` is an invoice that should never have
+ * existed; an invoice that existed and will not be paid is written off with a
+ * credit instead, because the difference is one a finance team reports on.
+ */
+export type InvoiceState = "draft" | "issued" | "void";
+
+export const INVOICE_STATES: InvoiceState[] = ["draft", "issued", "void"];
+
+/**
+ * What an invoice *is*, once the ledger and the calendar have had their say.
+ *
+ * Derived by `invoiceStatus`, never stored. `overdue` in particular cannot be
+ * a stored value: nothing happens on the due date except the date arriving.
+ */
+export type InvoiceStatus = "draft" | "open" | "part_paid" | "paid" | "overdue" | "void";
+
+export const INVOICE_STATUSES: InvoiceStatus[] = ["draft", "open", "part_paid", "paid", "overdue", "void"];
+
+export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
+  draft: "Draft",
+  open: "Open",
+  part_paid: "Part paid",
+  paid: "Paid",
+  overdue: "Overdue",
+  void: "Void",
+};
+
+export type InvoiceTotals = {
+  currency: CurrencyCode;
+  lineCount: number;
+  /** Every line, before tax. */
+  subtotal: number;
+  taxAmount: number;
+  /** What was demanded: subtotal plus tax. */
+  total: number;
+  /** Cash received. */
+  paidAmount: number;
+  /** Amounts credited or written off. */
+  creditedAmount: number;
+  /**
+   * `total − paid − credited`, and **allowed to be negative**: a customer who
+   * pays an invoice twice is owed the difference, and clamping it at zero
+   * would be the app quietly losing their money.
+   */
+  balance: number;
+};
+
+export type Invoice = {
+  id: string;
+  /** Human-facing and sequential per account: "INV-2026-0007". */
+  number: string;
+  /** The quote this was raised from, if any. */
+  quoteId: string | null;
+  /** Its number, snapshotted, so the link still reads after the quote is gone. */
+  quoteNumber: string;
+  customer: CustomerSnapshot;
+  currency: CurrencyCode;
+  state: InvoiceState;
+  /** ISO date. Empty until it is issued — a draft has no date on it. */
+  issueDate: string;
+  /** ISO date: `issueDate` plus the terms below. What aging is measured from. */
+  dueDate: string;
+  /**
+   * The terms this invoice was raised under, in days, snapshotted from the
+   * customer. Moving an account to Net 60 must not move a due date that an
+   * accounts payable department has already diarised.
+   */
+  paymentTermDays: number;
+  /** The customer's own purchase order reference. Many will not pay without it. */
+  poNumber: string;
+  /** Printed on the invoice. */
+  notes: string;
+  /** Never shown to the customer — the collections note. */
+  internalNotes: string;
+  lines: InvoiceLine[];
+  payments: InvoicePayment[];
+  credits: InvoiceCredit[];
+  totals: InvoiceTotals;
+  ownerId: string;
+  sharedWith: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** An invoice without its ledger — what the list endpoint returns. */
+export type InvoiceSummary = Omit<Invoice, "lines" | "payments" | "credits"> & {
+  lineCount: number;
+  paymentCount: number;
 };

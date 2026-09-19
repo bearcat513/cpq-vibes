@@ -1,6 +1,6 @@
 /**
- * Sharing a product, price book, quote or proposal template with another
- * account.
+ * Sharing a product, price book, quote, invoice or proposal template with
+ * another account.
  *
  * This lives in PocketBase rather than in the Bun server for two reasons.
  * Resolving an email address to an account needs to read the `users`
@@ -12,7 +12,7 @@
  * Read-only sharing: a recipient may list and view the record, and nothing
  * else. That is enforced by the collection rules, not here.
  */
-const SHAREABLE = ["products", "price_books", "quotes", "proposal_templates"];
+const SHAREABLE = ["products", "price_books", "quotes", "invoices", "proposal_templates"];
 const MAX_SHARES = 50;
 
 /** Everything a caller may learn about one record's sharing. */
@@ -49,7 +49,9 @@ function emailsOf(app, ids) {
 function load(e) {
   const collection = e.request.pathValue("collection");
   if (SHAREABLE.indexOf(collection) === -1) {
-    throw new BadRequestError("Only products, price books, quotes and proposal templates can be shared.");
+    throw new BadRequestError(
+      "Only products, price books, quotes, invoices and proposal templates can be shared.",
+    );
   }
 
   let record;

@@ -263,7 +263,8 @@ export function SettingsPanel(props: Props) {
             {meta.reachable ? (
               <>
                 {meta.products ?? 0} products · {meta.priceBooks ?? 0} price books · {meta.accounts ?? 0} customers ·{" "}
-                {meta.quotes ?? 0} quotes · {meta.proposalTemplates ?? 0} templates, in PocketBase at{" "}
+                {meta.quotes ?? 0} quotes · {meta.invoices ?? 0} invoices · {meta.proposalTemplates ?? 0} templates,
+                in PocketBase at{" "}
                 <code>{meta.url}</code>
               </>
             ) : (

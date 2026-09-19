@@ -53,8 +53,10 @@ import {
   CHARGE_TYPES,
   COMPARATORS,
   CONTACT_ROLES,
+  CREDIT_REASONS,
   CURRENCIES,
   EMPTY_ADDRESS,
+  PAYMENT_METHODS,
   PRICING_RULE_TARGETS,
   PRODUCT_RULE_KINDS,
   PROPOSAL_FORMATS,
@@ -66,6 +68,9 @@ import {
   type BillingPeriod,
   type BundleComponent,
   type ChargeType,
+  type InvoiceCredit,
+  type InvoiceLine,
+  type InvoicePayment,
   type OptionGroup,
   type PriceBook,
   type PriceBookEntry,
@@ -581,6 +586,28 @@ function readContacts(input: Record<string, unknown>): Validated<AccountContact[
   return valid(contacts);
 }
 
+/**
+ * Payment terms as a number of days.
+ *
+ * Taken from `paymentTermDays` when it is given, and otherwise read out of
+ * the terms text: an account written before receivables existed says "Net 30"
+ * and nothing else, and defaulting all of those to 30 would quietly re-term
+ * every Net 45 customer in the workspace. A text naming no number falls back
+ * to the default, which is the only thing left to do with "On receipt".
+ */
+export const DEFAULT_PAYMENT_TERM_DAYS = 30;
+
+/** Two years of credit is not terms, it is a data entry slip. */
+const MAX_PAYMENT_TERM_DAYS = 730;
+
+export function readPaymentTermDays(raw: unknown, terms: string): number {
+  if (raw !== undefined && raw !== null && raw !== "") {
+    return integer(raw, DEFAULT_PAYMENT_TERM_DAYS, 0, MAX_PAYMENT_TERM_DAYS);
+  }
+  const named = /(\d{1,3})/.exec(terms);
+  return named ? integer(named[1], DEFAULT_PAYMENT_TERM_DAYS, 0, MAX_PAYMENT_TERM_DAYS) : DEFAULT_PAYMENT_TERM_DAYS;
+}
+
 /** Lowercased, de-duplicated, and short enough to read as a chip. */
 function readTags(raw: unknown): string[] {
   const seen = new Set<string>();
@@ -600,6 +627,7 @@ export function readAccount(raw: unknown): Validated<AccountInput> {
   const name = text(input.name, 200);
   if (!name) return invalid("An account needs a name.");
 
+  const paymentTerms = text(input.paymentTerms, 120);
   const contacts = readContacts(input);
   if (!contacts.ok) return contacts;
 
@@ -626,7 +654,9 @@ export function readAccount(raw: unknown): Validated<AccountInput> {
     shippingSameAsBilling,
     currency: asCurrency(input.currency),
     priceBookId: text(input.priceBookId, 40),
-    paymentTerms: text(input.paymentTerms, 120),
+    paymentTerms,
+    paymentTermDays: readPaymentTermDays(input.paymentTermDays, paymentTerms),
+    creditLimit: atLeastZero(number(input.creditLimit, 0)),
     defaultDiscountPercent: percent(input.defaultDiscountPercent),
     taxExempt: flag(input.taxExempt, false),
     taxPercent: percent(input.taxPercent),
@@ -1018,5 +1048,126 @@ export function readQuoteHeader(raw: unknown): Validated<QuoteHeaderInput> {
     validUntil: isoDate(input.validUntil),
     notes: text(input.notes, 10_000),
     internalNotes: text(input.internalNotes, 10_000),
+  });
+}
+
+/* ------------------------------ receivables ------------------------------ */
+
+/** An invoice with more lines than this is a data feed, not a document. */
+export const MAX_INVOICE_LINES = 500;
+
+/** Enough ledger entries for a payment plan; past it, something is looping. */
+export const MAX_LEDGER_ENTRIES = 200;
+
+/**
+ * The header of an invoice: everything the caller sets and nothing derived.
+ *
+ * The totals are conspicuously absent, exactly as they are for a quote. The
+ * server works out what an invoice comes to from its lines and its ledger and
+ * overwrites whatever arrived, so a client that posts its own balance is
+ * posting into the void.
+ */
+export type InvoiceHeaderInput = {
+  accountId: string | null;
+  quoteId: string | null;
+  currency: ReturnType<typeof asCurrency>;
+  issueDate: string;
+  paymentTermDays: number;
+  poNumber: string;
+  notes: string;
+  internalNotes: string;
+};
+
+export function readInvoiceHeader(raw: unknown): Validated<InvoiceHeaderInput> {
+  const input = asRecord(raw);
+
+  if (input.currency !== undefined && !isCurrency(input.currency)) {
+    return invalid(`"${String(input.currency)}" is not a currency this app can invoice in (${CURRENCIES.join(", ")}).`);
+  }
+
+  return valid({
+    accountId: text(input.accountId, 40) || null,
+    quoteId: text(input.quoteId, 40) || null,
+    currency: asCurrency(input.currency),
+    // Empty is legal and means "not issued yet"; the server dates it on issue.
+    issueDate: isoDate(input.issueDate),
+    paymentTermDays: readPaymentTermDays(input.paymentTermDays, text(input.paymentTerms, 120)),
+    poNumber: text(input.poNumber, 80),
+    notes: text(input.notes, 10_000),
+    internalNotes: text(input.internalNotes, 10_000),
+  });
+}
+
+function readInvoiceLine(raw: unknown, index: number): InvoiceLine {
+  const input = asRecord(raw);
+  return {
+    id: text(input.id, 60) || localId("inl"),
+    sourceLineId: text(input.sourceLineId, 60) || null,
+    sku: text(input.sku, 60),
+    description: text(input.description, 2_000) || `Line ${index + 1}`,
+    // A negative quantity is how a credit gets smuggled onto an invoice; the
+    // credit ledger is where that belongs, so it is clamped rather than kept.
+    quantity: bounded(number(input.quantity, 1), 1, 0, 1_000_000),
+    // A negative unit price, though, is legitimate: a discount line.
+    unitPrice: number(input.unitPrice, 0),
+    // Both recomputed by the server. Present so the type is whole.
+    amount: 0,
+    taxPercent: percent(input.taxPercent),
+    taxAmount: 0,
+  };
+}
+
+export function readInvoiceLines(raw: unknown): Validated<InvoiceLine[]> {
+  if (raw === undefined || raw === null) return valid([]);
+  if (!Array.isArray(raw)) return invalid("An invoice's lines must be a list.");
+  if (raw.length > MAX_INVOICE_LINES) {
+    return invalid(`An invoice may have at most ${MAX_INVOICE_LINES} lines.`);
+  }
+
+  const lines = raw.map(readInvoiceLine);
+
+  // Ids have to be distinct: the editor keys rows on them, and a duplicate
+  // makes two rows edit as one.
+  const seen = new Set<string>();
+  for (const line of lines) {
+    if (seen.has(line.id)) line.id = localId("inl");
+    seen.add(line.id);
+  }
+
+  return valid(lines);
+}
+
+export type PaymentInput = Omit<InvoicePayment, "id" | "recordedAt">;
+
+export function readPayment(raw: unknown): Validated<PaymentInput> {
+  const input = asRecord(raw);
+
+  const amount = number(input.amount, 0);
+  // Zero is the one amount that means nothing happened, and a negative
+  // payment is a refund — a different event, with its own paperwork.
+  if (!(amount > 0)) return invalid("A payment has to be an amount greater than zero.");
+
+  return valid({
+    receivedOn: isoDate(input.receivedOn) || new Date().toISOString().slice(0, 10),
+    amount,
+    method: oneOf(input.method, PAYMENT_METHODS, "bank_transfer"),
+    reference: text(input.reference, 120),
+    note: text(input.note, 1_000),
+  });
+}
+
+export type CreditInput = Omit<InvoiceCredit, "id" | "recordedAt">;
+
+export function readCredit(raw: unknown): Validated<CreditInput> {
+  const input = asRecord(raw);
+
+  const amount = number(input.amount, 0);
+  if (!(amount > 0)) return invalid("A credit has to be an amount greater than zero.");
+
+  return valid({
+    issuedOn: isoDate(input.issuedOn) || new Date().toISOString().slice(0, 10),
+    amount,
+    reason: oneOf(input.reason, CREDIT_REASONS, "adjustment"),
+    note: text(input.note, 1_000),
   });
 }

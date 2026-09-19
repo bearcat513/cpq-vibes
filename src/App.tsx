@@ -7,6 +7,7 @@ import {
   Package,
   PanelLeftClose,
   PanelLeftOpen,
+  Receipt,
   ScrollText,
   Settings,
   ShieldCheck,
@@ -22,6 +23,7 @@ import { CatalogView } from "@/components/app/CatalogView";
 import { Notice, type NoticeKind } from "@/components/app/common";
 import { QuoteEditor } from "@/components/app/QuoteEditor";
 import { QuoteList } from "@/components/app/QuoteList";
+import { ReceivablesView } from "@/components/app/ReceivablesView";
 import { RulesView } from "@/components/app/RulesView";
 import { SettingsPanel, type SaveState } from "@/components/app/SettingsPanel";
 import { ShareDialog } from "@/components/app/ShareDialog";
@@ -41,7 +43,7 @@ import type {
 import { cn } from "@/lib/utils";
 import "./index.css";
 
-type View = "quotes" | "approvals" | "catalog" | "rules" | "customers" | "templates" | "settings";
+type View = "quotes" | "approvals" | "receivables" | "catalog" | "rules" | "customers" | "templates" | "settings";
 
 type Banner = { kind: NoticeKind; lines: string[] } | null;
 
@@ -54,6 +56,7 @@ const PREFERENCE_SAVE_DELAY_MS = 500;
 const NAV: { id: View; label: string; Icon: typeof LayoutList }[] = [
   { id: "quotes", label: "Quotes", Icon: ScrollText },
   { id: "approvals", label: "Approvals", Icon: ShieldCheck },
+  { id: "receivables", label: "Receivables", Icon: Receipt },
   { id: "catalog", label: "Catalogue", Icon: Package },
   { id: "rules", label: "Rules", Icon: LayoutList },
   { id: "customers", label: "Customers", Icon: Building2 },
@@ -460,6 +463,14 @@ export function App() {
               />
             ) : view === "approvals" ? (
               <ApprovalsQueue quotes={awaiting} preferences={preferences} onOpen={id => void openQuoteById(id)} />
+            ) : view === "receivables" ? (
+              <ReceivablesView
+                accounts={accounts}
+                preferences={preferences}
+                onError={fail}
+                onNotice={notice}
+                confirmed={confirmed}
+              />
             ) : view === "catalog" ? (
               <CatalogView
                 products={products}
@@ -490,6 +501,7 @@ export function App() {
                 onChanged={refresh}
                 onError={fail}
                 onOpenQuote={id => void openQuoteById(id)}
+                onOpenReceivables={() => setView("receivables")}
                 confirmed={confirmed}
               />
             ) : view === "templates" ? (

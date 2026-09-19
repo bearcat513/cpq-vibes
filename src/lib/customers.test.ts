@@ -78,6 +78,8 @@ const account = (name: string, overrides: Partial<Account> = {}): Account => ({
   currency: "USD",
   priceBookId: "",
   paymentTerms: "",
+  paymentTermDays: 30,
+  creditLimit: 0,
   defaultDiscountPercent: 0,
   taxExempt: false,
   taxPercent: 0,

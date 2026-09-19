@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   Building2,
+  CircleDollarSign,
   CircleUser,
   Globe,
   Loader2,
@@ -14,9 +15,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
-import { AccountStatusBadge, EmptyState, Notice, Section, StatusBadge, formatters } from "./common";
+import { AccountStatusBadge, EmptyState, InvoiceStatusBadge, Notice, Section, StatusBadge, formatters } from "./common";
 import { api } from "@/lib/api";
 import { customerStats, EMPTY_STATS, type CustomerStats } from "@/lib/customers";
+import { agingReport, creditPosition, daysOverdue, invoiceStatus, today } from "@/lib/receivable";
 import type { Preferences } from "@/lib/preferences";
 import {
   CONTACT_ROLE_LABELS,
@@ -24,6 +26,7 @@ import {
   type Account,
   type AccountContact,
   type Address,
+  type InvoiceSummary,
   type PriceBook,
   type QuoteSummary,
 } from "@/lib/types";
@@ -36,6 +39,8 @@ type Props = {
   onBack: () => void;
   onEdit: () => void;
   onOpenQuote: (id: string) => void;
+  /** Takes the reader to the receivables screen, where an invoice can be acted on. */
+  onOpenReceivables: () => void;
   onError: (error: unknown) => void;
 };
 
@@ -53,12 +58,47 @@ type Props = {
  * happened to be recent, and the totals underneath would have been wrong in a
  * way nobody could see.
  */
-export function CustomerDetail({ account, priceBooks, preferences, onBack, onEdit, onOpenQuote, onError }: Props) {
+export function CustomerDetail({
+  account,
+  priceBooks,
+  preferences,
+  onBack,
+  onEdit,
+  onOpenQuote,
+  onOpenReceivables,
+  onError,
+}: Props) {
   const [quotes, setQuotes] = useState<QuoteSummary[] | null>(null);
   const [stats, setStats] = useState<CustomerStats>(() => EMPTY_STATS(account.currency));
+  const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
 
   const format = formatters(account.currency, preferences.locale);
   const book = priceBooks.find(candidate => candidate.id === account.priceBookId);
+
+  useEffect(() => {
+    let live = true;
+    setInvoices(null);
+
+    // A failure here is not worth a banner: the aging panel says it could not
+    // be read, and the rest of the page is still worth looking at.
+    void api
+      .accountInvoices(account.id)
+      .then(found => live && setInvoices(found))
+      .catch(() => live && setInvoices([]));
+
+    return () => {
+      live = false;
+    };
+  }, [account.id]);
+
+  const aging = useMemo(
+    () => agingReport(invoices ?? [], account.currency, today()),
+    [invoices, account.currency],
+  );
+  const credit = useMemo(
+    () => creditPosition(account.creditLimit, aging.outstanding, account.currency),
+    [account.creditLimit, account.currency, aging.outstanding],
+  );
 
   useEffect(() => {
     let live = true;
@@ -169,6 +209,118 @@ export function CustomerDetail({ account, priceBooks, preferences, onBack, onEdi
       </Section>
 
       <Section
+        title="Receivables"
+        description={
+          invoices === null
+            ? "Reading…"
+            : aging.invoiceCount + aging.draftCount === 0
+              ? "Nothing invoiced"
+              : `${format.money(aging.outstanding)} outstanding`
+        }
+        actions={
+          invoices && invoices.length > 0 ? (
+            <Button variant="ghost" size="sm" onClick={onOpenReceivables}>
+              <CircleDollarSign /> Open receivables
+            </Button>
+          ) : undefined
+        }
+      >
+        {invoices === null ? (
+          <p className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Reading their ledger…
+          </p>
+        ) : invoices.length === 0 ? (
+          <EmptyState title="Nothing invoiced yet">
+            Raise an invoice from an accepted quote, and what they owe shows up here.
+          </EmptyState>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-px border-b bg-border/60 md:grid-cols-4">
+              <Stat
+                label="Outstanding"
+                value={format.money(aging.outstanding)}
+                hint={`${aging.invoiceCount} unpaid`}
+              />
+              <Stat
+                label="Overdue"
+                value={format.money(aging.overdue)}
+                hint={aging.maxDaysOverdue ? `oldest ${aging.maxDaysOverdue} days` : "nothing late"}
+                tone={aging.overdue > 0 ? "warn" : undefined}
+              />
+              <Stat label="Collected" value={format.money(aging.paidAmount)} hint="settled invoices" />
+              <Stat
+                label={credit.hasLimit ? "Credit available" : "Credit limit"}
+                value={credit.hasLimit ? format.money(credit.available) : "Not set"}
+                hint={credit.hasLimit ? `${credit.usedPercent}% of ${format.money(credit.limit)} used` : "no limit"}
+                tone={credit.overLimit ? "warn" : undefined}
+              />
+            </div>
+
+            <Notice
+              kind="warning"
+              className="m-3"
+              lines={
+                credit.overLimit
+                  ? [
+                      `${account.name} owes ${format.money(credit.outstanding)} against a ` +
+                        `${format.money(credit.limit)} limit — ${format.money(-credit.available)} over. ` +
+                        `Nothing here blocks a quote; it is a conversation to have before the next invoice.`,
+                    ]
+                  : []
+              }
+            />
+
+            <Table>
+              <Thead>
+                <Tr>
+                  <Th>Invoice</Th>
+                  <Th>Status</Th>
+                  <Th>Due</Th>
+                  <Th numeric>Total</Th>
+                  <Th numeric>Balance</Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                {invoices.map(one => {
+                  const row = formatters(one.currency, preferences.locale);
+                  const late = daysOverdue(one, today());
+                  return (
+                    <Tr key={one.id}>
+                      <Td>
+                        <span className="block font-mono text-xs font-medium">{one.number}</span>
+                        {one.quoteNumber && (
+                          <span className="text-xs text-muted-foreground">from {one.quoteNumber}</span>
+                        )}
+                      </Td>
+                      <Td>
+                        <InvoiceStatusBadge status={invoiceStatus(one, today())} />
+                      </Td>
+                      <Td className="text-muted-foreground">
+                        {one.dueDate ? (
+                          <>
+                            {row.date(one.dueDate)}
+                            {late > 0 && <span className="text-clay dark:text-chart-2"> · {late}d</span>}
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </Td>
+                      <Td numeric className="text-muted-foreground">
+                        {row.money(one.totals.total)}
+                      </Td>
+                      <Td numeric className="font-medium">
+                        {row.money(one.totals.balance)}
+                      </Td>
+                    </Tr>
+                  );
+                })}
+              </Tbody>
+            </Table>
+          </>
+        )}
+      </Section>
+
+      <Section
         title="Contacts"
         description={`${account.contacts.length} ${account.contacts.length === 1 ? "person" : "people"}`}
       >
@@ -256,11 +408,18 @@ export function CustomerDetail({ account, priceBooks, preferences, onBack, onEdi
 }
 
 /** One number, set in the serif the rest of the app reserves for printed matter. */
-function Stat({ label, value, hint }: { label: string; value: string; hint: string }) {
+function Stat({ label, value, hint, tone }: { label: string; value: string; hint: string; tone?: "warn" }) {
   return (
     <div className="leaf px-4 py-3">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="font-serif text-lg font-semibold tabular-nums">{value}</p>
+      <p
+        className={cn(
+          "font-serif text-lg font-semibold tabular-nums",
+          tone === "warn" && "text-clay dark:text-chart-2",
+        )}
+      >
+        {value}
+      </p>
       <p className="text-xs text-muted-foreground">{hint}</p>
     </div>
   );

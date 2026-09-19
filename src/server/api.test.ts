@@ -526,6 +526,235 @@ describe("a quote's life", () => {
   });
 });
 
+/* ------------------------------- receivables ----------------------------- */
+
+/*
+ * Placed before the approvals block on purpose: that one creates approval
+ * rules, and once any exist a draft can no longer be sent without going
+ * through them. Everything here needs a quote it can get to `accepted`.
+ */
+describe("receivables", () => {
+  /** A quote taken all the way to accepted, and the invoice raised from it. */
+  let acceptedQuote: any = null;
+  let invoiceId = "";
+
+  /** Walks a fresh quote to `accepted` and hands it back. */
+  const acceptedQuoteFor = async (name: string) => {
+    const created = await post("/api/quotes", quoteBody({ name }));
+    await post(`/api/quotes/${created.quote.id}/submit`, {});
+    await post(`/api/quotes/${created.quote.id}/status`, { status: "sent" });
+    return post(`/api/quotes/${created.quote.id}/status`, { status: "accepted" });
+  };
+
+  signedIn("an accepted quote raises a draft invoice that reconciles with it", async () => {
+    acceptedQuote = await acceptedQuoteFor("To be invoiced");
+
+    const raised = await post(`/api/quotes/${acceptedQuote.id}/invoice`, {});
+    invoiceId = raised.invoice.id;
+
+    expect(raised.invoice.number).toMatch(/^INV-\d{4}-\d{4}$/);
+    // Always a draft: issuing is a separate, deliberate act.
+    expect(raised.invoice.state).toBe("draft");
+    expect(raised.invoice.issueDate).toBe("");
+    expect(raised.invoice.dueDate).toBe("");
+    expect(raised.invoice.quoteId).toBe(acceptedQuote.id);
+    expect(raised.invoice.quoteNumber).toBe(acceptedQuote.number);
+
+    // The customer came from the quote's own snapshot, not from the account.
+    expect(raised.invoice.customer.name).toBe("Harbour Logistics");
+    expect(raised.invoice.lines.length).toBeGreaterThan(0);
+
+    // The whole point: it adds up to what the customer accepted.
+    expect(raised.invoice.totals.total).toBe(acceptedQuote.totals.grandTotal);
+    expect(raised.warnings).toEqual([]);
+  });
+
+  signedIn("the totals in a request body are ignored, the same as a quote's", async () => {
+    const lying = await put(`/api/invoices/${invoiceId}`, {
+      accountId,
+      totals: { total: 1, balance: 0, paidAmount: 999 },
+      lines: [{ description: "One thing", quantity: 2, unitPrice: 50 }],
+    });
+
+    expect(lying.invoice.totals.total).toBe(100);
+    expect(lying.invoice.totals.paidAmount).toBe(0);
+    expect(lying.invoice.totals.balance).toBe(100);
+    // And the line got its own amount worked out for it.
+    expect(lying.invoice.lines[0].amount).toBe(100);
+  });
+
+  signedIn("a quote nobody has sent cannot be invoiced", async () => {
+    const draft = await post("/api/quotes", quoteBody({ name: "Never sent" }));
+    const response = await api(`/api/quotes/${draft.quote.id}/invoice`, { method: "POST" });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("sent or accepted");
+  });
+
+  signedIn("invoicing the same quote twice warns rather than refusing", async () => {
+    // A deposit and then the balance is legitimate; double-billing by
+    // accident is the thing worth saying out loud.
+    const again = await post(`/api/quotes/${acceptedQuote.id}/invoice`, {});
+    expect(again.warnings.join(" ")).toContain("has already been invoiced");
+    await api(`/api/invoices/${again.invoice.id}`, { method: "DELETE" });
+  });
+
+  signedIn("issuing dates it and works out when it falls due", async () => {
+    const issued = await post(`/api/invoices/${invoiceId}/issue`, { issueDate: "2026-03-01" });
+
+    expect(issued.state).toBe("issued");
+    expect(issued.issueDate).toBe("2026-03-01");
+    // Harbour Logistics is Net 30, seeded from their payment terms text.
+    expect(issued.paymentTermDays).toBe(30);
+    expect(issued.dueDate).toBe("2026-03-31");
+  });
+
+  signedIn("an issued invoice's lines are fixed", async () => {
+    const response = await api(`/api/invoices/${invoiceId}`, {
+      method: "PUT",
+      body: JSON.stringify({ accountId, lines: [{ description: "Sneaky", quantity: 1, unitPrice: 5 }] }),
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("credit against it instead");
+  });
+
+  signedIn("an issued invoice is never deleted, only voided", async () => {
+    const response = await api(`/api/invoices/${invoiceId}`, { method: "DELETE" });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("gapless");
+  });
+
+  signedIn("a payment moves the balance and nothing else", async () => {
+    const paid = await post(`/api/invoices/${invoiceId}/payments`, {
+      amount: 40,
+      receivedOn: "2026-03-10",
+      method: "bank_transfer",
+      reference: "FT-99",
+    });
+
+    expect(paid.invoice.totals.paidAmount).toBe(40);
+    expect(paid.invoice.totals.balance).toBe(60);
+    expect(paid.invoice.totals.total).toBe(100);
+    expect(paid.invoice.payments).toHaveLength(1);
+    expect(paid.invoice.payments[0].reference).toBe("FT-99");
+    expect(paid.warnings).toEqual([]);
+  });
+
+  signedIn("a payment of nothing is refused", async () => {
+    const payload = await post(`/api/invoices/${invoiceId}/payments`, { amount: 0 });
+    expect(payload.error).toContain("greater than zero");
+  });
+
+  signedIn("a credit bigger than the balance is refused; the balance is not", async () => {
+    const tooBig = await api(`/api/invoices/${invoiceId}/credits`, {
+      method: "POST",
+      body: JSON.stringify({ amount: 500, reason: "adjustment" }),
+    });
+    expect(tooBig.status).toBe(400);
+    expect((await tooBig.json()).error).toContain("more than the");
+
+    const credited = await post(`/api/invoices/${invoiceId}/credits`, { amount: 10, reason: "goodwill" });
+    expect(credited.invoice.totals.creditedAmount).toBe(10);
+    expect(credited.invoice.totals.balance).toBe(50);
+  });
+
+  signedIn("an invoice with a payment on it cannot be voided", async () => {
+    const response = await api(`/api/invoices/${invoiceId}/void`, { method: "POST" });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("Credit it instead");
+  });
+
+  signedIn("an overpayment is recorded, warned about, and left negative", async () => {
+    // The money is in the bank whether or not the invoice expected it.
+    const paid = await post(`/api/invoices/${invoiceId}/payments`, { amount: 90 });
+
+    expect(paid.invoice.totals.balance).toBe(-40);
+    expect(paid.warnings.join(" ")).toContain("overpaid");
+
+    // Settled, so it drops out of the aging entirely.
+    const aged = await json("/api/receivables/aging?currency=USD&asOf=2030-01-01");
+    expect(aged.buckets["90+"].count).toBe(0);
+  });
+
+  signedIn("a payment entered in error can be taken back off", async () => {
+    const before = await json(`/api/invoices/${invoiceId}`);
+    const removed = await api(`/api/invoices/${invoiceId}/payments/${before.payments[1].id}`, { method: "DELETE" });
+    expect(removed.status).toBe(200);
+    expect((await removed.json()).totals.balance).toBe(50);
+  });
+
+  signedIn("the aging report buckets the balance, as of a date", async () => {
+    // Due 2026-03-31, £50 still owed. Read on 2026-05-20 that is 50 days late.
+    const report = await json("/api/receivables/aging?currency=USD&asOf=2026-05-20");
+
+    expect(report.currency).toBe("USD");
+    expect(report.asOf).toBe("2026-05-20");
+    expect(report.buckets["31-60"].amount).toBe(50);
+    expect(report.outstanding).toBe(50);
+    expect(report.overdue).toBe(50);
+
+    // Read the day after issue, the same invoice is simply not yet due.
+    const early = await json("/api/receivables/aging?currency=USD&asOf=2026-03-02");
+    expect(early.buckets.current.amount).toBe(50);
+    expect(early.overdue).toBe(0);
+  });
+
+  signedIn("a customer's invoices are their own, and nobody else's", async () => {
+    const mine = await json(`/api/accounts/${accountId}/invoices`);
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((one: any) => one.customer.accountId === accountId)).toBe(true);
+
+    expect((await api(`/api/invoices/${invoiceId}`, { cookie: bobCookie })).status).toBe(404);
+    expect(await json("/api/invoices", { cookie: bobCookie })).toEqual([]);
+  });
+
+  signedIn("a blank invoice picks up the customer's terms and currency", async () => {
+    const raised = await post("/api/invoices", {
+      accountId,
+      lines: [{ description: "Consultancy", quantity: 2, unitPrice: 750, taxPercent: 10 }],
+      poNumber: "PO-4417",
+    });
+
+    expect(raised.invoice.state).toBe("draft");
+    expect(raised.invoice.currency).toBe("USD");
+    expect(raised.invoice.paymentTermDays).toBe(30);
+    expect(raised.invoice.poNumber).toBe("PO-4417");
+    expect(raised.invoice.totals.subtotal).toBe(1_500);
+    expect(raised.invoice.totals.taxAmount).toBe(150);
+    expect(raised.invoice.totals.total).toBe(1_650);
+
+    // A draft is not a receivable, and a draft can be thrown away.
+    expect((await api(`/api/invoices/${raised.invoice.id}`, { method: "DELETE" })).status).toBe(200);
+  });
+
+  signedIn("nothing can be paid against a draft", async () => {
+    const raised = await post("/api/invoices", {
+      accountId,
+      lines: [{ description: "Not yet", quantity: 1, unitPrice: 10 }],
+    });
+    const response = await api(`/api/invoices/${raised.invoice.id}/payments`, {
+      method: "POST",
+      body: JSON.stringify({ amount: 10 }),
+    });
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("not been issued");
+    await api(`/api/invoices/${raised.invoice.id}`, { method: "DELETE" });
+  });
+
+  signedIn("the receivables export carries the derived status and aging", async () => {
+    const response = await api("/api/invoices/export?format=csv&asOf=2026-05-20");
+    const csv = await response.text();
+
+    expect(csv).toContain("invoice,quote,customer");
+    expect(csv).toContain("daysOverdue");
+    expect(csv).toContain("agingBucket");
+    // Status is derived on the way out, because it is stored nowhere.
+    expect(csv).toContain("status");
+  });
+});
+
 /* -------------------------------- approvals ------------------------------ */
 
 describe("approvals", () => {
@@ -994,6 +1223,16 @@ describe("what comes out", () => {
     expect(file.catalog.kind).toBe(CATALOG_FILE_KIND);
     expect(file.accounts[0].name).toBe("Harbour Logistics");
     expect(file.quotes.length).toBeGreaterThan(0);
+
+    // The receivables come out too, with their ledgers — an export that kept
+    // what you offered but not what you are owed is half a backup.
+    expect(Array.isArray(file.invoices)).toBe(true);
+    expect(file.invoices.length).toBeGreaterThan(0);
+    const withLedger = file.invoices.find((one: any) => one.payments.length > 0);
+    expect(withLedger).toBeDefined();
+    expect(withLedger.lines.length).toBeGreaterThan(0);
+    // Nothing derived is in the file: status and aging are recomputed on read.
+    expect(withLedger.status).toBeUndefined();
     expect(file.quotes[0].lines).toBeArray();
     expect(file.preferences.defaultCurrency).toBe("USD");
   });
@@ -1045,5 +1284,34 @@ describe("the worked example", () => {
     const second = await post("/api/sample", {}, { cookie: dave });
     expect(second.created.products ?? 0).toBe(0);
     expect(second.skipped.products).toBe(8);
+  });
+
+  signedIn("it arrives with a receivables book spread across the aging", async () => {
+    const erin = await register(`erin-${suffix}@example.com`);
+    const report = await post("/api/sample", {}, { cookie: erin });
+
+    expect(report.created.invoices).toBe(3);
+
+    // The invoices went in through the ordinary path, so they are issued,
+    // dated, and one of them is part paid.
+    const invoices = await json("/api/invoices", { cookie: erin });
+    expect(invoices).toHaveLength(3);
+    expect(invoices.every((one: any) => one.state === "issued")).toBe(true);
+    expect(invoices.every((one: any) => one.issueDate && one.dueDate)).toBe(true);
+    expect(invoices.some((one: any) => one.totals.paidAmount > 0)).toBe(true);
+
+    // One settled, one late, one badly late — which is the whole point of
+    // shipping sample invoices rather than an empty five-column report.
+    const aged = await json("/api/receivables/aging?currency=USD", { cookie: erin });
+    expect(aged.outstanding).toBeGreaterThan(0);
+    expect(aged.overdue).toBeGreaterThan(0);
+    expect(aged.paidAmount).toBeGreaterThan(0);
+    expect(aged.buckets["90+"].count).toBe(1);
+
+    // And a second install does not raise the same three again.
+    const again = await post("/api/sample", {}, { cookie: erin });
+    expect(again.created.invoices ?? 0).toBe(0);
+    expect(again.skipped.invoices).toBe(3);
+    expect(await json("/api/invoices", { cookie: erin })).toHaveLength(3);
   });
 });

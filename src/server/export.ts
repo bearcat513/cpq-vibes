@@ -10,7 +10,16 @@
  * and the shape the workspace export embeds.
  */
 import { formatMoney } from "../lib/money";
-import type { Product, Quote } from "../lib/types";
+import {
+  AGING_BUCKETS,
+  AGING_BUCKET_LABELS,
+  agingBucketFor,
+  daysOverdue,
+  invoiceStatus,
+  today,
+  type AgingReport,
+} from "../lib/receivable";
+import type { Invoice, InvoiceSummary, Product, Quote } from "../lib/types";
 
 type Row = Record<string, unknown>;
 
@@ -82,6 +91,84 @@ export function quoteRows(quote: Quote): Row[] {
 /** The quote, whole — header, lines, totals and approvals. */
 export const quoteJson = (quote: Quote): string => toJson(quote);
 
+/* ------------------------------ receivables ------------------------------ */
+
+/**
+ * One row per invoice, with its derived condition worked out here.
+ *
+ * `status` and `daysOverdue` are not stored anywhere — see
+ * src/lib/receivable.ts for why — so an export that left them out would hand
+ * a finance team a spreadsheet they had to re-derive the whole point of.
+ */
+export function invoiceRows(invoices: (Invoice | InvoiceSummary)[], asOf: string = today()): Row[] {
+  return invoices.map(invoice => ({
+    invoice: invoice.number,
+    quote: invoice.quoteNumber,
+    customer: invoice.customer.name,
+    contact: invoice.customer.contactEmail,
+    poNumber: invoice.poNumber,
+    currency: invoice.currency,
+    state: invoice.state,
+    status: invoiceStatus(invoice, asOf),
+    issueDate: invoice.issueDate,
+    dueDate: invoice.dueDate,
+    paymentTermDays: invoice.paymentTermDays,
+    daysOverdue: daysOverdue(invoice, asOf),
+    agingBucket: agingBucketFor(daysOverdue(invoice, asOf)),
+    subtotal: invoice.totals.subtotal,
+    tax: invoice.totals.taxAmount,
+    total: invoice.totals.total,
+    paid: invoice.totals.paidAmount,
+    credited: invoice.totals.creditedAmount,
+    balance: invoice.totals.balance,
+  }));
+}
+
+/** One row per line, for an invoice being reconciled line by line. */
+export function invoiceLineRows(invoice: Invoice): Row[] {
+  return invoice.lines.map((line, index) => ({
+    invoice: invoice.number,
+    customer: invoice.customer.name,
+    currency: invoice.currency,
+    issueDate: invoice.issueDate,
+    dueDate: invoice.dueDate,
+    lineNumber: index + 1,
+    sku: line.sku,
+    description: line.description,
+    quantity: line.quantity,
+    unitPrice: line.unitPrice,
+    amount: line.amount,
+    taxPercent: line.taxPercent,
+    taxAmount: line.taxAmount,
+  }));
+}
+
+/**
+ * The aging report as a spreadsheet: one row per bucket, then a total.
+ *
+ * A total row in a CSV is usually a mistake — it breaks every pivot table —
+ * but an aging report is read as a report rather than pivoted, and the number
+ * everybody wants first is the one at the bottom.
+ */
+export function agingRows(report: AgingReport): Row[] {
+  return [
+    ...AGING_BUCKETS.map(bucket => ({
+      bucket: AGING_BUCKET_LABELS[bucket],
+      invoices: report.buckets[bucket].count,
+      amount: report.buckets[bucket].amount,
+      currency: report.currency,
+      asOf: report.asOf,
+    })),
+    {
+      bucket: "Total outstanding",
+      invoices: report.invoiceCount,
+      amount: report.outstanding,
+      currency: report.currency,
+      asOf: report.asOf,
+    },
+  ];
+}
+
 /* ------------------------------- catalogue ------------------------------- */
 
 /**
@@ -146,3 +233,7 @@ export function exportResponse(rows: Row[], format: "csv" | "json", baseName: st
 /** A one-line summary for a log or a flash message. */
 export const describeQuote = (quote: Quote): string =>
   `${quote.number} · ${quote.customer.name || "no customer"} · ${formatMoney(quote.totals.grandTotal, quote.currency)}`;
+
+export const describeInvoice = (invoice: Invoice): string =>
+  `${invoice.number} · ${invoice.customer.name || "no customer"} · ` +
+  `${formatMoney(invoice.totals.balance, invoice.currency)} of ${formatMoney(invoice.totals.total, invoice.currency)} outstanding`;
