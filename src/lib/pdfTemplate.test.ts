@@ -6,8 +6,17 @@
  */
 import { describe, expect, test } from "bun:test";
 import { encodePng, toDataUrl } from "./image";
-import { BLOCK_TYPES, DEFAULT_TOTALS_ROWS, blankBlock, renderPdf, starterPdfTemplate, type PdfTemplate } from "./pdfTemplate";
-import { specimenQuote } from "./samples";
+import {
+  BLOCK_TYPES,
+  DEFAULT_TOTALS_ROWS,
+  INVOICE_TOTALS_ROWS,
+  blankBlock,
+  renderInvoicePdf,
+  renderPdf,
+  starterPdfTemplate,
+  type PdfTemplate,
+} from "./pdfTemplate";
+import { specimenInvoice, specimenQuote } from "./samples";
 import { readPdfTemplate } from "./validate";
 import { formatMoney } from "./money";
 
@@ -425,5 +434,144 @@ describe("images and the letterhead", () => {
   test("a template with no letterhead does not grow an empty one", () => {
     const parsed = readPdfTemplate(JSON.stringify(starterPdfTemplate()));
     expect(parsed.ok && parsed.value.header).toBeUndefined();
+  });
+});
+
+/* ------------------------------- invoices -------------------------------- */
+
+const invoiceContext = () => ({
+  invoice: specimenInvoice(),
+  sellerName: "Sam Rep",
+  sellerEmail: "sam@seller.example.com",
+  locale: "en-US",
+  asOf: "2026-08-15",
+});
+
+const renderInvoice = (template: PdfTemplate) => {
+  const result = renderInvoicePdf(template, invoiceContext());
+  return { ...result, text: decode(result.bytes) };
+};
+
+/**
+ * The same renderer, the other vocabulary.
+ *
+ * What is worth testing twice is not the blocks — they are the same code —
+ * but the seam: that an invoice template reaches the invoice's numbers, that
+ * it cannot reach a quote's, and that the totals list it is held to is the
+ * invoice one.
+ */
+describe("an invoice template", () => {
+  test("the starter renders a complete document with no unresolved tokens", () => {
+    const result = renderInvoice(starterPdfTemplate("invoice"));
+
+    expect(result.pageCount).toBeGreaterThanOrEqual(1);
+    expect(result.unknownTokens).toEqual([]);
+    expect(result.text.startsWith("%PDF")).toBe(true);
+  });
+
+  test("the invoice's own details and its balance reach the page", () => {
+    const invoice = specimenInvoice();
+    const result = renderInvoice(starterPdfTemplate("invoice"));
+
+    expect(result.text).toContain(escapeForPdf(invoice.number));
+    expect(result.text).toContain(escapeForPdf(invoice.dueDate));
+    expect(result.text).toContain("Balance due");
+    expect(result.text).toContain(escapeForPdf(formatMoney(invoice.totals.balance, "USD", "en-US")));
+  });
+
+  test("what has come in is written against what was demanded", () => {
+    // "Paid $5,000.00" on a line above a balance reads as an addition. The
+    // sign is the difference between a total a customer can follow and one
+    // they ring up about.
+    const invoice = specimenInvoice();
+    const result = renderInvoice(starterPdfTemplate("invoice"));
+
+    expect(result.text).toContain(escapeForPdf(`-${formatMoney(invoice.totals.paidAmount, "USD", "en-US")}`));
+  });
+
+  test("a quote's tokens mean nothing on it, and are reported rather than printed", () => {
+    const result = renderInvoice({
+      ...starterPdfTemplate("invoice"),
+      blocks: [{ type: "text", text: "{{quote.validUntil}} {{totals.grandTotal}}" }],
+    });
+
+    expect(result.unknownTokens).toEqual(["quote.validUntil", "totals.grandTotal"]);
+  });
+
+  test("it is held to the invoice totals list, not the quote one", () => {
+    // A quote's fields are dropped exactly the way `margin` is: an invoice
+    // has no list price and no contract value, and a row naming one would
+    // print zero on a document about money somebody owes.
+    const parsed = readPdfTemplate(
+      JSON.stringify({
+        page: {},
+        blocks: [
+          {
+            type: "totals",
+            rows: [
+              { label: "List price", field: "listTotal" },
+              { label: "Contract value", field: "totalContractValue" },
+            ],
+          },
+        ],
+        footer: {},
+      }),
+      "invoice",
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const totals = parsed.value.blocks[0] as Extract<PdfTemplate["blocks"][number], { type: "totals" }>;
+    expect(totals.rows.map(row => row.field)).toEqual(INVOICE_TOTALS_ROWS.map(row => row.field));
+  });
+
+  test("a quote line column is dropped, and the invoice columns stand in", () => {
+    const parsed = readPdfTemplate(
+      JSON.stringify({
+        page: {},
+        blocks: [
+          {
+            type: "lineItems",
+            columns: [
+              { field: "term", header: "Term", width: 2 },
+              { field: "discountPercent", header: "Discount", width: 2 },
+            ],
+          },
+        ],
+        footer: {},
+      }),
+      "invoice",
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const block = parsed.value.blocks[0] as Extract<PdfTemplate["blocks"][number], { type: "lineItems" }>;
+    expect(block.columns.map(column => column.field)).toContain("taxAmount");
+    expect(block.columns.map(column => column.field)).not.toContain("term");
+  });
+
+  test("every block type renders straight after being added to one", () => {
+    for (const entry of BLOCK_TYPES) {
+      const result = renderInvoice({ ...starterPdfTemplate("invoice"), blocks: [blankBlock(entry.type, "invoice")] });
+      expect(result.text.startsWith("%PDF")).toBe(true);
+      expect(result.unknownTokens).toEqual([]);
+    }
+  });
+
+  test("it cannot name cost or margin either", () => {
+    const parsed = readPdfTemplate(
+      JSON.stringify({
+        page: {},
+        blocks: [{ type: "totals", rows: [{ label: "Margin", field: "margin" }] }],
+        footer: {},
+      }),
+      "invoice",
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const totals = parsed.value.blocks[0] as Extract<PdfTemplate["blocks"][number], { type: "totals" }>;
+    expect(totals.rows.map(row => row.field)).not.toContain("margin");
   });
 });

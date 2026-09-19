@@ -1,5 +1,5 @@
 /**
- * PDF proposal templates.
+ * PDF templates — for a quote, and for an invoice.
  *
  * The other three template formats are text with `{{token}}` holes in it,
  * which works because HTML, Markdown and plain text all decide their own
@@ -17,11 +17,20 @@
  *
  * ## What the format deliberately will not do
  *
- * **It cannot show cost or margin.** `TOTALS_FIELDS` below is a closed list of
- * customer-facing numbers, and cost, margin and margin percent are not on it.
- * A proposal template is the one artefact in this app that is *designed* to be
+ * **It cannot show cost or margin.** The totals lists below are closed lists
+ * of customer-facing numbers, and cost, margin and margin percent are on
+ * neither. A template is the one artefact in this app that is *designed* to be
  * sent outside the company, and the cheapest way to guarantee it never carries
  * internal numbers is to give it no way to name them.
+ *
+ * ## One block language, two vocabularies
+ *
+ * Everything here — the page, the letterhead, the blocks, the pagination — is
+ * the same whether the document bills or offers. What differs is what fills
+ * it: the tokens, the columns a line table may show, and the totals a footer
+ * may print. That difference is a `PdfSource`, built by `quotePdfSource` or
+ * `invoicePdfSource`, and it is the only thing in this file that knows what a
+ * quote or an invoice is.
  *
  * ## Branding
  *
@@ -40,8 +49,10 @@ import { decodeImage, imageBox, type EmbeddableImage } from "./image";
 import { formatMoney, formatPercent } from "./money";
 import { DEFAULT_MARGINS, PdfDocument, type Margins, type PageSize, type TableCell, type TableColumn } from "./pdf";
 import { measureText, type FontFamily } from "./pdfFonts";
-import { fillTokens, lineTokenValues, proposalTokenValues, type ProposalContext } from "./proposal";
-import type { PricedLine, Quote } from "./types";
+import { fillTokens } from "./document";
+import { invoiceLineTokenValues, invoiceTokenValues, type InvoiceDocumentContext } from "./invoiceDocument";
+import { lineTokenValues, proposalTokenValues, type ProposalContext } from "./proposal";
+import type { Invoice, Quote, TemplateKind } from "./types";
 
 /* -------------------------------- the page ------------------------------- */
 
@@ -101,8 +112,16 @@ export const DEFAULT_PAGE: PdfPageSetup = {
 
 export type BlockAlign = "left" | "center" | "right";
 
-/** A column of the line-item table, named by the line token it shows. */
-export type LineItemField =
+/**
+ * A column of the line-item table, named by the line token it shows.
+ *
+ * The two lists overlap where the two records do — a quantity is a quantity —
+ * and diverge where they must: a quote line has a term and a discount off
+ * list, an invoice line has a tax rate. A column naming a field the other
+ * kind does not have is dropped when the template is read, which is what
+ * keeps a template that changed kind from printing empty columns.
+ */
+export type QuoteLineField =
   | "number"
   | "sku"
   | "name"
@@ -117,7 +136,20 @@ export type LineItemField =
   | "billing"
   | "total";
 
-export const LINE_ITEM_FIELDS: { field: LineItemField; label: string }[] = [
+export type InvoiceLineField =
+  | "number"
+  | "sku"
+  | "description"
+  | "quantity"
+  | "unitPrice"
+  | "amount"
+  | "taxPercent"
+  | "taxAmount"
+  | "total";
+
+export type LineItemField = QuoteLineField | InvoiceLineField;
+
+export const LINE_ITEM_FIELDS: { field: QuoteLineField; label: string }[] = [
   { field: "number", label: "#" },
   { field: "sku", label: "SKU" },
   { field: "name", label: "Item" },
@@ -133,6 +165,21 @@ export const LINE_ITEM_FIELDS: { field: LineItemField; label: string }[] = [
   { field: "total", label: "Total" },
 ];
 
+export const INVOICE_LINE_ITEM_FIELDS: { field: InvoiceLineField; label: string }[] = [
+  { field: "number", label: "#" },
+  { field: "sku", label: "SKU" },
+  { field: "description", label: "Description" },
+  { field: "quantity", label: "Qty" },
+  { field: "unitPrice", label: "Unit price" },
+  { field: "amount", label: "Amount" },
+  { field: "taxPercent", label: "Tax rate" },
+  { field: "taxAmount", label: "Tax" },
+  { field: "total", label: "Total" },
+];
+
+export const lineItemFields = (kind: TemplateKind): { field: LineItemField; label: string }[] =>
+  kind === "invoice" ? INVOICE_LINE_ITEM_FIELDS : LINE_ITEM_FIELDS;
+
 export type LineItemColumn = {
   field: LineItemField;
   header: string;
@@ -146,7 +193,7 @@ export type LineItemColumn = {
  *
  * Closed, and customer-facing only — see the note at the top of this file.
  */
-export type TotalsField =
+export type QuoteTotalsField =
   | "listTotal"
   | "lineDiscountAmount"
   | "subtotal"
@@ -163,7 +210,24 @@ export type TotalsField =
   | "totalContractValue"
   | "effectiveDiscountPercent";
 
-export const TOTALS_FIELDS: { field: TotalsField; label: string }[] = [
+/**
+ * An invoice's six, and the reason they are not the quote's.
+ *
+ * Three are the invoice's own arithmetic and are stored with it; three come
+ * from the ledger in two other collections and are recomputed on every read.
+ * `balance` may be negative — see src/lib/receivable.ts — and prints that way.
+ */
+export type InvoiceTotalsField =
+  | "subtotal"
+  | "taxAmount"
+  | "total"
+  | "paidAmount"
+  | "creditedAmount"
+  | "balance";
+
+export type TotalsField = QuoteTotalsField | InvoiceTotalsField;
+
+export const TOTALS_FIELDS: { field: QuoteTotalsField; label: string }[] = [
   { field: "listTotal", label: "List price" },
   { field: "lineDiscountAmount", label: "Line discounts" },
   { field: "subtotal", label: "Subtotal" },
@@ -180,6 +244,18 @@ export const TOTALS_FIELDS: { field: TotalsField; label: string }[] = [
   { field: "annualRecurringTotal", label: "Annual recurring" },
   { field: "totalContractValue", label: "Total contract value" },
 ];
+
+export const INVOICE_TOTALS_FIELDS: { field: InvoiceTotalsField; label: string }[] = [
+  { field: "subtotal", label: "Subtotal" },
+  { field: "taxAmount", label: "Tax" },
+  { field: "total", label: "Total" },
+  { field: "paidAmount", label: "Paid" },
+  { field: "creditedAmount", label: "Credited" },
+  { field: "balance", label: "Balance due" },
+];
+
+export const totalsFields = (kind: TemplateKind): { field: TotalsField; label: string }[] =>
+  kind === "invoice" ? INVOICE_TOTALS_FIELDS : TOTALS_FIELDS;
 
 export type TotalsRow = {
   label: string;
@@ -257,23 +333,64 @@ export type PdfTemplate = {
   };
 };
 
-/* ------------------------------- rendering ------------------------------- */
+/* -------------------------------- sources -------------------------------- */
 
 /**
- * Totals that come *off* the price, and so are printed with a minus.
+ * What a template is drawn against.
  *
- * "Discount $124,717.92" on a line of its own reads as something being added.
- * The sign is not decoration — it is the difference between a total a customer
- * can follow down the page and one they have to ask about.
+ * The renderer below never sees a quote or an invoice: it sees resolved
+ * strings, rows, and a function that answers "what is this totals field
+ * worth, and how is it written". Everything kind-specific is built into one
+ * of these two sources, which is why adding the second document type did not
+ * mean a second renderer.
+ */
+export type PdfSourceLine = {
+  values: Record<string, string>;
+  /** A second line under the item: the options it was configured with. */
+  options: string;
+  /** A third: the line's own note. */
+  note: string;
+};
+
+export type PdfSource = {
+  kind: TemplateKind;
+  /** The file's own metadata. */
+  title: string;
+  author: string;
+  subject: string;
+  /** What the editor's preview calls the record it drew. */
+  label: string;
+  /** The scalar tokens every piece of text in the template runs through. */
+  values: Record<string, string>;
+  lines: PdfSourceLine[];
+  /** The column the options and the note hang under, when the table has one. */
+  detailField: LineItemField;
+  /** A totals row: the number `omitIfZero` tests, and how this kind writes it. */
+  total: (field: TotalsField) => { amount: number; text: string };
+};
+
+/**
+ * Totals that come *off* what is owed, and so are printed with a minus.
+ *
+ * "Discount $124,717.92" on a line of its own reads as something being added,
+ * and so does "Paid $5,000.00" above a balance. The sign is not decoration —
+ * it is the difference between a total a customer can follow down the page and
+ * one they have to ask about.
  */
 const SUBTRACTIVE: ReadonlySet<TotalsField> = new Set<TotalsField>([
   "lineDiscountAmount",
   "quoteDiscountAmount",
   "totalDiscount",
+  "paidAmount",
+  "creditedAmount",
 ]);
 
-/** The numeric value behind a totals field, for formatting and zero checks. */
-function totalsValue(quote: Quote, field: TotalsField): number {
+/** How a totals row is written, once its number is known. */
+const totalText = (field: TotalsField, amount: number, money: (value: number) => string, percent = false): string =>
+  percent ? formatPercent(amount) : SUBTRACTIVE.has(field) && amount > 0 ? `-${money(amount)}` : money(amount);
+
+/** The numeric value behind a quote's totals field. */
+function quoteTotal(quote: Quote, field: TotalsField): number {
   const totals = quote.totals;
   switch (field) {
     case "totalDiscount":
@@ -281,9 +398,73 @@ function totalsValue(quote: Quote, field: TotalsField): number {
     case "effectiveDiscountPercent":
       return totals.effectiveDiscountPercent;
     default:
-      return totals[field] ?? 0;
+      return (totals as unknown as Record<string, number>)[field] ?? 0;
   }
 }
+
+/**
+ * The numeric value behind an invoice's totals field.
+ *
+ * Three of the six are read straight off the ledger-derived totals the
+ * invoice was loaded with — which is why a document renders what the invoice
+ * is worth *now*, not what it was worth when it was issued.
+ */
+const invoiceTotal = (invoice: Invoice, field: TotalsField): number =>
+  (invoice.totals as unknown as Record<string, number>)[field] ?? 0;
+
+/** A quote, as the renderer sees it. */
+export function quotePdfSource(context: ProposalContext): PdfSource {
+  const { quote, locale } = context;
+  const money = (value: number) => formatMoney(value, quote.currency, locale);
+
+  return {
+    kind: "quote",
+    title: `${quote.number} — ${quote.name}`,
+    author: context.sellerName || context.sellerEmail,
+    subject: quote.customer.name ? `Quote for ${quote.customer.name}` : "Quote",
+    label: quote.number,
+    values: proposalTokenValues(context),
+    lines: quote.lines.map((line, index) => ({
+      values: lineTokenValues(line, index, quote.currency, locale),
+      options: line.optionNames.join(", "),
+      note: line.description,
+    })),
+    detailField: "name",
+    total: field => {
+      const amount = quoteTotal(quote, field);
+      return { amount, text: totalText(field, amount, money, field === "effectiveDiscountPercent") };
+    },
+  };
+}
+
+/** An invoice, as the renderer sees it. */
+export function invoicePdfSource(context: InvoiceDocumentContext): PdfSource {
+  const { invoice, locale } = context;
+  const money = (value: number) => formatMoney(value, invoice.currency, locale);
+
+  return {
+    kind: "invoice",
+    title: `${invoice.number} — ${invoice.customer.name || "Invoice"}`,
+    author: context.sellerName || context.sellerEmail,
+    subject: invoice.customer.name ? `Invoice for ${invoice.customer.name}` : "Invoice",
+    label: invoice.number,
+    values: invoiceTokenValues(context),
+    // An invoice line has no options and its note *is* its description, which
+    // is a column of its own — so nothing hangs underneath it.
+    lines: invoice.lines.map((line, index) => ({
+      values: invoiceLineTokenValues(line, index, invoice.currency, locale),
+      options: "",
+      note: "",
+    })),
+    detailField: "description",
+    total: field => {
+      const amount = invoiceTotal(invoice, field);
+      return { amount, text: totalText(field, amount, money) };
+    },
+  };
+}
+
+/* ------------------------------- rendering ------------------------------- */
 
 /** The line token behind a line-item column. */
 const lineValue = (values: Record<string, string>, field: LineItemField): string => values[`line.${field}`] ?? "";
@@ -305,22 +486,27 @@ export type PdfRenderResult = {
   pageCount: number;
 };
 
+/** Renders a quote through a PDF template. */
+export const renderPdf = (template: PdfTemplate, context: ProposalContext): PdfRenderResult =>
+  renderPdfDocument(template, quotePdfSource(context));
+
+/** Renders an invoice through a PDF template. */
+export const renderInvoicePdf = (template: PdfTemplate, context: InvoiceDocumentContext): PdfRenderResult =>
+  renderPdfDocument(template, invoicePdfSource(context));
+
 /**
- * Renders a quote through a PDF template.
+ * Draws a template against a source.
  *
  * Pure, and it runs in both places for the same reason the pricing engine
  * does: the browser renders it into an iframe so a template can be designed
  * against a live preview, and the server renders it for the file a customer
  * receives. One implementation, so the preview cannot lie.
  */
-export function renderPdf(template: PdfTemplate, context: ProposalContext): PdfRenderResult {
-  const { quote, locale } = context;
+export function renderPdfDocument(template: PdfTemplate, source: PdfSource): PdfRenderResult {
   const page = { ...DEFAULT_PAGE, ...template.page, margins: { ...DEFAULT_MARGINS, ...template.page?.margins } };
   const unknown = new Set<string>();
 
-  const values = proposalTokenValues(context);
-  const fill = (text: string) => fillTokens(text, values, unknown);
-  const money = (value: number) => formatMoney(value, quote.currency, locale);
+  const fill = (text: string) => fillTokens(text, source.values, unknown);
 
   /*
    * Decoded once per render, however many blocks and pages use a picture: the
@@ -355,13 +541,13 @@ export function renderPdf(template: PdfTemplate, context: ProposalContext): PdfR
     family: page.family,
     fontSize: page.fontSize,
     color: page.textColor,
-    title: `${quote.number} — ${quote.name}`,
-    author: context.sellerName || context.sellerEmail,
-    subject: quote.customer.name ? `Quote for ${quote.customer.name}` : "Quote",
+    title: source.title,
+    author: source.author,
+    subject: source.subject,
   });
 
   for (const block of template.blocks) {
-    renderBlock(block, { document, page, quote, fill, money, locale, unknown, picture });
+    renderBlock(block, { document, page, source, fill, unknown, picture });
   }
 
   /* --- the letterhead and the footer, once the page count is known --- */
@@ -405,10 +591,8 @@ type PictureResolver = (source: string, what: string) => EmbeddableImage | null;
 type RenderContext = {
   document: PdfDocument;
   page: PdfPageSetup;
-  quote: Quote;
+  source: PdfSource;
   fill: (text: string) => string;
-  money: (value: number) => string;
-  locale?: string;
   unknown: Set<string>;
   picture: PictureResolver;
 };
@@ -489,7 +673,7 @@ function renderHeader(
 }
 
 function renderBlock(block: PdfBlock, context: RenderContext): void {
-  const { document, page, quote, fill, money } = context;
+  const { document, page, source, fill } = context;
 
   switch (block.type) {
     case "heading": {
@@ -623,7 +807,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
     }
 
     case "lineItems": {
-      const columns: LineItemColumn[] = block.columns.length ? block.columns : DEFAULT_LINE_COLUMNS;
+      const columns: LineItemColumn[] = block.columns.length ? block.columns : defaultLineColumns(source.kind);
 
       const tableColumns: TableColumn[] = columns.map(column => ({
         header: fill(column.header),
@@ -633,23 +817,21 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
 
       // The item column is where the option list and the note belong; without
       // one there is nowhere sensible to hang them.
-      const detailColumn = columns.findIndex(column => column.field === "name");
+      const detailColumn = columns.findIndex(column => column.field === source.detailField);
 
-      const rows: TableCell[][] = quote.lines.map((line, index) => {
-        const lineValues = lineTokenValues(line, index, quote.currency, context.locale);
-
-        return columns.map((column, columnIndex): TableCell => {
+      const rows: TableCell[][] = source.lines.map(line =>
+        columns.map((column, columnIndex): TableCell => {
           const detail =
             columnIndex === detailColumn ? detailFor(line, block.showOptions, block.showDescription) : undefined;
 
           return {
-            text: lineValue(lineValues, column.field),
+            text: lineValue(line.values, column.field),
             detail,
             bold: column.field === "total",
             color: page.textColor,
           };
-        });
-      });
+        }),
+      );
 
       document.table({
         columns: tableColumns,
@@ -666,9 +848,9 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
     }
 
     case "totals": {
-      const rows = (block.rows.length ? block.rows : DEFAULT_TOTALS_ROWS).filter(row => {
+      const rows = (block.rows.length ? block.rows : defaultTotalsRows(source.kind)).filter(row => {
         if (!row.omitIfZero) return true;
-        return Math.abs(totalsValue(quote, row.field)) > 0.0001;
+        return Math.abs(source.total(row.field).amount) > 0.0001;
       });
       if (!rows.length) break;
 
@@ -689,13 +871,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
         }
 
         const y = document.y;
-        const raw = totalsValue(quote, row.field);
-        const value =
-          row.field === "effectiveDiscountPercent"
-            ? formatPercent(raw)
-            : SUBTRACTIVE.has(row.field) && raw > 0
-              ? `-${money(raw)}`
-              : money(raw);
+        const value = source.total(row.field).text;
 
         document.drawTextAt(fill(row.label), x, y, {
           size,
@@ -752,10 +928,10 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
 }
 
 /** The option list and line note that hang under an item's name. */
-function detailFor(line: PricedLine, showOptions?: boolean, showDescription?: boolean): string | undefined {
+function detailFor(line: PdfSourceLine, showOptions?: boolean, showDescription?: boolean): string | undefined {
   const parts: string[] = [];
-  if (showOptions !== false && line.optionNames.length) parts.push(line.optionNames.join(", "));
-  if (showDescription !== false && line.description) parts.push(line.description);
+  if (showOptions !== false && line.options) parts.push(line.options);
+  if (showDescription !== false && line.note) parts.push(line.note);
   return parts.length ? parts.join("\n") : undefined;
 }
 
@@ -777,13 +953,47 @@ export const DEFAULT_TOTALS_ROWS: TotalsRow[] = [
   { label: "Total", field: "grandTotal", emphasis: true },
 ];
 
+export const INVOICE_LINE_COLUMNS: LineItemColumn[] = [
+  { field: "sku", header: "SKU", width: 2 },
+  { field: "description", header: "Description", width: 6 },
+  { field: "quantity", header: "Qty", width: 1.2, align: "right" },
+  { field: "unitPrice", header: "Unit price", width: 2.2, align: "right" },
+  { field: "taxAmount", header: "Tax", width: 1.6, align: "right" },
+  { field: "total", header: "Total", width: 2.4, align: "right" },
+];
+
 /**
- * What a brand-new PDF template starts as: a complete, sendable proposal.
+ * An invoice's footer, which reads down to the one number that matters.
+ *
+ * Paid and credited are omitted when they are zero, so a freshly issued
+ * invoice is three lines and a part-paid one shows its workings.
+ */
+export const INVOICE_TOTALS_ROWS: TotalsRow[] = [
+  { label: "Subtotal", field: "subtotal" },
+  { label: "Tax", field: "taxAmount", omitIfZero: true },
+  { label: "Total", field: "total" },
+  { label: "Paid", field: "paidAmount", omitIfZero: true },
+  { label: "Credited", field: "creditedAmount", omitIfZero: true },
+  { label: "Balance due", field: "balance", emphasis: true },
+];
+
+export const defaultLineColumns = (kind: TemplateKind): LineItemColumn[] =>
+  structuredClone(kind === "invoice" ? INVOICE_LINE_COLUMNS : DEFAULT_LINE_COLUMNS);
+
+export const defaultTotalsRows = (kind: TemplateKind): TotalsRow[] =>
+  structuredClone(kind === "invoice" ? INVOICE_TOTALS_ROWS : DEFAULT_TOTALS_ROWS);
+
+/**
+ * What a brand-new PDF template starts as: a complete, sendable document.
  *
  * Starting from a blank page would mean everyone's first template is an
  * afternoon's work; starting from this means the first one is an edit.
  */
-export function starterPdfTemplate(): PdfTemplate {
+export function starterPdfTemplate(kind: TemplateKind = "quote"): PdfTemplate {
+  return kind === "invoice" ? starterInvoiceTemplate() : starterQuoteTemplate();
+}
+
+function starterQuoteTemplate(): PdfTemplate {
   return {
     page: { ...DEFAULT_PAGE, margins: { ...DEFAULT_MARGINS } },
     blocks: [
@@ -841,6 +1051,68 @@ export function starterPdfTemplate(): PdfTemplate {
   };
 }
 
+/**
+ * The invoice equivalent, and deliberately not the proposal with the nouns
+ * swapped: it leads with what is owed and when, and it has no signature block
+ * on it. Nobody counter-signs an invoice — they pay it.
+ */
+function starterInvoiceTemplate(): PdfTemplate {
+  return {
+    page: { ...DEFAULT_PAGE, margins: { ...DEFAULT_MARGINS } },
+    blocks: [
+      { type: "heading", text: "Invoice {{invoice.number}}", size: 20 },
+      {
+        type: "text",
+        text: "Issued {{invoice.date}} · due {{invoice.dueDate}} · {{invoice.paymentTerms}}",
+        color: "#71717a",
+        size: 9,
+      },
+      { type: "divider" },
+      { type: "spacer", height: 6 },
+      {
+        type: "columns",
+        columns: [
+          {
+            heading: "BILL TO",
+            text: "{{customer.name}}\n{{customer.contactName}}\n{{customer.address}}",
+          },
+          {
+            heading: "FROM",
+            text: "{{seller.name}}\n{{seller.email}}",
+          },
+          {
+            heading: "DUE",
+            text: "{{invoice.dueDate}}\nPO: {{invoice.poNumber}}\nCurrency: {{invoice.currency}}",
+            align: "right",
+          },
+        ],
+      },
+      { type: "spacer", height: 10 },
+      {
+        type: "lineItems",
+        columns: structuredClone(INVOICE_LINE_COLUMNS),
+        showOptions: false,
+        showDescription: false,
+        headerFill: "#f4f4f5",
+        zebra: "#fafafa",
+      },
+      { type: "totals", rows: structuredClone(INVOICE_TOTALS_ROWS), width: 250 },
+      { type: "spacer", height: 8 },
+      { type: "text", text: "{{invoice.notes}}", size: 9, color: "#52525b" },
+      {
+        type: "text",
+        text: "Please quote {{invoice.number}} with your payment.",
+        size: 9,
+        color: "#52525b",
+      },
+    ],
+    footer: {
+      text: "{{invoice.number}} · {{customer.name}}",
+      showPageNumbers: true,
+    },
+  };
+}
+
 /* --------------------------------- blanks -------------------------------- */
 
 /*
@@ -851,10 +1123,12 @@ export function starterPdfTemplate(): PdfTemplate {
  * a test rather than a careful reading of the component.
  */
 
-export function blankBlock(type: PdfBlock["type"]): PdfBlock {
+export function blankBlock(type: PdfBlock["type"], kind: TemplateKind = "quote"): PdfBlock {
+  const invoice = kind === "invoice";
+
   switch (type) {
     case "heading":
-      return { type: "heading", text: "{{quote.name}}", size: 18 };
+      return { type: "heading", text: invoice ? "Invoice {{invoice.number}}" : "{{quote.name}}", size: 18 };
     case "text":
       return { type: "text", text: "" };
     // A picture has to be chosen; an empty source renders as nothing at all,
@@ -869,22 +1143,32 @@ export function blankBlock(type: PdfBlock["type"]): PdfBlock {
       return {
         type: "columns",
         columns: [
-          { heading: "PREPARED FOR", text: "{{customer.name}}\n{{customer.address}}" },
-          { heading: "PREPARED BY", text: "{{seller.name}}\n{{seller.email}}" },
+          {
+            heading: invoice ? "BILL TO" : "PREPARED FOR",
+            text: "{{customer.name}}\n{{customer.address}}",
+          },
+          { heading: invoice ? "FROM" : "PREPARED BY", text: "{{seller.name}}\n{{seller.email}}" },
         ],
       };
     case "fields":
-      return { type: "fields", rows: [{ label: "Quote", value: "{{quote.number}}" }] };
+      return {
+        type: "fields",
+        rows: invoice
+          ? [{ label: "Invoice", value: "{{invoice.number}}" }]
+          : [{ label: "Quote", value: "{{quote.number}}" }],
+      };
     case "lineItems":
       return {
         type: "lineItems",
-        columns: structuredClone(DEFAULT_LINE_COLUMNS),
-        showOptions: true,
-        showDescription: true,
+        columns: defaultLineColumns(kind),
+        // An invoice line has neither, so the two detail lines are off: left
+        // on, every row would reserve space for something never drawn.
+        showOptions: !invoice,
+        showDescription: !invoice,
         headerFill: "#f4f4f5",
       };
     case "totals":
-      return { type: "totals", rows: structuredClone(DEFAULT_TOTALS_ROWS), width: 250 };
+      return { type: "totals", rows: defaultTotalsRows(kind), width: 250 };
     case "signatures":
       return {
         type: "signatures",

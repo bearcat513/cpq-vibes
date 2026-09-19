@@ -56,6 +56,7 @@ describe("the receivables screen", () => {
   const html = renderToStaticMarkup(
     <ReceivablesView
       accounts={[account()]}
+      templates={[]}
       preferences={DEFAULT_PREFERENCES}
       onError={noop}
       onNotice={noop}
@@ -96,6 +97,7 @@ describe("a new invoice", () => {
     <InvoiceEditor
       invoiceId={null}
       accounts={[account()]}
+      templates={[]}
       preferences={DEFAULT_PREFERENCES}
       onBack={noop}
       onChanged={asyncNoop}
@@ -134,13 +136,15 @@ describe("a new invoice", () => {
 });
 
 describe("the layout rules still hold", () => {
-  test("the invoice page is a page, and its small forms are panels", async () => {
+  test("the invoice page is a page, its forms are panels, and its previews are modals", async () => {
     // A line table, a ledger and a totals block do not fit in a 500px
     // column; recording one payment does.
     const source = await Bun.file(new URL("./app/InvoiceEditor.tsx", import.meta.url)).text();
 
     expect(source).toContain("components/ui/sheet");
-    expect(source).not.toContain("components/ui/dialog");
+    // The rendered invoice and its PDF are things to *read*, and they need
+    // the width — the same exception the quote editor has for a proposal.
+    expect(source).toContain("components/ui/dialog");
     // The panels inside it size against the panel, not the window.
     expect(source).toContain("@md:grid-cols-2");
     expect(source).not.toContain("sm:grid-cols-");

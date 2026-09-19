@@ -323,3 +323,68 @@ describe("fanning the ledger out into its own tables", () => {
     expect(ledger).toEqual({ payments: [], credits: [] });
   });
 });
+
+/* --------------------------- the template kind --------------------------- */
+
+const TEMPLATE_MIGRATION = "docker/pb_migrations/1750000008_invoice_templates.js";
+
+/**
+ * Invoice templates added a `kind` column to a collection that already had
+ * rows in it. Every one of those rows is a quote template, and the backfill is
+ * what says so — a column that meant "quote" only by being empty is one
+ * somebody would eventually read the other way round.
+ */
+describe("backfilling the template kind", () => {
+  const templatesTable = (rows: { id: string; kind: string | null }[]): Database => {
+    const db = new Database(":memory:");
+    db.run("CREATE TABLE proposal_templates (id TEXT PRIMARY KEY, name TEXT, kind TEXT, format TEXT, body TEXT)");
+    for (const row of rows) {
+      db.run("INSERT INTO proposal_templates (id, name, kind, format, body) VALUES (?, 'Proposal', ?, 'pdf', '{}')", [
+        row.id,
+        row.kind,
+      ]);
+    }
+    return db;
+  };
+
+  const kinds = (db: Database) =>
+    (db.query("SELECT id, kind FROM proposal_templates ORDER BY id").all() as { id: string; kind: string }[]).map(
+      row => [row.id, row.kind] as const,
+    );
+
+  test("a template that predates the column becomes a quote's", async () => {
+    // PocketBase gives an added text field an empty string on existing rows;
+    // a row written straight into SQL can have a null. Both are the same
+    // template, and both are a quote's.
+    const db = templatesTable([
+      { id: "tpl_a", kind: null },
+      { id: "tpl_b", kind: "" },
+      { id: "tpl_c", kind: "   " },
+    ]);
+
+    db.run(await statement("BACKFILL_KIND", TEMPLATE_MIGRATION));
+
+    expect(kinds(db)).toEqual([
+      ["tpl_a", "quote"],
+      ["tpl_b", "quote"],
+      ["tpl_c", "quote"],
+    ]);
+  });
+
+  test("a template that already says what it is keeps saying it", async () => {
+    // The statement has to be safe to run twice: a migration that reran and
+    // turned every invoice template into a quote one would be silent.
+    const db = templatesTable([
+      { id: "tpl_a", kind: "invoice" },
+      { id: "tpl_b", kind: "quote" },
+    ]);
+
+    db.run(await statement("BACKFILL_KIND", TEMPLATE_MIGRATION));
+    db.run(await statement("BACKFILL_KIND", TEMPLATE_MIGRATION));
+
+    expect(kinds(db)).toEqual([
+      ["tpl_a", "invoice"],
+      ["tpl_b", "quote"],
+    ]);
+  });
+});

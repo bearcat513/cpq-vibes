@@ -151,7 +151,11 @@ function draftFrom(quote: Quote | null, preferences: Preferences): Draft {
  * types into a form that is going to refuse them.
  */
 export function QuoteEditor(props: Props) {
-  const { quote, me, preferences, products, priceBooks, accounts, pricingRules, approvalRules, templates } = props;
+  const { quote, me, preferences, products, priceBooks, accounts, pricingRules, approvalRules } = props;
+
+  // Only a quote template renders a quote: an invoice one would resolve every
+  // token to a blank, and the server refuses it for that reason.
+  const templates = props.templates.filter(template => template.kind === "quote");
 
   const [draft, setDraft] = useState<Draft>(() => draftFrom(quote, preferences));
   const [dirty, setDirty] = useState(false);

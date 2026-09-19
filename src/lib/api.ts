@@ -209,6 +209,13 @@ const documentUrl = (quoteId: string, templateId: string) =>
  */
 const documentInlineUrl = (quoteId: string, templateId: string) => `${documentUrl(quoteId, templateId)}&inline`;
 
+/** The same two, for an invoice rendered through an invoice template. */
+const invoiceDocumentUrl = (invoiceId: string, templateId: string) =>
+  `/api/invoices/${invoiceId}/document?templateId=${encodeURIComponent(templateId)}`;
+
+const invoiceDocumentInlineUrl = (invoiceId: string, templateId: string) =>
+  `${invoiceDocumentUrl(invoiceId, templateId)}&inline`;
+
 const WORKSPACE_EXPORT_URL = "/api/export";
 const CATALOG_EXPORT_URL = "/api/catalog/export";
 
@@ -338,6 +345,11 @@ export const api = {
   documentInlineUrl,
   renderDocument: (quoteId: string, templateId: string) =>
     request<RenderedDocument>(documentInlineUrl(quoteId, templateId)),
+
+  invoiceDocumentUrl,
+  invoiceDocumentInlineUrl,
+  renderInvoiceDocument: (invoiceId: string, templateId: string) =>
+    request<RenderedDocument>(invoiceDocumentInlineUrl(invoiceId, templateId)),
 
   /* -------------------------------- sharing ------------------------------ */
 

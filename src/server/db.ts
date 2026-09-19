@@ -302,6 +302,10 @@ function toProposalTemplate(row: Record_): ProposalTemplate {
   return {
     id: String(row.id),
     name: String(row.name ?? ""),
+    // A row written before invoice templates existed has no kind, and is a
+    // quote's — the column was backfilled, and this is the same answer for
+    // anything that slipped past it.
+    kind: row.kind === "invoice" ? "invoice" : "quote",
     format: (String(row.format ?? "html") || "html") as ProposalTemplate["format"],
     body: String(row.body ?? ""),
     ...ownership(row),

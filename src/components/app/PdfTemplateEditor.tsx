@@ -12,25 +12,28 @@ import { PAGE_SIZES } from "@/lib/pdf";
 import { FONT_FAMILIES } from "@/lib/pdfFonts";
 import {
   BLOCK_TYPES,
-  DEFAULT_LINE_COLUMNS,
-  DEFAULT_TOTALS_ROWS,
-  LINE_ITEM_FIELDS,
-  TOTALS_FIELDS,
   blankBlock,
-  renderPdf,
+  lineItemFields,
+  renderPdfDocument,
+  totalsFields,
   type LineItemColumn,
   type PdfBlock,
   type PdfHeader,
+  type PdfSource,
   type PdfTemplate,
   type TotalsRow,
 } from "@/lib/pdfTemplate";
-import type { ProposalContext } from "@/lib/proposal";
+import type { TemplateKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Props = {
   template: PdfTemplate;
-  /** A real quote when one is open, otherwise the built-in specimen. */
-  context: ProposalContext;
+  /**
+   * The record the preview is drawn against — a specimen quote or a specimen
+   * invoice. It carries the kind, which is what decides the columns a line
+   * table may show and the totals a footer may print.
+   */
+  source: PdfSource;
   onChange: (next: PdfTemplate) => void;
 };
 
@@ -46,7 +49,7 @@ type Props = {
  * The preview is a blob URL in an iframe. Every browser this app targets has a
  * PDF viewer, so there is nothing to render ourselves and nothing to ship.
  */
-export function PdfTemplateEditor({ template, context, onChange }: Props) {
+export function PdfTemplateEditor({ template, source, onChange }: Props) {
   const [open, setOpen] = useState<number | null>(0);
   const [showPage, setShowPage] = useState(false);
   const [showHeader, setShowHeader] = useState(false);
@@ -58,7 +61,7 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
 
   const rendered = useMemo(() => {
     try {
-      return { ...renderPdf(template, context), error: "" };
+      return { ...renderPdfDocument(template, source), error: "" };
     } catch (failure) {
       return {
         bytes: null,
@@ -68,7 +71,7 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
         error: failure instanceof Error ? failure.message : "This template could not be rendered.",
       };
     }
-  }, [template, context]);
+  }, [template, source]);
 
   useEffect(() => {
     setError(rendered.error);
@@ -107,7 +110,7 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
     });
 
   const addBlock = (type: PdfBlock["type"]) => {
-    onChange({ ...template, blocks: [...template.blocks, blankBlock(type)] });
+    onChange({ ...template, blocks: [...template.blocks, blankBlock(type, source.kind)] });
     setOpen(template.blocks.length);
   };
 
@@ -333,7 +336,11 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
 
                 {expanded && (
                   <div className="space-y-3 border-t p-3">
-                    <BlockFields block={block} onChange={changes => patchBlock(index, changes)} />
+                    <BlockFields
+                      block={block}
+                      kind={source.kind}
+                      onChange={changes => patchBlock(index, changes)}
+                    />
                   </div>
                 )}
               </li>
@@ -376,7 +383,7 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
           <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Preview</p>
           <p className="text-xs text-muted-foreground">
             {rendered.pageCount} page{rendered.pageCount === 1 ? "" : "s"}
-            {context.quote.number ? ` · ${context.quote.number}` : " · specimen quote"}
+            {source.label ? ` · ${source.label}` : ""}
           </p>
         </div>
 
@@ -420,7 +427,15 @@ export function PdfTemplateEditor({ template, context, onChange }: Props) {
 
 /* ------------------------------ block editors ---------------------------- */
 
-function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes: Record<string, unknown>) => void }) {
+function BlockFields({
+  block,
+  kind,
+  onChange,
+}: {
+  block: PdfBlock;
+  kind: TemplateKind;
+  onChange: (changes: Record<string, unknown>) => void;
+}) {
   switch (block.type) {
     case "heading":
     case "text":
@@ -609,7 +624,7 @@ function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes:
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {LINE_ITEM_FIELDS.map(entry => (
+                    {lineItemFields(kind).map(entry => (
                       <SelectItem key={entry.field} value={entry.field}>
                         {entry.label}
                       </SelectItem>
@@ -652,19 +667,29 @@ function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes:
           </Button>
 
           <div className="grid gap-3 sm:grid-cols-4">
-            <Field label="Options line">
-              <div className="flex h-9 items-center">
-                <Switch checked={block.showOptions !== false} onChange={event => onChange({ showOptions: event.target.checked })} />
-              </div>
-            </Field>
-            <Field label="Line note">
-              <div className="flex h-9 items-center">
-                <Switch
-                  checked={block.showDescription !== false}
-                  onChange={event => onChange({ showDescription: event.target.checked })}
-                />
-              </div>
-            </Field>
+            {/* An invoice line has neither an option list nor a note of its
+                own — its description is a column — so the two switches that
+                hang them under the item are a quote's alone. */}
+            {kind === "quote" && (
+              <>
+                <Field label="Options line">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={block.showOptions !== false}
+                      onChange={event => onChange({ showOptions: event.target.checked })}
+                    />
+                  </div>
+                </Field>
+                <Field label="Line note">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={block.showDescription !== false}
+                      onChange={event => onChange({ showDescription: event.target.checked })}
+                    />
+                  </div>
+                </Field>
+              </>
+            )}
             <ColorField
               label="Header fill"
               value={block.headerFill ?? ""}
@@ -685,7 +710,7 @@ function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes:
       return (
         <>
           <p className="text-xs text-muted-foreground">
-            Only customer-facing numbers are offered — a proposal template has no way to print cost or margin.
+            Only customer-facing numbers are offered — a template has no way to print cost or margin.
           </p>
 
           {block.rows.map((row, index) => (
@@ -699,7 +724,7 @@ function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes:
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {TOTALS_FIELDS.map(entry => (
+                    {totalsFields(kind).map(entry => (
                       <SelectItem key={entry.field} value={entry.field}>
                         {entry.label}
                       </SelectItem>
@@ -735,6 +760,7 @@ function BlockFields({ block, onChange }: { block: PdfBlock; onChange: (changes:
             <Button
               variant="outline"
               size="sm"
+              // Subtotal is on both kinds' lists, so a fresh row is valid either way.
               onClick={() => onChange({ rows: [...block.rows, { label: "Subtotal", field: "subtotal" }] })}
             >
               <Plus /> Row

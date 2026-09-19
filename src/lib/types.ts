@@ -819,14 +819,14 @@ export type QuoteSummary = Omit<Quote, "lines" | "approvals"> & {
   pendingApprovals: number;
 };
 
-/* --------------------------- proposal templates -------------------------- */
+/* ------------------------------- templates ------------------------------- */
 
 /**
- * The customer-facing document a quote is rendered into.
+ * The customer-facing document a record is rendered into.
  *
- * A template is text with `{{token}}` placeholders — see src/lib/proposal.ts
- * for the token set — in one of three formats. Nothing is executed: rendering
- * substitutes strings, so a template is a document, never a program.
+ * A template is text with `{{token}}` placeholders in one of three formats,
+ * or a `pdf` document description. Nothing is executed: rendering substitutes
+ * strings, so a template is a document, never a program.
  */
 export type ProposalFormat = "html" | "markdown" | "text" | "pdf";
 
@@ -839,9 +839,34 @@ export const PROPOSAL_FORMATS: ProposalFormat[] = ["html", "markdown", "text", "
  */
 export const isPdfFormat = (format: ProposalFormat): boolean => format === "pdf";
 
+/**
+ * What a template is *for*, which is what decides its token vocabulary.
+ *
+ * A quote template reaches `{{quote.number}}` and the pricing totals; an
+ * invoice template reaches `{{invoice.dueDate}}` and the ledger. They are one
+ * collection and one editor because a template is a template — the letterhead,
+ * the address panel and the PDF block language are identical, and only the
+ * meaning of a token differs. They are not one *vocabulary* because a token
+ * that resolved to a blank half the time would be worse than one that does
+ * not exist.
+ *
+ * The kinds live here rather than in either vocabulary so that neither has to
+ * import the other.
+ */
+export type TemplateKind = "quote" | "invoice";
+
+export const TEMPLATE_KINDS: TemplateKind[] = ["quote", "invoice"];
+
+export const TEMPLATE_KIND_LABELS: Record<TemplateKind, string> = {
+  quote: "Quote",
+  invoice: "Invoice",
+};
+
 export type ProposalTemplate = {
   id: string;
   name: string;
+  /** Which record it renders. A template written before invoices is a quote's. */
+  kind: TemplateKind;
   format: ProposalFormat;
   body: string;
   ownerId: string;

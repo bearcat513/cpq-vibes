@@ -80,6 +80,8 @@ export type Preferences = {
   quoteValidDays: number;
   /** The proposal template preselected when rendering; empty means the first. */
   defaultProposalTemplateId: string;
+  /** The same for an invoice. Its own key because the two are different kinds. */
+  defaultInvoiceTemplateId: string;
   /** How many quotes the sidebar lists. */
   quoteListLimit: number;
   /**
@@ -122,6 +124,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   defaultTaxPercent: 0,
   quoteValidDays: 30,
   defaultProposalTemplateId: "",
+  defaultInvoiceTemplateId: "",
   quoteListLimit: 50,
   showMargin: false,
   locale: "",
@@ -186,6 +189,7 @@ export function normalizePreferences(raw: unknown): Preferences {
     ),
     quoteValidDays: asNumber(input.quoteValidDays, DEFAULT_PREFERENCES.quoteValidDays, PREFERENCE_LIMITS.validDays),
     defaultProposalTemplateId: asRecordId(input.defaultProposalTemplateId),
+    defaultInvoiceTemplateId: asRecordId(input.defaultInvoiceTemplateId),
     quoteListLimit: asNumber(input.quoteListLimit, DEFAULT_PREFERENCES.quoteListLimit, PREFERENCE_LIMITS.quoteList),
     showMargin: input.showMargin === true,
     // A locale `Intl` cannot parse would throw on every formatted number.

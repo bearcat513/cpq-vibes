@@ -8,12 +8,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { EmptyState, Field, Notice, Section } from "./common";
 import { PdfTemplateEditor } from "./PdfTemplateEditor";
 import { api, type Shareable } from "@/lib/api";
-import { LINE_TOKENS, LINES_CLOSE, LINES_OPEN, PROPOSAL_TOKENS, unknownTokensIn } from "@/lib/proposal";
-import { starterPdfTemplate, type PdfTemplate } from "@/lib/pdfTemplate";
-import { SAMPLE_TEMPLATES, STARTER_TEMPLATE_BODY, specimenQuote } from "@/lib/samples";
+import { LINES_CLOSE, LINES_OPEN, unknownTokensIn, type TokenDescription } from "@/lib/document";
+import { INVOICE_LINE_TOKENS, INVOICE_TOKENS } from "@/lib/invoiceDocument";
+import { LINE_TOKENS, PROPOSAL_TOKENS } from "@/lib/proposal";
+import {
+  invoicePdfSource,
+  quotePdfSource,
+  starterPdfTemplate,
+  type PdfSource,
+  type PdfTemplate,
+} from "@/lib/pdfTemplate";
+import { SAMPLE_TEMPLATES, specimenInvoice, specimenQuote, starterTemplateBody } from "@/lib/samples";
 import { readPdfTemplate } from "@/lib/validate";
-import { PROPOSAL_FORMATS, type ProposalFormat, type ProposalTemplate } from "@/lib/types";
+import {
+  PROPOSAL_FORMATS,
+  TEMPLATE_KIND_LABELS,
+  TEMPLATE_KINDS,
+  type ProposalFormat,
+  type ProposalTemplate,
+  type TemplateKind,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** The token vocabulary a template of this kind may use. */
+const vocabulary = (kind: TemplateKind): { scalar: TokenDescription[]; line: TokenDescription[]; title: string } =>
+  kind === "invoice"
+    ? { scalar: INVOICE_TOKENS, line: INVOICE_LINE_TOKENS, title: "Invoice and customer" }
+    : { scalar: PROPOSAL_TOKENS, line: LINE_TOKENS, title: "Quote and customer" };
 
 type Props = {
   templates: ProposalTemplate[];
@@ -29,7 +50,14 @@ type Props = {
 };
 
 /**
- * Proposal templates: the document a customer actually reads.
+ * Templates: the documents a customer actually reads.
+ *
+ * Two kinds, one editor. A quote template and an invoice template differ in
+ * exactly one thing — the tokens they may reach — so the kind is a field on
+ * the template rather than a second screen, and everything else here is
+ * shared. What it changes is real, though: the token list, the columns a PDF
+ * line table may show, the totals its footer may print, and the specimen the
+ * preview is drawn against.
  *
  * The token list beside the editor is the whole contract — a template can
  * reach exactly these values and nothing else, and clicking one inserts it at
@@ -39,16 +67,29 @@ type Props = {
  */
 export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId, onChanged, onShare, onError, confirmed }: Props) {
   const [activeId, setActiveId] = useState<string | null>(templates[0]?.id ?? null);
-  const [draft, setDraft] = useState<{ name: string; format: ProposalFormat; body: string } | null>(null);
+  /** Which kind the list is showing, and what New makes. */
+  const [listKind, setListKind] = useState<TemplateKind>(templates[0]?.kind ?? "quote");
+  const [draft, setDraft] = useState<{
+    name: string;
+    kind: TemplateKind;
+    format: ProposalFormat;
+    body: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const active = templates.find(template => template.id === activeId) ?? null;
-  const editing = draft ?? (active ? { name: active.name, format: active.format, body: active.body } : null);
+  const editing =
+    draft ?? (active ? { name: active.name, kind: active.kind, format: active.format, body: active.body } : null);
   const mine = !active || active.ownerId === myId;
 
   const isPdf = editing?.format === "pdf";
+  const kind = editing?.kind ?? "quote";
+  const tokens = vocabulary(kind);
 
-  const unknown = useMemo(() => (editing && !isPdf ? unknownTokensIn(editing.body) : []), [editing, isPdf]);
+  const unknown = useMemo(
+    () => (editing && !isPdf ? unknownTokensIn(editing.body, [tokens.scalar, tokens.line]) : []),
+    [editing, isPdf, tokens],
+  );
 
   /**
    * A PDF template's body is JSON, so it is parsed once here and handed to the
@@ -58,19 +99,29 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
    */
   const pdfTemplate = useMemo<PdfTemplate | null>(() => {
     if (!isPdf || !editing) return null;
-    const parsed = readPdfTemplate(editing.body);
-    return parsed.ok ? parsed.value : starterPdfTemplate();
-  }, [isPdf, editing]);
+    const parsed = readPdfTemplate(editing.body, kind);
+    return parsed.ok ? parsed.value : starterPdfTemplate(kind);
+  }, [isPdf, editing, kind]);
 
-  /** Templates are designed against a real quote where possible, a specimen otherwise. */
-  const previewContext = useMemo(
-    () => ({ quote: specimenQuote(), sellerName: sellerName || sellerEmail, sellerEmail, locale: locale || undefined }),
-    [sellerName, sellerEmail, locale],
-  );
+  /**
+   * What the preview is drawn against: a specimen of whichever kind is being
+   * edited, priced and totalled by the real engines — see src/lib/samples.ts.
+   */
+  const previewSource = useMemo<PdfSource>(() => {
+    const seller = { sellerName: sellerName || sellerEmail, sellerEmail, locale: locale || undefined };
+    return kind === "invoice"
+      ? invoicePdfSource({ invoice: specimenInvoice(), ...seller })
+      : quotePdfSource({ quote: specimenQuote(), ...seller });
+  }, [kind, sellerName, sellerEmail, locale]);
 
-  const startNew = () => {
+  const startNew = (newKind: TemplateKind) => {
     setActiveId(null);
-    setDraft({ name: "New proposal", format: "pdf", body: JSON.stringify(starterPdfTemplate()) });
+    setDraft({
+      name: newKind === "invoice" ? "New invoice" : "New proposal",
+      kind: newKind,
+      format: "pdf",
+      body: JSON.stringify(starterPdfTemplate(newKind)),
+    });
   };
 
   /**
@@ -86,7 +137,7 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
     const example = SAMPLE_TEMPLATES.find(entry => entry.name === name);
     if (!example) return;
     setActiveId(null);
-    setDraft({ name: example.name, format: example.format, body: example.body });
+    setDraft({ name: example.name, kind: example.kind, format: example.format, body: example.body });
   };
 
   const open = (template: ProposalTemplate) => {
@@ -133,16 +184,41 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
 
   const insert = (token: string) => editing && patch({ body: `${editing.body}{{${token}}}` });
 
+  const listed = templates.filter(template => template.kind === listKind);
+
   return (
     <div className="grid gap-4 lg:grid-cols-[16rem_1fr]">
       <Section
         title="Templates"
         actions={
-          <Button size="sm" onClick={startNew}>
+          <Button size="sm" onClick={() => startNew(listKind)}>
             <Plus /> New
           </Button>
         }
       >
+        {/* The two kinds are listed apart rather than mixed with a badge: you
+            are looking for the invoice templates or the quote ones, never
+            both, and New then has an obvious meaning. */}
+        <div className="flex gap-1 border-b p-2">
+          {TEMPLATE_KINDS.map(entry => (
+            <button
+              key={entry}
+              type="button"
+              onClick={() => setListKind(entry)}
+              aria-pressed={listKind === entry}
+              className={cn(
+                "flex-1 rounded-md px-2 py-1 text-xs transition-colors",
+                listKind === entry ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent/60",
+              )}
+            >
+              {TEMPLATE_KIND_LABELS[entry]}s
+              <span className="ml-1 tabular-nums opacity-60">
+                {templates.filter(template => template.kind === entry).length}
+              </span>
+            </button>
+          ))}
+        </div>
+
         <div className="border-b p-2">
           <Select value="" onValueChange={startFromExample}>
             <SelectTrigger className="h-8 text-xs">
@@ -158,11 +234,13 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
           </Select>
         </div>
 
-        {templates.length === 0 ? (
-          <EmptyState title="No templates">Create one to render a quote into a document.</EmptyState>
+        {listed.length === 0 ? (
+          <EmptyState title={`No ${TEMPLATE_KIND_LABELS[listKind].toLowerCase()} templates`}>
+            Create one to render {listKind === "invoice" ? "an invoice" : "a quote"} into a document.
+          </EmptyState>
         ) : (
           <ul className="divide-y">
-            {templates.map(template => (
+            {listed.map(template => (
               <li key={template.id} className="group flex items-center gap-1 px-2 py-1">
                 <button
                   type="button"
@@ -215,9 +293,40 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
           }
         >
           <div className="space-y-3 p-4">
-            <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+            <div className="grid gap-3 sm:grid-cols-[1fr_9rem_9rem]">
               <Field label="Name">
                 <Input value={editing.name} onChange={event => patch({ name: event.target.value })} />
+              </Field>
+              <Field label="For" hint="Decides which tokens exist.">
+                <Select
+                  value={editing.kind}
+                  onValueChange={value => {
+                    const next = value as TemplateKind;
+                    if (next === editing.kind) return;
+                    // The vocabularies do not overlap: `{{quote.validUntil}}`
+                    // on an invoice resolves to a blank. Carrying the body
+                    // across would produce a document full of holes, so the
+                    // kind's own starter takes its place.
+                    patch({
+                      kind: next,
+                      body:
+                        editing.format === "pdf"
+                          ? JSON.stringify(starterPdfTemplate(next))
+                          : starterTemplateBody(next),
+                    });
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TEMPLATE_KINDS.map(entry => (
+                      <SelectItem key={entry} value={entry}>
+                        {TEMPLATE_KIND_LABELS[entry]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </Field>
               <Field label="Format" hint={isPdf ? "A laid-out document." : "Decides how values are escaped."}>
                 <Select
@@ -232,7 +341,12 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
                     patch({
                       format,
                       ...(changingKind
-                        ? { body: format === "pdf" ? JSON.stringify(starterPdfTemplate()) : STARTER_TEMPLATE_BODY }
+                        ? {
+                            body:
+                              format === "pdf"
+                                ? JSON.stringify(starterPdfTemplate(kind))
+                                : starterTemplateBody(kind),
+                          }
                         : {}),
                     });
                   }}
@@ -254,7 +368,7 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
             {isPdf && pdfTemplate ? (
               <PdfTemplateEditor
                 template={pdfTemplate}
-                context={previewContext}
+                source={previewSource}
                 onChange={next => patch({ body: JSON.stringify(next) })}
               />
             ) : (
@@ -284,8 +398,8 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
                     line, and the line tokens only work inside it.
                   </p>
 
-                  <TokenRow title="Quote and customer" tokens={PROPOSAL_TOKENS} onInsert={insert} />
-                  <TokenRow title="Inside the line block" tokens={LINE_TOKENS} onInsert={insert} />
+                  <TokenRow title={tokens.title} tokens={tokens.scalar} onInsert={insert} />
+                  <TokenRow title="Inside the line block" tokens={tokens.line} onInsert={insert} />
 
                   <Button
                     variant="outline"
@@ -302,8 +416,8 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
       ) : (
         <Section title="Nothing open">
           <EmptyState title="Pick a template, or create one">
-            A template turns a quote into a PDF, HTML, Markdown or plain-text document you can send.
-            Start from an example to see what a branded, laid-out proposal is made of.
+            A template turns a quote or an invoice into a PDF, HTML, Markdown or plain-text document you
+            can send. Start from an example to see what a branded, laid-out document is made of.
           </EmptyState>
         </Section>
       )}
@@ -317,7 +431,7 @@ function TokenRow({
   onInsert,
 }: {
   title: string;
-  tokens: { token: string; description: string }[];
+  tokens: TokenDescription[];
   onInsert: (token: string) => void;
 }) {
   return (

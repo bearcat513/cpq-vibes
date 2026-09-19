@@ -477,6 +477,7 @@ export function App() {
             ) : view === "receivables" ? (
               <ReceivablesView
                 accounts={accounts}
+                templates={templates}
                 preferences={preferences}
                 onError={fail}
                 onNotice={notice}

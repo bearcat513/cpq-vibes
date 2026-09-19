@@ -4,7 +4,10 @@ import {
   Ban,
   Check,
   CircleDollarSign,
+  Copy,
   Download,
+  FileDown,
+  FileText,
   Loader2,
   Lock,
   Plus,
@@ -15,6 +18,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Combobox, type ComboboxOption } from "@/components/ui/combobox";
+import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet } from "@/components/ui/sheet";
@@ -22,6 +26,7 @@ import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, Field, InvoiceStatusBadge, Notice, Section, formatters } from "./common";
 import { api } from "@/lib/api";
+import { copyText } from "@/lib/clipboard";
 import { daysOverdue, dueDateFor, invoiceStatus, invoiceTotals, pricedLines, today } from "@/lib/receivable";
 import type { Preferences } from "@/lib/preferences";
 import {
@@ -34,6 +39,7 @@ import {
   type Invoice,
   type InvoiceLine,
   type PaymentMethod,
+  type ProposalTemplate,
 } from "@/lib/types";
 import { localId, type CreditInput, type PaymentInput } from "@/lib/validate";
 import { cn } from "@/lib/utils";
@@ -42,6 +48,8 @@ type Props = {
   /** null raises a new one; an id opens the one that exists. */
   invoiceId: string | null;
   accounts: Account[];
+  /** Every template the account can see; the invoice ones are picked out here. */
+  templates: ProposalTemplate[];
   preferences: Preferences;
   onBack: () => void;
   onChanged: (notices: string[]) => Promise<void>;
@@ -71,6 +79,7 @@ type Props = {
 export function InvoiceEditor({
   invoiceId,
   accounts,
+  templates,
   preferences,
   onBack,
   onChanged,
@@ -84,6 +93,10 @@ export function InvoiceEditor({
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [ledgerForm, setLedgerForm] = useState<"payment" | "credit" | null>(null);
+
+  /** A rendered document being read: text in a modal, a PDF in an iframe. */
+  const [document, setDocument] = useState<{ text: string; name: string } | null>(null);
+  const [pdfPreview, setPdfPreview] = useState<{ url: string; name: string } | null>(null);
 
   /* The draft being edited. Only meaningful while the invoice is a draft. */
   const [accountId, setAccountId] = useState("");
@@ -239,6 +252,40 @@ export function InvoiceEditor({
   const late = invoice ? daysOverdue(invoice, today()) : 0;
   const shown = draft ? pricedLines(lines, currency) : invoice!.lines;
 
+  /* ------------------------------ documents ------------------------------ */
+
+  const invoiceTemplates = templates.filter(template => template.kind === "invoice");
+
+  // What the header's one-click button uses: the account's preferred invoice
+  // template when it is a PDF, otherwise the first PDF one there is.
+  const pdfTemplate =
+    invoiceTemplates.find(
+      template => template.id === preferences.defaultInvoiceTemplateId && template.format === "pdf",
+    ) ?? invoiceTemplates.find(template => template.format === "pdf");
+
+  const preview = async (template: ProposalTemplate) => {
+    if (!invoice) return;
+    setError("");
+    try {
+      // A PDF goes to the browser's own viewer rather than being pulled apart
+      // into text — the point of a preview is to see what will be sent.
+      if (template.format === "pdf") {
+        setPdfPreview({ url: api.invoiceDocumentInlineUrl(invoice.id, template.id), name: template.name });
+        return;
+      }
+
+      const rendered = await api.renderInvoiceDocument(invoice.id, template.id);
+      setDocument({ text: rendered.text, name: rendered.templateName });
+      if (rendered.unknownTokens.length) {
+        setWarnings([
+          `“${rendered.templateName}” uses tokens this app does not know: ${rendered.unknownTokens.join(", ")}.`,
+        ]);
+      }
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "That did not render.");
+    }
+  };
+
   return (
     <div className="space-y-4">
       <Section
@@ -260,6 +307,14 @@ export function InvoiceEditor({
               <Button variant="outline" size="sm" asChild>
                 <a href={api.invoiceExportUrl(invoice.id, "csv")} download>
                   <Download /> CSV
+                </a>
+              </Button>
+            )}
+
+            {invoice && pdfTemplate && (
+              <Button variant="outline" size="sm" asChild title={`Download as PDF — ${pdfTemplate.name}`}>
+                <a href={api.invoiceDocumentUrl(invoice.id, pdfTemplate.id)}>
+                  <FileDown /> PDF
                 </a>
               </Button>
             )}
@@ -599,6 +654,73 @@ export function InvoiceEditor({
             </Table>
           )}
         </Section>
+      )}
+
+      {/* ------------------------------ document --------------------------- */}
+
+      {invoice && (
+        <Section
+          title="Document"
+          description="Render this invoice through a template. What it shows is the invoice as it stands — the balance included."
+        >
+          <div className="flex flex-wrap items-center gap-2 p-4">
+            {invoiceTemplates.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No invoice templates yet — create one under <strong>Templates</strong>.
+              </p>
+            ) : (
+              invoiceTemplates.map(template => (
+                <div key={template.id} className="flex items-center gap-1 rounded-md border px-2 py-1">
+                  <FileText className="size-3.5 text-muted-foreground" />
+                  <span className="text-xs">{template.name}</span>
+                  <Badge tone="outline">{template.format}</Badge>
+                  <Button variant="ghost" size="sm" onClick={() => void preview(template)} disabled={busy}>
+                    Preview
+                  </Button>
+                  <Button variant="ghost" size="sm" asChild>
+                    <a href={api.invoiceDocumentUrl(invoice.id, template.id)}>Download</a>
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        </Section>
+      )}
+
+      {pdfPreview && (
+        <Dialog
+          title={pdfPreview.name}
+          description="Rendered from the stored invoice."
+          onClose={() => setPdfPreview(null)}
+          className="max-w-5xl"
+          footer={
+            <Button variant="outline" asChild>
+              <a href={pdfPreview.url.replace("&inline", "")}>
+                <FileDown /> Download
+              </a>
+            </Button>
+          }
+        >
+          <iframe src={pdfPreview.url} title={pdfPreview.name} className="h-[70vh] w-full rounded-md border bg-muted" />
+        </Dialog>
+      )}
+
+      {document && (
+        <Dialog
+          title={document.name}
+          description="Rendered from the stored invoice."
+          onClose={() => setDocument(null)}
+          className="max-w-4xl"
+          footer={
+            <Button variant="outline" onClick={() => void copyText(document.text)}>
+              <Copy /> Copy
+            </Button>
+          }
+        >
+          <pre className="max-h-[65vh] overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">
+            {document.text}
+          </pre>
+        </Dialog>
       )}
 
       {ledgerForm === "payment" && invoice && (

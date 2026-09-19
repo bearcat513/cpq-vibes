@@ -1309,6 +1309,98 @@ describe("what comes out", () => {
     expect((await response.json()).error).toContain("valid JSON");
   });
 
+  signedIn("an invoice renders through an invoice template", async () => {
+    const invoiceTemplateId = (
+      await post("/api/proposal-templates", {
+        name: "Plain invoice",
+        kind: "invoice",
+        format: "text",
+        body: "{{invoice.number}} for {{customer.name}}\n{{lines.table}}\nDue {{invoice.dueDate}}: {{totals.balance}}",
+      })
+    ).id;
+
+    const raised = await post("/api/invoices", {
+      accountId,
+      lines: [{ description: "Consultancy", quantity: 2, unitPrice: 750, taxPercent: 10 }],
+    });
+    const invoice = await post(`/api/invoices/${raised.invoice.id}/issue`, {});
+
+    const response = await api(`/api/invoices/${invoice.id}/document?templateId=${invoiceTemplateId}`);
+    expect(response.headers.get("content-disposition")).toContain(".txt");
+
+    const text = await response.text();
+    expect(text).toContain(invoice.number);
+    expect(text).toContain("Harbour Logistics");
+    expect(text).toContain("Consultancy");
+    expect(text).toContain("$1,650.00");
+
+    // The balance on the page is the ledger's, computed on this read — so a
+    // payment banked a second ago is on the document a customer downloads.
+    await post(`/api/invoices/${invoice.id}/payments`, { amount: 650 });
+    expect(await (await api(`/api/invoices/${invoice.id}/document?templateId=${invoiceTemplateId}`)).text()).toContain(
+      "$1,000.00",
+    );
+
+    // And ?inline is the preview pane's envelope, as it is for a quote.
+    const payload = await json(`/api/invoices/${invoice.id}/document?templateId=${invoiceTemplateId}&inline`);
+    expect(payload.format).toBe("text");
+    expect(payload.unknownTokens).toEqual([]);
+  });
+
+  signedIn("a template of the wrong kind is refused, with what is wrong", async () => {
+    // Rendering a quote template against an invoice would resolve every token
+    // to a blank and hand the customer a document full of holes.
+    const raised = await post("/api/invoices", {
+      accountId,
+      lines: [{ description: "Mismatched", quantity: 1, unitPrice: 100 }],
+    });
+
+    const response = await api(`/api/invoices/${raised.invoice.id}/document?templateId=${templateId}`);
+    expect(response.status).toBe(422);
+    expect((await response.json()).error).toContain("quote template");
+
+    await api(`/api/invoices/${raised.invoice.id}`, { method: "DELETE" });
+  });
+
+  signedIn("an invoice PDF template is held to the invoice totals list", async () => {
+    const created = await post("/api/proposal-templates", {
+      name: "Hand-written invoice PDF",
+      kind: "invoice",
+      format: "pdf",
+      body: JSON.stringify({
+        page: {},
+        blocks: [
+          { type: "text", text: "Invoice {{invoice.number}}" },
+          {
+            type: "totals",
+            rows: [
+              { label: "Contract value", field: "totalContractValue" },
+              { label: "Margin", field: "marginPercent" },
+            ],
+          },
+        ],
+        footer: { text: "" },
+      }),
+    });
+
+    expect(created.kind).toBe("invoice");
+    // Neither a quote's numbers nor an internal one survive the read.
+    expect(created.body).not.toContain("totalContractValue");
+    expect(created.body).not.toContain("marginPercent");
+    expect(created.body).toContain("balance");
+  });
+
+  signedIn("a template written before invoices existed is still a quote's", async () => {
+    // No `kind` in the body at all, which is every template stored before the
+    // column existed and every script written against the old API.
+    const created = await post("/api/proposal-templates", {
+      name: "Kindless",
+      format: "text",
+      body: "{{quote.number}}",
+    });
+    expect(created.kind).toBe("quote");
+  });
+
   signedIn("?inline gives the preview pane the text and its warnings", async () => {
     const payload = await json(`/api/quotes/${quoteId}/document?templateId=${templateId}&inline`);
     expect(payload.format).toBe("text");

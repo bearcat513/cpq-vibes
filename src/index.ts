@@ -103,18 +103,25 @@ import { PRICING_VARIABLES, lineVariableNames, quoteVariableNames } from "./lib/
 import { IMAGE_MEDIA_TYPES, MAX_IMAGE_BYTES } from "./lib/image";
 import {
   CONTENT_TYPES,
-  LINE_TOKENS,
   LINES_CLOSE,
   LINES_OPEN,
   MAX_PDF_TEMPLATE_BODY_LENGTH,
   MAX_TEMPLATE_BODY_LENGTH,
-  PROPOSAL_TOKENS,
-  proposalFileName,
-  renderProposal,
-} from "./lib/proposal";
+  documentFileName,
+} from "./lib/document";
+import { INVOICE_LINE_TOKENS, INVOICE_TOKENS, renderInvoiceDocument } from "./lib/invoiceDocument";
+import { LINE_TOKENS, PROPOSAL_TOKENS, renderProposal } from "./lib/proposal";
 import { PAGE_SIZES, pdfResponse } from "./lib/pdf";
 import { FONT_FAMILIES } from "./lib/pdfFonts";
-import { BLOCK_TYPES, LINE_ITEM_FIELDS, TOTALS_FIELDS, renderPdf } from "./lib/pdfTemplate";
+import {
+  BLOCK_TYPES,
+  INVOICE_LINE_ITEM_FIELDS,
+  INVOICE_TOTALS_FIELDS,
+  LINE_ITEM_FIELDS,
+  TOTALS_FIELDS,
+  renderInvoicePdf,
+  renderPdf,
+} from "./lib/pdfTemplate";
 import { serializeWorkspaceFile, workspaceFileName } from "./lib/workspaceFile";
 import {
   APPROVAL_METRIC_LABELS,
@@ -128,7 +135,11 @@ import {
   PROPOSAL_FORMATS,
   QUOTE_STATUSES,
   QUOTE_TRANSITIONS,
+  TEMPLATE_KIND_LABELS,
+  TEMPLATE_KINDS,
+  type ProposalTemplate,
   type QuoteStatus,
+  type TemplateKind,
 } from "./lib/types";
 import { asCurrency } from "./lib/money";
 import { today } from "./lib/receivable";
@@ -287,6 +298,44 @@ const proposalTemplates = crudRoutes({
   remove: deleteProposalTemplate,
 });
 
+/**
+ * The template a `/document` request asked for, or the first of its kind.
+ *
+ * Kind is not a filter for tidiness: a quote template rendered against an
+ * invoice resolves every one of its tokens to a blank, and hands the customer
+ * a document with holes in it. Naming one explicitly is answered with what is
+ * wrong rather than "not found", because the id *does* exist and being told it
+ * does not is the kind of message people spend an afternoon on.
+ */
+function pickTemplate(
+  templates: ProposalTemplate[],
+  kind: TemplateKind,
+  templateId: string | null,
+): ProposalTemplate | Response {
+  const ofKind = templates.filter(entry => entry.kind === kind);
+
+  if (!templateId) {
+    return (
+      ofKind[0] ??
+      fail(`There are no ${TEMPLATE_KIND_LABELS[kind].toLowerCase()} templates yet — create one first.`, 404)
+    );
+  }
+
+  const found = ofKind.find(entry => entry.id === templateId);
+  if (found) return found;
+
+  const wrongKind = templates.find(entry => entry.id === templateId);
+  if (wrongKind) {
+    return fail(
+      `“${wrongKind.name}” is a ${TEMPLATE_KIND_LABELS[wrongKind.kind].toLowerCase()} template, and this is ${
+        kind === "invoice" ? "an invoice" : "a quote"
+      }.`,
+      422,
+    );
+  }
+  return fail("Template not found.", 404);
+}
+
 /** Header and lines, as both the create and the save endpoints read them. */
 async function readQuoteBody(req: Request) {
   const raw = await body(req);
@@ -395,13 +444,14 @@ const server = serve({
             "POST   /api/invoices/:id/credits": "{ amount, reason?, issuedOn? } → credit or write off",
             "DELETE /api/invoices/:id/credits/:creditId": "Remove a credit entered in error",
             "GET    /api/invoices/:id/export": "Download one invoice (?format=csv|json)",
+            "GET    /api/invoices/:id/document": "Render an invoice through an invoice template (?templateId=, &inline)",
             "GET    /api/invoices/:id/shares": "Who an invoice is shared with",
             "POST   /api/invoices/:id/shares": "{ email } → share it read-only (owner only)",
             "DELETE /api/invoices/:id/shares": "?email= → stop sharing it",
             "POST   /api/quotes/:id/invoice": "Raise an invoice for a sent or accepted quote",
             "GET    /api/accounts/:id/invoices": "One customer's invoices",
-            "GET    /api/proposal-templates": "List templates you own or that are shared with you",
-            "POST   /api/proposal-templates": "Create a proposal template",
+            "GET    /api/proposal-templates": "List templates you own or that are shared with you — quote and invoice alike",
+            "POST   /api/proposal-templates": "Create a template ({ kind: quote | invoice })",
             "GET    /api/proposal-templates/:id": "Read one template",
             "PUT    /api/proposal-templates/:id": "Replace one template (owner only)",
             "DELETE /api/proposal-templates/:id": "Delete one template (owner only)",
@@ -464,18 +514,35 @@ const server = serve({
               "discount, any adjustment and shipping as their own lines. Billing a subscription period by " +
               "period is a billing schedule, which this does not do.",
           },
-          proposals: {
-            what: "A quote rendered through a template — HTML, Markdown, plain text or PDF.",
-            tokens: PROPOSAL_TOKENS,
-            lineTokens: LINE_TOKENS,
+          documents: {
+            what: "A quote or an invoice rendered through a template — HTML, Markdown, plain text or PDF.",
+            kinds: TEMPLATE_KINDS,
+            kindDecides:
+              "A template's `kind` decides its token vocabulary, and one collection holds both. A quote " +
+              "template will not render an invoice: every token would resolve to a blank, so it is refused.",
+            quote: {
+              renderedBy: "GET /api/quotes/:id/document",
+              tokens: PROPOSAL_TOKENS,
+              lineTokens: LINE_TOKENS,
+              pdfLineItemFields: LINE_ITEM_FIELDS,
+              pdfTotalsFields: TOTALS_FIELDS,
+            },
+            invoice: {
+              renderedBy: "GET /api/invoices/:id/document",
+              tokens: INVOICE_TOKENS,
+              lineTokens: INVOICE_LINE_TOKENS,
+              pdfLineItemFields: INVOICE_LINE_ITEM_FIELDS,
+              pdfTotalsFields: INVOICE_TOTALS_FIELDS,
+              derived:
+                "`{{invoice.status}}` and the balance are worked out as the document renders, never read off " +
+                "the record — an invoice printed the morning after it falls due says so.",
+            },
             repeatingBlock: `${LINES_OPEN} … ${LINES_CLOSE} renders once per line.`,
             escaping: "Values are escaped for the template's format. Nothing in a template is executed.",
             pdf: {
               what: "A `pdf` template's body is a JSON document description rather than prose, because a PDF has no layout of its own.",
               blocks: BLOCK_TYPES,
-              lineItemFields: LINE_ITEM_FIELDS,
-              totalsFields: TOTALS_FIELDS,
-              margin: "A PDF template cannot name cost or margin — the totals it may print is a closed, customer-facing list.",
+              margin: "A PDF template cannot name cost or margin — the totals it may print are a closed, customer-facing list.",
               fonts: "The PDF standard 14 only, so a quote is a few kilobytes and needs no embedded font.",
               branding: {
                 what: "An `image` block puts a picture in the flow; `header` is a letterhead drawn in the top margin of every page (or only the first, with `firstPageOnly`).",
@@ -539,12 +606,17 @@ const server = serve({
           approvalMetrics: APPROVAL_METRIC_LABELS,
           pricingVariables: PRICING_VARIABLES,
           formulaFunctions: FUNCTION_NAMES,
+          templateKinds: TEMPLATE_KINDS,
           proposalTokens: PROPOSAL_TOKENS,
           lineTokens: LINE_TOKENS,
+          invoiceTokens: INVOICE_TOKENS,
+          invoiceLineTokens: INVOICE_LINE_TOKENS,
           proposalFormats: PROPOSAL_FORMATS,
           pdfBlocks: BLOCK_TYPES,
           pdfLineItemFields: LINE_ITEM_FIELDS,
           pdfTotalsFields: TOTALS_FIELDS,
+          pdfInvoiceLineItemFields: INVOICE_LINE_ITEM_FIELDS,
+          pdfInvoiceTotalsFields: INVOICE_TOTALS_FIELDS,
           pdfPageSizes: PAGE_SIZES,
           pdfFontFamilies: FONT_FAMILIES,
           pdfImageMediaTypes: IMAGE_MEDIA_TYPES,
@@ -947,15 +1019,8 @@ const server = serve({
         if (!quote) return fail("Quote not found.", 404);
 
         const params = query(req);
-        const templateId = params.get("templateId");
-        const templates = await listProposalTemplates(token);
-        const template = templateId ? templates.find(entry => entry.id === templateId) : templates[0];
-        if (!template) {
-          return fail(
-            templateId ? "Proposal template not found." : "There are no proposal templates yet — create one first.",
-            404,
-          );
-        }
+        const template = pickTemplate(await listProposalTemplates(token), "quote", params.get("templateId"));
+        if (template instanceof Response) return template;
 
         const context = {
           quote: withExpiry(quote),
@@ -964,7 +1029,7 @@ const server = serve({
           locale: (await readPreferences(token)).locale || undefined,
         };
 
-        const fileName = proposalFileName(
+        const fileName = documentFileName(
           `${quote.number}-${quote.customer.name || quote.name}`,
           template.format,
         );
@@ -1116,6 +1181,64 @@ const server = serve({
           invoice.number,
           invoice,
         );
+      }),
+    },
+
+    /**
+     * An invoice rendered into the document a customer is sent.
+     *
+     * The quote's `/document` with the nouns changed, deliberately: the same
+     * four formats, the same `?inline`, the same "a template shared with you
+     * works like one of your own". What it renders is an invoice *as it
+     * stands* — the balance on the page is recomputed from the ledger on this
+     * read, so a document downloaded after a payment shows the payment.
+     */
+    "/api/invoices/:id/document": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const me = await sessionUser(req);
+        if (!me) return fail("Sign in to continue.", 401);
+
+        const invoice = await getInvoice(token, req.params.id);
+        if (!invoice) return fail("Invoice not found.", 404);
+
+        const params = query(req);
+        const template = pickTemplate(await listProposalTemplates(token), "invoice", params.get("templateId"));
+        if (template instanceof Response) return template;
+
+        const context = {
+          invoice,
+          sellerName: me.name || me.email,
+          sellerEmail: me.email,
+          locale: (await readPreferences(token)).locale || undefined,
+        };
+
+        const fileName = documentFileName(
+          `${invoice.number}-${invoice.customer.name}`,
+          template.format,
+          "invoice",
+        );
+
+        if (template.format === "pdf") {
+          const parsed = readPdfTemplate(template.body, "invoice");
+          if (!parsed.ok) return fail(`“${template.name}” cannot be rendered: ${parsed.error}`, 422);
+
+          const rendered = renderInvoicePdf(parsed.value, context);
+          return pdfResponse(rendered.bytes, fileName, params.has("inline"));
+        }
+
+        const rendered = renderInvoiceDocument(template.body, template.format, context);
+
+        if (params.has("inline")) {
+          return Response.json({
+            text: rendered.text,
+            format: template.format,
+            templateId: template.id,
+            templateName: template.name,
+            unknownTokens: rendered.unknownTokens,
+          });
+        }
+
+        return fileResponse(rendered.text, CONTENT_TYPES[template.format], fileName);
       }),
     },
 

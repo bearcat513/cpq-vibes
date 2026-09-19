@@ -20,8 +20,9 @@
  */
 import { priceQuote } from "./pricing";
 import { starterPdfTemplate, type PdfTemplate } from "./pdfTemplate";
+import { addDays, dueDateFor, invoiceTotals, pricedLines, today as todayIso } from "./receivable";
 import { SAMPLE_COVER_BANNER, SAMPLE_LOGO } from "./sampleBrand";
-import type { ProposalFormat, Product, Quote } from "./types";
+import type { Invoice, InvoiceLine, ProposalFormat, Product, Quote, TemplateKind } from "./types";
 import type { AccountInput, ApprovalRuleInput, PriceBookInput, PricingRuleInput, ProductInput } from "./validate";
 
 /* -------------------------------- products ------------------------------- */
@@ -723,6 +724,69 @@ TOTAL ......... {{totals.grandTotal}}  over {{quote.termMonths}} months
 
 Payment terms: {{customer.paymentTerms}}`;
 
+/*
+ * The same two registers, for an invoice.
+ *
+ * Shorter than the proposal ones, and that is the point: a proposal argues,
+ * an invoice states. What is owed, by when, against which purchase order,
+ * and where to quote the number when paying.
+ */
+const INVOICE_MARKDOWN_TEMPLATE = `# Invoice {{invoice.number}}
+
+**{{invoice.status}}** · issued {{invoice.date}} · due **{{invoice.dueDate}}** ({{invoice.paymentTerms}})
+
+| Bill to | From |
+| --- | --- |
+| {{customer.name}}<br>{{customer.contactName}}<br>{{customer.contactEmail}} | {{seller.name}}<br>{{seller.email}} |
+
+PO reference: {{invoice.poNumber}}
+
+## Lines
+
+{{lines.table}}
+
+## Totals
+
+| | |
+| --- | --- |
+| Subtotal | {{totals.subtotal}} |
+| Tax | {{totals.tax}} |
+| Total | {{totals.total}} |
+| Paid | −{{totals.paid}} |
+| Credited | −{{totals.credited}} |
+| **Balance due** | **{{totals.balance}}** |
+
+{{invoice.notes}}
+
+Please quote {{invoice.number}} with your payment.`;
+
+const INVOICE_TEXT_TEMPLATE = `INVOICE {{invoice.number}}
+{{invoice.status}} · issued {{invoice.date}} · due {{invoice.dueDate}} ({{invoice.paymentTerms}})
+
+BILL TO
+{{customer.name}}
+{{customer.contactName}}
+{{customer.address}}
+
+FROM
+{{seller.name}} <{{seller.email}}>
+
+PO: {{invoice.poNumber}}
+
+LINES
+{{lines.table}}
+
+Subtotal ...... {{totals.subtotal}}
+Tax ........... {{totals.tax}}
+Total ......... {{totals.total}}
+Paid .......... -{{totals.paid}}
+Credited ...... -{{totals.credited}}
+BALANCE DUE ... {{totals.balance}}
+
+{{invoice.notes}}
+
+Please quote {{invoice.number}} with your payment.`;
+
 /* ----------------------------- PDF templates ----------------------------- */
 
 /**
@@ -1041,18 +1105,22 @@ const PDF_ORDER_FORM: PdfTemplate = {
   footer: { text: "Order form {{quote.number}}", showPageNumbers: true },
 };
 
-export const SAMPLE_TEMPLATES: { name: string; format: ProposalFormat; body: string }[] = [
-  { name: "Proposal — branded PDF", format: "pdf", body: JSON.stringify(PDF_BRANDED) },
-  { name: "Order form — PDF", format: "pdf", body: JSON.stringify(PDF_ORDER_FORM) },
-  { name: "Proposal — PDF", format: "pdf", body: JSON.stringify(starterPdfTemplate()) },
-  { name: "Quote summary — PDF", format: "pdf", body: JSON.stringify(PDF_SUMMARY) },
-  { name: "Proposal — letterhead", format: "html", body: HTML_TEMPLATE },
-  { name: "Proposal — Markdown", format: "markdown", body: MARKDOWN_TEMPLATE },
-  { name: "Quote summary — plain text", format: "text", body: TEXT_TEMPLATE },
+export const SAMPLE_TEMPLATES: { name: string; kind: TemplateKind; format: ProposalFormat; body: string }[] = [
+  { name: "Proposal — branded PDF", kind: "quote", format: "pdf", body: JSON.stringify(PDF_BRANDED) },
+  { name: "Order form — PDF", kind: "quote", format: "pdf", body: JSON.stringify(PDF_ORDER_FORM) },
+  { name: "Proposal — PDF", kind: "quote", format: "pdf", body: JSON.stringify(starterPdfTemplate()) },
+  { name: "Quote summary — PDF", kind: "quote", format: "pdf", body: JSON.stringify(PDF_SUMMARY) },
+  { name: "Proposal — letterhead", kind: "quote", format: "html", body: HTML_TEMPLATE },
+  { name: "Proposal — Markdown", kind: "quote", format: "markdown", body: MARKDOWN_TEMPLATE },
+  { name: "Quote summary — plain text", kind: "quote", format: "text", body: TEXT_TEMPLATE },
+  { name: "Invoice — PDF", kind: "invoice", format: "pdf", body: JSON.stringify(starterPdfTemplate("invoice")) },
+  { name: "Invoice — Markdown", kind: "invoice", format: "markdown", body: INVOICE_MARKDOWN_TEMPLATE },
+  { name: "Invoice — plain text", kind: "invoice", format: "text", body: INVOICE_TEXT_TEMPLATE },
 ];
 
-/** What a brand-new template starts as, so the tokens are discoverable. */
-export const STARTER_TEMPLATE_BODY = MARKDOWN_TEMPLATE;
+/** What a brand-new text template starts as, so the tokens are discoverable. */
+export const starterTemplateBody = (kind: TemplateKind): string =>
+  kind === "invoice" ? INVOICE_MARKDOWN_TEMPLATE : MARKDOWN_TEMPLATE;
 
 /**
  * The quote the sample installs, written against SKUs rather than ids — the
@@ -1287,5 +1355,110 @@ export function specimenQuote(): Quote {
     decidedAt: "",
     createdAt: today.toISOString(),
     updatedAt: today.toISOString(),
+  };
+}
+
+/**
+ * An invoice to design invoice templates against.
+ *
+ * Built the same way the specimen quote is — the real arithmetic over real
+ * lines — and carrying the two things an invoice template has to be designed
+ * against but a fresh one never shows: a part payment, so `Paid` and
+ * `Balance due` are not the same number, and a credit, so the footer has all
+ * six of its rows. It is dated a week past due on purpose, so
+ * `{{invoice.status}}` renders "Overdue" in the preview and whoever is
+ * building the template finds out what that looks like before a customer
+ * does.
+ */
+export function specimenInvoice(): Invoice {
+  const quote = specimenQuote();
+  const currency = "USD" as const;
+
+  const line = (
+    sku: string,
+    description: string,
+    quantity: number,
+    unitPrice: number,
+    taxPercent: number,
+  ): InvoiceLine => ({
+    id: `iln_${sku.toLowerCase()}`,
+    sourceLineId: null,
+    sku,
+    description,
+    quantity,
+    unitPrice,
+    // Filled in by `invoiceTotals` below, which is the same function the
+    // server re-totals with: a specimen whose lines do not add up is exactly
+    // what a preview must never show.
+    amount: 0,
+    taxPercent,
+    taxAmount: 0,
+  });
+
+  const lines = [
+    line("PLAT-CORE", "Nimbus Platform — Enterprise, SSO and SCIM (40 users)", 40, 168.48, 8.5),
+    line("STOR", "Managed Storage (60 TB)", 60, 16.2, 8.5),
+    // Zero-rated beside standard-rated, which is the case a single-rate
+    // invoice cannot express and this one can.
+    line("ONBOARD", "Onboarding and migration", 1, 12_000, 0),
+  ];
+
+  const payments = [
+    {
+      id: "pay_specimen",
+      invoiceId: "inv_specimen",
+      receivedOn: addDays(todayIso(), -14),
+      amount: 5_000,
+      method: "bank_transfer" as const,
+      reference: "FT2026041700931",
+      note: "",
+      ownerId: "",
+      createdAt: "",
+      updatedAt: "",
+    },
+  ];
+
+  const credits = [
+    {
+      id: "crd_specimen",
+      invoiceId: "inv_specimen",
+      issuedOn: addDays(todayIso(), -10),
+      amount: 250,
+      reason: "goodwill" as const,
+      note: "Late start on the migration.",
+      ownerId: "",
+      createdAt: "",
+      updatedAt: "",
+    },
+  ];
+
+  // Both from the same functions the server re-totals with, so the specimen
+  // adds up the way a real invoice does.
+  const priced = pricedLines(lines, currency);
+  const totals = invoiceTotals(lines, payments, credits, currency);
+  const issueDate = addDays(todayIso(), -37);
+
+  return {
+    id: "inv_specimen",
+    number: "INV-2026-0042",
+    quoteId: quote.id,
+    quoteNumber: quote.number,
+    customer: quote.customer,
+    currency,
+    state: "issued",
+    issueDate,
+    dueDate: dueDateFor(issueDate, 30),
+    paymentTermDays: 30,
+    poNumber: "PO-88417",
+    notes: "Payable by transfer to the account on file. Late payment interest applies after 30 days.",
+    internalNotes: "",
+    lines: priced,
+    payments,
+    credits,
+    totals,
+    ownerId: "",
+    sharedWith: [],
+    createdAt: issueDate,
+    updatedAt: todayIso(),
   };
 }

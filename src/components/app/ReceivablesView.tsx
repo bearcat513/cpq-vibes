@@ -25,11 +25,14 @@ import {
   type CurrencyCode,
   type InvoiceStatus,
   type InvoiceSummary,
+  type ProposalTemplate,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type Props = {
   accounts: Account[];
+  /** Passed through to the editor, which renders an invoice through one. */
+  templates: ProposalTemplate[];
   preferences: Preferences;
   onError: (error: unknown) => void;
   onNotice: (lines: string[]) => void;
@@ -50,7 +53,7 @@ type Props = {
  * summed them would be a confident wrong number. The selector is how you look
  * at the other one, and the count of what was left out is on the page.
  */
-export function ReceivablesView({ accounts, preferences, onError, onNotice, confirmed }: Props) {
+export function ReceivablesView({ accounts, templates, preferences, onError, onNotice, confirmed }: Props) {
   const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -122,6 +125,7 @@ export function ReceivablesView({ accounts, preferences, onError, onNotice, conf
       <InvoiceEditor
         invoiceId={openId}
         accounts={accounts}
+        templates={templates}
         preferences={preferences}
         onBack={() => setOpenId(null)}
         onChanged={afterChange}
@@ -136,6 +140,7 @@ export function ReceivablesView({ accounts, preferences, onError, onNotice, conf
       <InvoiceEditor
         invoiceId={null}
         accounts={accounts}
+        templates={templates}
         preferences={preferences}
         onBack={() => setCreating(false)}
         onChanged={afterChange}

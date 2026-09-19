@@ -30,16 +30,16 @@ import { parseFormula } from "./formula";
 import { isEmbeddableImage } from "./image";
 import { asCurrency, atLeastZero, clampPercent, isCurrency } from "./money";
 import { lineVariableNames, quoteVariableNames } from "./pricing";
-import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "./proposal";
+import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "./document";
 import { DEFAULT_MARGINS, PAGE_SIZES } from "./pdf";
 import { FONT_FAMILIES } from "./pdfFonts";
 import {
-  DEFAULT_LINE_COLUMNS,
   DEFAULT_PAGE,
-  DEFAULT_TOTALS_ROWS,
-  LINE_ITEM_FIELDS,
-  TOTALS_FIELDS,
+  defaultLineColumns,
+  defaultTotalsRows,
+  lineItemFields,
   starterPdfTemplate,
+  totalsFields,
   type LineItemColumn,
   type PdfBlock,
   type PdfHeader,
@@ -60,6 +60,7 @@ import {
   PRICING_RULE_TARGETS,
   PRODUCT_RULE_KINDS,
   PROPOSAL_FORMATS,
+  TEMPLATE_KINDS,
   TIER_KINDS,
   type Account,
   type AccountContact,
@@ -80,6 +81,7 @@ import {
   type ProductRule,
   type ProposalFormat,
   type ProposalTemplate,
+  type TemplateKind,
   type QuoteLineInput,
   type VolumeTier,
 } from "./types";
@@ -675,6 +677,9 @@ export function readProposalTemplate(raw: unknown): Validated<ProposalTemplateIn
   if (!name) return invalid("A proposal template needs a name.");
 
   const format = oneOf(input.format, PROPOSAL_FORMATS, "html") as ProposalFormat;
+  // A template stored before invoices existed has no kind, and is a quote's —
+  // which is also why "quote" is the fallback rather than an error.
+  const kind = oneOf(input.kind, TEMPLATE_KINDS, "quote") as TemplateKind;
 
   const body = String(input.body ?? "");
   const limit = format === "pdf" ? MAX_PDF_TEMPLATE_BODY_LENGTH : MAX_TEMPLATE_BODY_LENGTH;
@@ -687,12 +692,15 @@ export function readProposalTemplate(raw: unknown): Validated<ProposalTemplateIn
   // the renderer never has to guess at a half-formed block, and a template
   // written by hand against the API gets the same defaults the editor uses.
   if (format === "pdf") {
-    const parsed = readPdfTemplate(body);
+    // Read against *this* template's kind: a column or a totals row naming a
+    // field the other kind has is dropped here, so a template switched from
+    // quote to invoice comes back with a table it can actually fill.
+    const parsed = readPdfTemplate(body, kind);
     if (!parsed.ok) return parsed;
-    return valid({ name, format, body: JSON.stringify(parsed.value) });
+    return valid({ name, kind, format, body: JSON.stringify(parsed.value) });
   }
 
-  return valid({ name, format, body });
+  return valid({ name, kind, format, body });
 }
 
 /* --------------------------- PDF template bodies ------------------------- */
@@ -726,13 +734,13 @@ const imageSource = (value: unknown): string => {
   return isEmbeddableImage(value.trim()) ? value.trim() : "";
 };
 
-function readLineColumns(raw: unknown): LineItemColumn[] {
-  const fields = new Set(LINE_ITEM_FIELDS.map(entry => entry.field));
+function readLineColumns(raw: unknown, kind: TemplateKind): LineItemColumn[] {
+  const fields = new Set<string>(lineItemFields(kind).map(entry => entry.field));
   const columns = (Array.isArray(raw) ? raw : [])
     .map((entry): LineItemColumn | null => {
       const column = asRecord(entry);
       const field = String(column.field ?? "");
-      if (!fields.has(field as LineItemColumn["field"])) return null;
+      if (!fields.has(field)) return null;
       return {
         field: field as LineItemColumn["field"],
         header: text(column.header, 60),
@@ -743,12 +751,12 @@ function readLineColumns(raw: unknown): LineItemColumn[] {
     .filter((column): column is LineItemColumn => column !== null);
 
   // A line-item block with no usable column would render an empty table, which
-  // is a worse outcome than the default five.
-  return columns.length ? columns : structuredClone(DEFAULT_LINE_COLUMNS);
+  // is a worse outcome than this kind's default columns.
+  return columns.length ? columns : defaultLineColumns(kind);
 }
 
-function readTotalsRows(raw: unknown): TotalsRow[] {
-  const fields = new Set(TOTALS_FIELDS.map(entry => entry.field));
+function readTotalsRows(raw: unknown, kind: TemplateKind): TotalsRow[] {
+  const fields = new Set<string>(totalsFields(kind).map(entry => entry.field));
   const rows = (Array.isArray(raw) ? raw : [])
     .map((entry): TotalsRow | null => {
       const row = asRecord(entry);
@@ -756,7 +764,7 @@ function readTotalsRows(raw: unknown): TotalsRow[] {
       // Silently dropping an unknown field is what keeps `cost` and `margin`
       // out of a customer-facing document even if a hand-written body asks
       // for them — see the note atop src/lib/pdfTemplate.ts.
-      if (!fields.has(field as TotalsRow["field"])) return null;
+      if (!fields.has(field)) return null;
       return {
         label: text(row.label, 60),
         field: field as TotalsRow["field"],
@@ -766,10 +774,10 @@ function readTotalsRows(raw: unknown): TotalsRow[] {
     })
     .filter((row): row is TotalsRow => row !== null);
 
-  return rows.length ? rows : structuredClone(DEFAULT_TOTALS_ROWS);
+  return rows.length ? rows : defaultTotalsRows(kind);
 }
 
-function readBlock(raw: unknown): PdfBlock | null {
+function readBlock(raw: unknown, kind: TemplateKind): PdfBlock | null {
   const input = asRecord(raw);
 
   switch (input.type) {
@@ -848,7 +856,7 @@ function readBlock(raw: unknown): PdfBlock | null {
     case "lineItems":
       return {
         type: "lineItems",
-        columns: readLineColumns(input.columns),
+        columns: readLineColumns(input.columns, kind),
         ...(input.showOptions === false ? { showOptions: false } : { showOptions: true }),
         ...(input.showDescription === false ? { showDescription: false } : { showDescription: true }),
         ...(optionalColor(input.headerFill) ? { headerFill: optionalColor(input.headerFill) } : {}),
@@ -859,7 +867,7 @@ function readBlock(raw: unknown): PdfBlock | null {
     case "totals":
       return {
         type: "totals",
-        rows: readTotalsRows(input.rows),
+        rows: readTotalsRows(input.rows, kind),
         ...(input.width !== undefined ? { width: bounded(input.width, 260, 120, 600) } : {}),
       };
 
@@ -891,13 +899,13 @@ function readBlock(raw: unknown): PdfBlock | null {
  * Accepts the JSON string the record stores, or an already-parsed object, so
  * the same function serves the API, the file importer and the editor.
  */
-export function readPdfTemplate(raw: unknown): Validated<PdfTemplate> {
+export function readPdfTemplate(raw: unknown, kind: TemplateKind = "quote"): Validated<PdfTemplate> {
   let source: unknown = raw;
 
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     // An empty body is a brand-new template, not an error.
-    if (!trimmed) return valid(starterPdfTemplate());
+    if (!trimmed) return valid(starterPdfTemplate(kind));
     try {
       source = JSON.parse(trimmed);
     } catch {
@@ -912,7 +920,7 @@ export function readPdfTemplate(raw: unknown): Validated<PdfTemplate> {
 
   const blocks = (Array.isArray(source.blocks) ? source.blocks : [])
     .slice(0, 200)
-    .map(readBlock)
+    .map(block => readBlock(block, kind))
     .filter((block): block is PdfBlock => block !== null);
 
   if (!blocks.length) return invalid("A PDF template needs at least one block.");

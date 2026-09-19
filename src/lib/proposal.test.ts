@@ -5,7 +5,8 @@
  * than into `{{totals.grandTotal}}` in front of a buyer.
  */
 import { describe, expect, test } from "bun:test";
-import { LINES_CLOSE, LINES_OPEN, proposalFileName, renderProposal, unknownTokensIn } from "./proposal";
+import { LINES_CLOSE, LINES_OPEN, documentFileName, unknownTokensIn } from "./document";
+import { LINE_TOKENS, PROPOSAL_TOKENS, renderProposal } from "./proposal";
 import type { PricedLine, Quote } from "./types";
 
 const line = (overrides: Partial<PricedLine> = {}): PricedLine =>
@@ -165,7 +166,7 @@ describe("tokens", () => {
   });
 
   test("unknownTokensIn warns the editor before anything is rendered", () => {
-    expect(unknownTokensIn("{{quote.number}} {{nope}} {{line.sku}}")).toEqual(["nope"]);
+    expect(unknownTokensIn("{{quote.number}} {{nope}} {{line.sku}}", [PROPOSAL_TOKENS, LINE_TOKENS])).toEqual(["nope"]);
   });
 });
 
@@ -209,8 +210,10 @@ describe("robustness", () => {
   });
 
   test("file names are slugged, with the format's extension", () => {
-    expect(proposalFileName("Q-2026-0001 — Harbour Logistics", "html")).toBe("q-2026-0001-harbour-logistics.html");
-    expect(proposalFileName("", "markdown")).toBe("proposal.md");
-    expect(proposalFileName("Quote", "text")).toBe("quote.txt");
+    expect(documentFileName("Q-2026-0001 — Harbour Logistics", "html")).toBe("q-2026-0001-harbour-logistics.html");
+    // A record with nothing to slug falls back to what the caller calls it.
+    expect(documentFileName("", "markdown")).toBe("document.md");
+    expect(documentFileName("", "text", "invoice")).toBe("invoice.txt");
+    expect(documentFileName("Quote", "text")).toBe("quote.txt");
   });
 });

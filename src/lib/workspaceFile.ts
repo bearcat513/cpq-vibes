@@ -42,7 +42,7 @@ export const WORKSPACE_FILE_VERSION = 1;
 /** Marks the records that came from someone else's account. */
 type Shared = { sharedWithMe?: true };
 
-export type WorkspaceTemplateEntry = Pick<ProposalTemplate, "name" | "format" | "body"> & Shared;
+export type WorkspaceTemplateEntry = Pick<ProposalTemplate, "name" | "kind" | "format" | "body"> & Shared;
 
 export type WorkspaceAccountEntry = Omit<Account, "id" | "ownerId" | "createdAt" | "updatedAt">;
 
@@ -113,6 +113,7 @@ export function buildWorkspaceFile(input: WorkspaceInput): WorkspaceFile {
     accounts: input.accounts.map(({ id, ownerId, createdAt, updatedAt, ...rest }) => rest),
     proposalTemplates: input.templates.map(template => ({
       name: template.name,
+      kind: template.kind,
       format: template.format,
       body: template.body,
       ...shared(template),

@@ -145,7 +145,15 @@ stakes are sharper: a client that could set its own balance could mark its own d
   other collections and is recomputed on every read. A balance **may go negative** — an overpaid
   invoice owes money back, and clamping it at zero loses a customer's money. Aging buckets the
   balance, not the total, and never adds two currencies
-- `src/lib/proposal.ts` — `{{token}}` rendering, escaped per format; owns the token vocabulary
+- `src/lib/document.ts` — `{{token}}` rendering, escaped per format, and the repeating line
+  block. It knows nothing about quotes or invoices: a **vocabulary** supplies the values
+- `src/lib/proposal.ts` / `src/lib/invoiceDocument.ts` — the two vocabularies, one per
+  `TemplateKind`. Templates are **one collection with a `kind`**, because a template is a
+  template — same editor, same letterhead, same block language — and only the meaning of a
+  token differs. A quote template will not render an invoice: every token would resolve to a
+  blank, so the route refuses it rather than sending a document full of holes. The invoice
+  vocabulary derives `{{invoice.status}}` and the balance **as it renders** — see
+  `receivable.ts` — so an invoice printed the morning after it falls due says so
 - `src/lib/pdf.ts` / `pdfFonts.ts` — a dependency-free PDF writer: a top-down cursor, tables that
   paginate, the standard 14 fonts and WinAnsi encoding, and image XObjects. No embedded fonts
 - `src/lib/image.ts` — what may go on a document. It **decodes nothing**: a JPEG is PDF's
@@ -154,8 +162,10 @@ stakes are sharper: a client that could set its own balance could mark its own d
   with a sentence. `src/lib/imageFile.ts` is the browser-only converter that makes those refusals
   invisible in the UI — it flattens and re-encodes through a canvas
 - `src/lib/pdfTemplate.ts` — PDF templates as a block document. Pure, so the editor's preview is
-  rendered by the same code as the download. Its totals list is closed and customer-facing: a
-  proposal template has no way to name cost or margin. Branding — an `image` block, and a `header`
+  rendered by the same code as the download. One renderer, two vocabularies: it draws a
+  `PdfSource` (`quotePdfSource` / `invoicePdfSource`) and never sees a quote or an invoice
+  itself. Its totals lists are closed and customer-facing: no template of either kind has a
+  way to name cost or margin, and neither can name the other kind's numbers. Branding — an `image` block, and a `header`
   letterhead drawn on every page — lives **inside the template** as a `data:` URL, so it survives
   an export, a share and an import; `tools/sampleBrand.ts` draws the sample workspace's logo
 - `src/lib/validate.ts` — every untrusted input, shared by the REST API and the file importer

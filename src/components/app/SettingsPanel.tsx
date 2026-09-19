@@ -148,11 +148,34 @@ export function SettingsPanel(props: Props) {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="first">The first one</SelectItem>
-                {templates.map(template => (
-                  <SelectItem key={template.id} value={template.id}>
-                    {template.name}
-                  </SelectItem>
-                ))}
+                {templates
+                  .filter(template => template.kind === "quote")
+                  .map(template => (
+                    <SelectItem key={template.id} value={template.id}>
+                      {template.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </Field>
+
+          <Field label="Invoice template">
+            <Select
+              value={preferences.defaultInvoiceTemplateId || "first"}
+              onValueChange={value => props.onChange({ defaultInvoiceTemplateId: value === "first" ? "" : value })}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="first">The first one</SelectItem>
+                {templates
+                  .filter(template => template.kind === "invoice")
+                  .map(template => (
+                    <SelectItem key={template.id} value={template.id}>
+                      {template.name}
+                    </SelectItem>
+                  ))}
               </SelectContent>
             </Select>
           </Field>
