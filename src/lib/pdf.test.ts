@@ -299,3 +299,83 @@ describe("images", () => {
     expect(height).toBeCloseTo(document.contentWidth / 2, 3);
   });
 });
+
+describe("the watermark", () => {
+  test("is one transparency dictionary however many pages wear it", () => {
+    const document = new PdfDocument();
+    for (let page = 0; page < 6; page++) {
+      if (page) document.addPage();
+      document.text(`page ${page + 1}`);
+    }
+    document.onEachPage(doc => doc.drawWatermark("DRAFT", { opacity: 0.1 }), { beneath: true });
+
+    const text = decode(document.toBytes());
+
+    // One /ExtGState object shared by six pages, not six of them.
+    expect(text.split("/Type /ExtGState").length - 1).toBe(1);
+    expect(text).toContain("/ca 0.1");
+    expect(text).toContain("/CA 0.1");
+    expect(text.split("/ExtGState << /GS1").length - 1).toBe(6);
+  });
+
+  test("two different opacities are two states", () => {
+    const document = new PdfDocument();
+    document.text("x");
+    document.drawWatermark("ONE", { opacity: 0.1 });
+    document.drawWatermark("TWO", { opacity: 0.4 });
+
+    const text = decode(document.toBytes());
+    expect(text.split("/Type /ExtGState").length - 1).toBe(2);
+  });
+
+  test("`beneath` puts the stamp before the content it sits under", () => {
+    const document = new PdfDocument();
+    document.text("CONTENT");
+    document.onEachPage(doc => doc.drawWatermark("STAMP"), { beneath: true });
+
+    const text = decode(document.toBytes());
+    expect(text.indexOf("STAMP")).toBeLessThan(text.indexOf("CONTENT"));
+  });
+
+  test("without `beneath` it lands over the content, which is the default", () => {
+    const document = new PdfDocument();
+    document.text("CONTENT");
+    document.onEachPage(doc => doc.drawWatermark("STAMP"));
+
+    const text = decode(document.toBytes());
+    expect(text.indexOf("STAMP")).toBeGreaterThan(text.indexOf("CONTENT"));
+  });
+
+  test("the angle is the text matrix, not a transform on the page", () => {
+    const document = new PdfDocument();
+    document.drawWatermark("TILTED", { angle: 45 });
+
+    const text = decode(document.toBytes());
+    // cos 45°, sin 45°, -sin 45°, cos 45° — and no `cm`, so nothing else on
+    // the page is rotated with it.
+    expect(text).toContain("0.707 0.707 -0.707 0.707 ");
+    expect(text).not.toContain(" cm");
+  });
+
+  test("nothing is drawn for an empty stamp, and no state is declared", () => {
+    const document = new PdfDocument();
+    document.text("x");
+    document.drawWatermark("   ");
+
+    const text = decode(document.toBytes());
+    expect(text).not.toContain("/ExtGState");
+    expect(text).not.toContain("gs");
+  });
+
+  test("a page that wears no stamp declares no state", () => {
+    const document = new PdfDocument();
+    document.text("first");
+    document.drawWatermark("STAMP");
+    document.addPage();
+    document.text("second");
+
+    const pages = decode(document.toBytes()).split("/Type /Page ").slice(1);
+    expect(pages[0]).toContain("/ExtGState");
+    expect(pages[1]).not.toContain("/ExtGState");
+  });
+});

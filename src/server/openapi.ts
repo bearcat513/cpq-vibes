@@ -2079,7 +2079,13 @@ function schemas(): Record<string, Json> {
         body: string_(
           `The template. Text formats may be ${MAX_TEMPLATE_BODY_LENGTH.toLocaleString()} characters; ` +
             `a \`pdf\` body may be ${MAX_PDF_TEMPLATE_BODY_LENGTH.toLocaleString()}, because the ` +
-            "branding images are inside it as `data:` URLs.",
+            "branding images are inside it as `data:` URLs.\n\n" +
+            "A `pdf` body is JSON: `page` (paper, margins, face, colours), `style` (leading, the " +
+            "heading scale and face, rule colour, and the line-item table's fill, zebra, grid, " +
+            "padding and row lines), `header` (the letterhead), `watermark` (a token-resolving " +
+            "stamp under every page), `blocks` (the flow) and `footer`. Everything but `blocks` is " +
+            "optional and is filled in with defaults on the way in, so the stored body is always " +
+            "the whole document — send `{\"blocks\": [...]}` and read back the rest.",
         ),
       },
       ["name"],

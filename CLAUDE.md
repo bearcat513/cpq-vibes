@@ -175,7 +175,12 @@ stakes are sharper: a client that could set its own balance could mark its own d
   vocabulary derives `{{invoice.status}}` and the balance **as it renders** — see
   `receivable.ts` — so an invoice printed the morning after it falls due says so
 - `src/lib/pdf.ts` / `pdfFonts.ts` — a dependency-free PDF writer: a top-down cursor, tables that
-  paginate, the standard 14 fonts and WinAnsi encoding, and image XObjects. No embedded fonts
+  paginate, the standard 14 fonts and WinAnsi encoding, image XObjects, and one `ExtGState` per
+  distinct transparency (what a watermark is drawn through). No embedded fonts. Text literals reach
+  the content stream as **byte runs marked with NULs** — `drawTextAt` writes `` `\0${bytes}\0 Tj` ``
+  and `serializeOperators` splices them; write that marker as a space and the operator is emitted
+  as the literal digits. `onEachPage(draw, { beneath: true })` puts an overlay *under* the page's
+  own content, by drawing into an empty operator list and splicing it in front
 - `src/lib/image.ts` — what may go on a document. It **decodes nothing**: a JPEG is PDF's
   `DCTDecode` stream and a PNG's `IDAT` is `FlateDecode` with a predictor, so an embeddable image
   is copied in byte for byte and everything else (alpha, interlace, CMYK, progressive) is refused
@@ -187,7 +192,26 @@ stakes are sharper: a client that could set its own balance could mark its own d
   itself. Its totals lists are closed and customer-facing: no template of either kind has a
   way to name cost or margin, and neither can name the other kind's numbers. Branding — an `image` block, and a `header`
   letterhead drawn on every page — lives **inside the template** as a `data:` URL, so it survives
-  an export, a share and an import; `tools/sampleBrand.ts` draws the sample workspace's logo
+  an export, a share and an import; `tools/sampleBrand.ts` draws the sample workspace's logo.
+  A template is four things beside its blocks: `page` (paper, margins, face, colours), `style`,
+  `header` and `watermark`
+- **The house style is `PdfStyle`, and it is where a renderer constant goes to become a setting.**
+  Leading, the paragraph gap, the heading scale, an optional heading face, capitals, the rule
+  colour, and the line-item table's fill, header colour, zebra, grid, padding and row lines. Two
+  rules: **every default reproduces the constant it replaced**, so a template written before it
+  existed renders as it did — which is why `defaultStyle` derives `headingScale` from the body size
+  rather than fixing it (a heading used to be body + 9pt, a *step*, not a ratio) — and **a block
+  still wins over the document** where it says anything, so one template can hold two tables that
+  do not look alike. `style` is optional on the type and resolved by the renderer, but the
+  validator always writes one, so a stored body carries its whole style and the defaults cannot
+  shift under it later. The exceptions worth knowing: the totals rule stays the accent colour (it
+  underlines the number the document is about), and the table grid is its own colour rather than
+  `ruleColor` (a grid is read *through*; a divider is read)
+- **A `watermark` is page furniture, not a block.** Token-resolved like everything else — the
+  sample order form stamps `{{quote.status}}` in capitals, so the stamp reads the record rather
+  than the template — and drawn *beneath* the content, so a stamped document is no harder to read
+  than a clean one. No text is no watermark: the key is dropped rather than stored empty, the same
+  rule the letterhead follows
 - `src/lib/validate.ts` — every untrusted input, shared by the REST API and the file importer
 - `src/server/quotes.ts` — pricing orchestration, lifecycle and revisions
 - `src/server/invoices.ts` — the receivables orchestration, and where three rules are enforced

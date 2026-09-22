@@ -108,6 +108,138 @@ export const DEFAULT_PAGE: PdfPageSetup = {
   accentColor: "#18181b",
 };
 
+/* -------------------------------- the style ------------------------------ */
+
+/**
+ * How the document is set, as opposed to what is on it.
+ *
+ * `page` says what the paper is and what colours are available; the blocks say
+ * what is written. This is the layer between them — the leading, the step from
+ * body to heading, the weight and colour of every rule — and it exists because
+ * all of it used to be constants in the renderer. A house style is the first
+ * thing anyone wants to change about a document they are going to send out
+ * under their own name, and "0.75pt zinc-300" is not a house style, it is a
+ * number somebody typed once.
+ *
+ * Everything here has a default that reproduces those constants, so a template
+ * written before this existed renders exactly as it did. See `defaultStyle`
+ * for the one default that is computed rather than fixed.
+ */
+export type PdfStyle = {
+  /** Baseline-to-baseline distance, as a multiple of the size of the text. */
+  lineHeight: number;
+  /** The gap under a paragraph, a heading, or a picture's caption, in points. */
+  paragraphSpacing: number;
+  /** A heading's size, as a multiple of the body size. */
+  headingScale: number;
+  /** Headings in a face of their own. Absent follows the body. */
+  headingFamily?: FontFamily;
+  /** Headings in capitals — the small, wide look a title block often wants. */
+  headingUppercase?: boolean;
+  /**
+   * Every rule the document draws on its own account: a divider with no colour
+   * of its own, and the line a signature is written over.
+   *
+   * Not the table's grid, which has its own and is lighter for a reason — a
+   * grid is read *through*, a divider is read. And not the totals rule, which
+   * is drawn in the accent colour deliberately, because it underlines the one
+   * number the document is about.
+   */
+  ruleColor: string;
+  table: PdfTableStyle;
+};
+
+/**
+ * The line-item table, which is the part of one of these documents a reader
+ * actually studies.
+ *
+ * A `lineItems` block can still override the fill and the zebra, because a
+ * template may have two tables that want to look different. Everything else is
+ * the document's, since a grid that changed weight halfway down a quote would
+ * read as a mistake.
+ */
+export type PdfTableStyle = {
+  /** Behind the header row. Absent leaves it on the paper. */
+  headerFill?: string;
+  /** The header's own text colour. Absent uses the page's muted colour. */
+  headerColor?: string;
+  /** Column headings in capitals. */
+  headerUppercase?: boolean;
+  /** Tint every other row, which is what makes a wide table readable. */
+  zebra?: string;
+  /** The grid between the rows and under the header. */
+  gridColor: string;
+  /** A rule under every row, not only under the header. */
+  rowLines: boolean;
+  /** The air inside a cell, in points. */
+  cellPadding: number;
+};
+
+/**
+ * A word stamped across every page: DRAFT, COPY, SPECIMEN, VOID.
+ *
+ * Page furniture rather than a block, for the same reason the letterhead is:
+ * it belongs to the sheet, it is on all of them, and it must not move anything
+ * on the page. It is drawn *under* the content, so a document carrying one is
+ * no harder to read than one that is not.
+ *
+ * The text runs through the token vocabulary like everything else, so
+ * `{{quote.status}}` is a watermark that says what the record actually is.
+ */
+export type PdfWatermark = {
+  text: string;
+  /**
+   * Stamped in capitals.
+   *
+   * Off by default, because a stamp is not always a word — "Confidential, do
+   * not distribute" is a sentence — but on is what a one-word stamp wants,
+   * and it is the only way to make a *token* one read like a stamp: the
+   * status behind `{{quote.status}}` is stored as "sent".
+   */
+  uppercase?: boolean;
+  color?: string;
+  /** Point size of the stamp. */
+  size?: number;
+  /** 0.01–1. Low enough to read through, high enough to see. */
+  opacity?: number;
+  /** Degrees anticlockwise from flat. */
+  angle?: number;
+};
+
+export const DEFAULT_TABLE_STYLE: PdfTableStyle = {
+  gridColor: "#e4e4e7",
+  rowLines: true,
+  cellPadding: 5,
+};
+
+/**
+ * The style a template gets when it does not carry one.
+ *
+ * Every number here is what the renderer used to hard-code, which is what
+ * makes this a new control rather than a new look. The one deliberate
+ * exception is the signature line: it had a darker constant of its own
+ * (`#a1a1aa`) and now follows `ruleColor` like every other rule, so a document
+ * with a signature block draws that line a shade lighter than it used to.
+ *
+ * `headingScale` is the one that has to be computed. A heading used to be
+ * "the body size plus nine points" — a fixed *step*, not a ratio — so the
+ * ratio that reproduces it depends on the body size the template is set in.
+ * Deriving it here means a 12pt template keeps its 21pt headings instead of
+ * quietly growing them to 22.8. It is rounded to three places so the editor
+ * has a number a person can read and retype; the most that costs is a
+ * hundredth of a point on the heading, which no printer can resolve.
+ */
+export function defaultStyle(fontSize: number = DEFAULT_PAGE.fontSize): PdfStyle {
+  const size = fontSize > 0 ? fontSize : DEFAULT_PAGE.fontSize;
+  return {
+    lineHeight: 1.35,
+    paragraphSpacing: 4,
+    headingScale: Math.round(((size + 9) / size) * 1000) / 1000,
+    ruleColor: "#d4d4d8",
+    table: { ...DEFAULT_TABLE_STYLE },
+  };
+}
+
 /* -------------------------------- blocks --------------------------------- */
 
 export type BlockAlign = "left" | "center" | "right";
@@ -324,8 +456,20 @@ export const BLOCK_TYPES: { type: PdfBlock["type"]; label: string; description: 
 
 export type PdfTemplate = {
   page: PdfPageSetup;
+  /**
+   * The house style. Absent is `defaultStyle(page.fontSize)`, which is what
+   * every template written before this existed renders as.
+   *
+   * Optional on the type and resolved by the renderer, deliberately: the
+   * validator fills it in on the way to storage, so a stored template always
+   * carries one, but the three sample templates and a hand-written body do not
+   * have to restate the defaults to be valid.
+   */
+  style?: PdfStyle;
   /** The letterhead. Absent is a document on plain paper. */
   header?: PdfHeader;
+  /** A word stamped across every page. Absent is a clean sheet. */
+  watermark?: PdfWatermark;
   blocks: PdfBlock[];
   footer: {
     text: string;
@@ -504,6 +648,12 @@ export const renderInvoicePdf = (template: PdfTemplate, context: InvoiceDocument
  */
 export function renderPdfDocument(template: PdfTemplate, source: PdfSource): PdfRenderResult {
   const page = { ...DEFAULT_PAGE, ...template.page, margins: { ...DEFAULT_MARGINS, ...template.page?.margins } };
+  const fallback = defaultStyle(page.fontSize);
+  const style: PdfStyle = {
+    ...fallback,
+    ...template.style,
+    table: { ...fallback.table, ...template.style?.table },
+  };
   const unknown = new Set<string>();
 
   const fill = (text: string) => fillTokens(text, source.values, unknown);
@@ -547,12 +697,31 @@ export function renderPdfDocument(template: PdfTemplate, source: PdfSource): Pdf
   });
 
   for (const block of template.blocks) {
-    renderBlock(block, { document, page, source, fill, unknown, picture });
+    renderBlock(block, { document, page, style, source, fill, unknown, picture });
   }
 
-  /* --- the letterhead and the footer, once the page count is known --- */
+  /* --- the letterhead, the stamp and the footer, once the page count is known --- */
 
   renderHeader(template.header, { document, page, fill, picture });
+
+  const watermarked = template.watermark?.text ? fill(template.watermark.text) : "";
+  const stamp = template.watermark?.uppercase ? watermarked.toUpperCase() : watermarked;
+  if (stamp) {
+    const watermark = template.watermark!;
+    document.onEachPage(
+      doc =>
+        doc.drawWatermark(stamp, {
+          color: watermark.color ?? page.accentColor,
+          size: watermark.size,
+          opacity: watermark.opacity,
+          angle: watermark.angle,
+          family: page.family,
+        }),
+      // Under the document. A stamp printed over a paragraph is a stamp that
+      // makes the paragraph harder to read, which is not what it is for.
+      { beneath: true },
+    );
+  }
 
   const footerText = template.footer?.text ? fill(template.footer.text) : "";
   const showPageNumbers = template.footer?.showPageNumbers !== false;
@@ -591,6 +760,7 @@ type PictureResolver = (source: string, what: string) => EmbeddableImage | null;
 type RenderContext = {
   document: PdfDocument;
   page: PdfPageSetup;
+  style: PdfStyle;
   source: PdfSource;
   fill: (text: string) => string;
   unknown: Set<string>;
@@ -673,17 +843,21 @@ function renderHeader(
 }
 
 function renderBlock(block: PdfBlock, context: RenderContext): void {
-  const { document, page, source, fill } = context;
+  const { document, page, style, source, fill } = context;
 
   switch (block.type) {
     case "heading": {
-      document.text(fill(block.text), {
-        size: block.size ?? page.fontSize + 9,
+      const text = fill(block.text);
+      document.text(style.headingUppercase ? text.toUpperCase() : text, {
+        size: block.size ?? page.fontSize * style.headingScale,
         bold: true,
         color: block.color ?? page.accentColor,
         align: alignOf(block.align),
-        spaceAfter: block.spaceAfter ?? 4,
-        lineHeight: 1.25,
+        spaceAfter: block.spaceAfter ?? style.paragraphSpacing,
+        ...(style.headingFamily ? { family: style.headingFamily } : {}),
+        // A heading is one or two lines at twice the body size, so it wants
+        // less air between them than a paragraph does, not the same.
+        lineHeight: Math.max(1, style.lineHeight - 0.1),
       });
       break;
     }
@@ -695,7 +869,8 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
         italic: block.italic,
         color: block.color ?? page.textColor,
         align: alignOf(block.align),
-        spaceAfter: block.spaceAfter ?? 4,
+        spaceAfter: block.spaceAfter ?? style.paragraphSpacing,
+        lineHeight: style.lineHeight,
       });
       break;
     }
@@ -716,6 +891,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
           color: page.mutedColor,
           align: alignOf(block.align),
           spaceAfter: block.spaceAfter ?? 6,
+          lineHeight: style.lineHeight,
         });
       }
       break;
@@ -727,7 +903,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
     }
 
     case "divider": {
-      document.rule({ color: block.color ?? "#d4d4d8", thickness: block.thickness ?? 0.75 });
+      document.rule({ color: block.color ?? style.ruleColor, thickness: block.thickness ?? 0.75 });
       break;
     }
 
@@ -758,7 +934,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
 
         document.text(
           fill(column.text),
-          { size: page.fontSize, color: page.textColor, align: alignOf(column.align), lineHeight: 1.4 },
+          { size: page.fontSize, color: page.textColor, align: alignOf(column.align), lineHeight: style.lineHeight },
           { x, width },
         );
 
@@ -796,7 +972,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
         document.y = y;
         document.text(
           fill(row.value),
-          { size: page.fontSize, color: page.textColor, lineHeight: 1.5 },
+          { size: page.fontSize, color: page.textColor, lineHeight: style.lineHeight },
           { x: document.left + labelWidth, width: valueWidth },
         );
 
@@ -809,11 +985,14 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
     case "lineItems": {
       const columns: LineItemColumn[] = block.columns.length ? block.columns : defaultLineColumns(source.kind);
 
-      const tableColumns: TableColumn[] = columns.map(column => ({
-        header: fill(column.header),
-        width: column.width,
-        align: alignOf(column.align),
-      }));
+      const tableColumns: TableColumn[] = columns.map(column => {
+        const header = fill(column.header);
+        return {
+          header: style.table.headerUppercase ? header.toUpperCase() : header,
+          width: column.width,
+          align: alignOf(column.align),
+        };
+      });
 
       // The item column is where the option list and the note belong; without
       // one there is nowhere sensible to hang them.
@@ -837,10 +1016,14 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
         columns: tableColumns,
         rows,
         fontSize: block.fontSize ?? page.fontSize - 0.5,
-        headerFill: block.headerFill,
-        headerColor: page.mutedColor,
-        zebra: block.zebra,
-        gridColor: "#e4e4e7",
+        // The block wins where it says anything, so a template may hold two
+        // tables that do not look alike; the rest is the document's.
+        headerFill: block.headerFill ?? style.table.headerFill,
+        headerColor: style.table.headerColor ?? page.mutedColor,
+        zebra: block.zebra ?? style.table.zebra,
+        gridColor: style.table.gridColor,
+        rowLines: style.table.rowLines,
+        cellPadding: style.table.cellPadding,
       });
 
       document.moveDown(6);
@@ -906,7 +1089,7 @@ function renderBlock(block: PdfBlock, context: RenderContext): void {
 
       parties.forEach((party, index) => {
         const x = document.left + index * (width + gap);
-        document.drawRule(top, { color: "#a1a1aa", thickness: 0.75, from: x, to: x + width });
+        document.drawRule(top, { color: style.ruleColor, thickness: 0.75, from: x, to: x + width });
         document.drawTextAt(fill(party.label), x, top + 5, { size: page.fontSize - 1, color: page.textColor });
         if (party.caption) {
           document.drawTextAt(fill(party.caption), x, top + 5 + page.fontSize * 1.4, {
@@ -996,6 +1179,7 @@ export function starterPdfTemplate(kind: TemplateKind = "quote"): PdfTemplate {
 function starterQuoteTemplate(): PdfTemplate {
   return {
     page: { ...DEFAULT_PAGE, margins: { ...DEFAULT_MARGINS } },
+    style: defaultStyle(DEFAULT_PAGE.fontSize),
     blocks: [
       { type: "heading", text: "{{quote.name}}", size: 20 },
       {
@@ -1059,6 +1243,7 @@ function starterQuoteTemplate(): PdfTemplate {
 function starterInvoiceTemplate(): PdfTemplate {
   return {
     page: { ...DEFAULT_PAGE, margins: { ...DEFAULT_MARGINS } },
+    style: defaultStyle(DEFAULT_PAGE.fontSize),
     blocks: [
       { type: "heading", text: "Invoice {{invoice.number}}", size: 20 },
       {

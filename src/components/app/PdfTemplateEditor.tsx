@@ -13,6 +13,7 @@ import { FONT_FAMILIES } from "@/lib/pdfFonts";
 import {
   BLOCK_TYPES,
   blankBlock,
+  defaultStyle,
   lineItemFields,
   renderPdfDocument,
   totalsFields,
@@ -20,7 +21,10 @@ import {
   type PdfBlock,
   type PdfHeader,
   type PdfSource,
+  type PdfStyle,
+  type PdfTableStyle,
   type PdfTemplate,
+  type PdfWatermark,
   type TotalsRow,
 } from "@/lib/pdfTemplate";
 import type { TemplateKind } from "@/lib/types";
@@ -52,7 +56,9 @@ type Props = {
 export function PdfTemplateEditor({ template, source, onChange }: Props) {
   const [open, setOpen] = useState<number | null>(0);
   const [showPage, setShowPage] = useState(false);
+  const [showStyle, setShowStyle] = useState(false);
   const [showHeader, setShowHeader] = useState(false);
+  const [showStamp, setShowStamp] = useState(false);
   const [error, setError] = useState("");
   const [url, setUrl] = useState("");
   const previous = useRef("");
@@ -102,6 +108,26 @@ export function PdfTemplateEditor({ template, source, onChange }: Props) {
     onChange({ ...template, header: { ...(template.header ?? {}), ...changes } });
 
   const header: PdfHeader = template.header ?? {};
+
+  /*
+   * A template written before styling existed has no `style`, and the editor
+   * shows what the renderer would use rather than blanks — which is also what
+   * it writes back the moment anything here is touched.
+   */
+  const style: PdfStyle = { ...defaultStyle(template.page.fontSize), ...template.style };
+  const tableStyle: PdfTableStyle = { ...defaultStyle(template.page.fontSize).table, ...template.style?.table };
+
+  const patchStyle = (changes: Partial<PdfStyle>) => onChange({ ...template, style: { ...style, ...changes } });
+  const patchTable = (changes: Partial<PdfTableStyle>) =>
+    patchStyle({ table: { ...tableStyle, ...changes } });
+
+  const watermark: PdfWatermark = template.watermark ?? { text: "" };
+  const patchWatermark = (changes: Partial<PdfWatermark>) => {
+    const next = { ...watermark, ...changes };
+    // No text is no watermark: the key goes rather than being stored empty,
+    // which is the same rule the validator applies on the way to the database.
+    onChange({ ...template, ...(next.text.trim() ? { watermark: next } : { watermark: undefined }) });
+  };
 
   const patchBlock = (index: number, changes: Record<string, unknown>) =>
     onChange({
@@ -206,6 +232,218 @@ export function PdfTemplateEditor({ template, source, onChange }: Props) {
                   />
                 </Field>
               ))}
+            </div>
+          )}
+        </div>
+
+        {/* ------------------------------ the style -------------------------- */}
+
+        <div className="rounded-md border">
+          <button
+            type="button"
+            onClick={() => setShowStyle(!showStyle)}
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium hover:bg-accent"
+          >
+            Styling
+            <span className="text-xs font-normal text-muted-foreground">
+              {`${style.lineHeight}× leading · headings ${style.headingScale}×`}
+              {style.table.headerFill ? " · filled header" : ""}
+              {style.table.zebra ? " · zebra" : ""}
+            </span>
+          </button>
+
+          {showStyle && (
+            <div className="space-y-3 border-t p-3">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Field label="Line height" hint="Multiple of the text size.">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={3}
+                    step="0.05"
+                    value={style.lineHeight}
+                    onChange={event => patchStyle({ lineHeight: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Paragraph gap (pt)">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={48}
+                    step="1"
+                    value={style.paragraphSpacing}
+                    onChange={event => patchStyle({ paragraphSpacing: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Heading scale" hint={`${Math.round(template.page.fontSize * style.headingScale * 10) / 10}pt`}>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={4}
+                    step="0.05"
+                    value={style.headingScale}
+                    onChange={event => patchStyle({ headingScale: Number(event.target.value) })}
+                  />
+                </Field>
+
+                <Field label="Heading face" hint="Or follow the body.">
+                  <Select
+                    value={style.headingFamily ?? "body"}
+                    onValueChange={value =>
+                      patchStyle({ headingFamily: value === "body" ? undefined : (value as never) })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="body">Same as body</SelectItem>
+                      {FONT_FAMILIES.map(family => (
+                        <SelectItem key={family} value={family}>
+                          {family}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Headings in capitals">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={style.headingUppercase ?? false}
+                      onChange={event => patchStyle({ headingUppercase: event.target.checked || undefined })}
+                    />
+                  </div>
+                </Field>
+                <ColorField label="Rules" value={style.ruleColor} onChange={ruleColor => patchStyle({ ruleColor })} />
+              </div>
+
+              <p className="text-xs font-medium text-muted-foreground">The line-item table</p>
+
+              <div className="grid gap-3 sm:grid-cols-3">
+                <ColorField
+                  label="Header fill"
+                  value={tableStyle.headerFill ?? ""}
+                  onChange={headerFill => patchTable({ headerFill: headerFill || undefined })}
+                  allowEmpty
+                />
+                <ColorField
+                  label="Header text"
+                  value={tableStyle.headerColor ?? ""}
+                  onChange={headerColor => patchTable({ headerColor: headerColor || undefined })}
+                  allowEmpty
+                />
+                <ColorField
+                  label="Every other row"
+                  value={tableStyle.zebra ?? ""}
+                  onChange={zebra => patchTable({ zebra: zebra || undefined })}
+                  allowEmpty
+                />
+                <ColorField label="Grid" value={tableStyle.gridColor} onChange={gridColor => patchTable({ gridColor })} />
+                <Field label="Cell padding (pt)">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={24}
+                    step="1"
+                    value={tableStyle.cellPadding}
+                    onChange={event => patchTable({ cellPadding: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Headings in capitals">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={tableStyle.headerUppercase ?? false}
+                      onChange={event => patchTable({ headerUppercase: event.target.checked || undefined })}
+                    />
+                  </div>
+                </Field>
+                <Field label="Rule under every row" hint="Off leaves only the line under the header.">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={tableStyle.rowLines}
+                      onChange={event => patchTable({ rowLines: event.target.checked })}
+                    />
+                  </div>
+                </Field>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ------------------------------ the stamp -------------------------- */}
+
+        <div className="rounded-md border">
+          <button
+            type="button"
+            onClick={() => setShowStamp(!showStamp)}
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium hover:bg-accent"
+          >
+            Watermark
+            <span className="text-xs font-normal text-muted-foreground">
+              {template.watermark?.text ? template.watermark.text : "none"}
+            </span>
+          </button>
+
+          {showStamp && (
+            <div className="space-y-3 border-t p-3">
+              <Field
+                label="Text"
+                hint="Stamped under every page. Empty removes it. Tokens work here too — {{quote.status}} says what the record actually is."
+              >
+                <Input
+                  value={watermark.text}
+                  onChange={event => patchWatermark({ text: event.target.value })}
+                  placeholder="DRAFT"
+                  maxLength={60}
+                />
+              </Field>
+
+              <div className="grid gap-3 sm:grid-cols-4">
+                <Field label="In capitals" hint="What a one-word stamp wants.">
+                  <div className="flex h-9 items-center">
+                    <Switch
+                      checked={watermark.uppercase ?? false}
+                      onChange={event => patchWatermark({ uppercase: event.target.checked || undefined })}
+                    />
+                  </div>
+                </Field>
+                <ColorField
+                  label="Colour"
+                  value={watermark.color ?? ""}
+                  onChange={color => patchWatermark({ color: color || undefined })}
+                  allowEmpty
+                />
+                <Field label="Size (pt)">
+                  <Input
+                    type="number"
+                    min={8}
+                    max={400}
+                    step="4"
+                    value={watermark.size ?? 84}
+                    onChange={event => patchWatermark({ size: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Opacity" hint="0.01 to 1.">
+                  <Input
+                    type="number"
+                    min={0.01}
+                    max={1}
+                    step="0.01"
+                    value={watermark.opacity ?? 0.08}
+                    onChange={event => patchWatermark({ opacity: Number(event.target.value) })}
+                  />
+                </Field>
+                <Field label="Angle (°)">
+                  <Input
+                    type="number"
+                    min={-90}
+                    max={90}
+                    step="5"
+                    value={watermark.angle ?? 45}
+                    onChange={event => patchWatermark({ angle: Number(event.target.value) })}
+                  />
+                </Field>
+              </div>
             </div>
           )}
         </div>

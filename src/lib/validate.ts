@@ -32,9 +32,10 @@ import { asCurrency, atLeastZero, clampPercent, isCurrency } from "./money";
 import { lineVariableNames, quoteVariableNames } from "./pricing";
 import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "./document";
 import { DEFAULT_MARGINS, PAGE_SIZES } from "./pdf";
-import { FONT_FAMILIES } from "./pdfFonts";
+import { FONT_FAMILIES, type FontFamily } from "./pdfFonts";
 import {
   DEFAULT_PAGE,
+  defaultStyle,
   defaultLineColumns,
   defaultTotalsRows,
   lineItemFields,
@@ -43,7 +44,9 @@ import {
   type LineItemColumn,
   type PdfBlock,
   type PdfHeader,
+  type PdfStyle,
   type PdfTemplate,
+  type PdfWatermark,
   type TotalsRow,
 } from "./pdfTemplate";
 import {
@@ -777,6 +780,67 @@ function readTotalsRows(raw: unknown, kind: TemplateKind): TotalsRow[] {
   return rows.length ? rows : defaultTotalsRows(kind);
 }
 
+/**
+ * The house style, clamped into what a document can actually be set in.
+ *
+ * Read against the template's own body size, because the default heading scale
+ * is derived from it — see `defaultStyle`. Every bound here is a legibility
+ * bound rather than a taste one: leading below 1 overlaps its own descenders,
+ * a heading smaller than the body is not a heading, and a cell with no padding
+ * puts a number against a grid line.
+ */
+function readStyle(raw: unknown, fontSize: number): PdfStyle {
+  const input = asRecord(raw);
+  const table = asRecord(input.table);
+  const fallback = defaultStyle(fontSize);
+  // Absent rather than defaulted: no heading face means "follow the body",
+  // which is not the same as naming the body's face and would stop following
+  // it the moment somebody changed the body.
+  const headingFamily = FONT_FAMILIES.includes(input.headingFamily as FontFamily)
+    ? (input.headingFamily as FontFamily)
+    : undefined;
+
+  return {
+    lineHeight: bounded(input.lineHeight, fallback.lineHeight, 1, 3),
+    paragraphSpacing: bounded(input.paragraphSpacing, fallback.paragraphSpacing, 0, 48),
+    headingScale: bounded(input.headingScale, fallback.headingScale, 1, 4),
+    ...(headingFamily ? { headingFamily } : {}),
+    ...(input.headingUppercase === true ? { headingUppercase: true } : {}),
+    ruleColor: color(input.ruleColor, fallback.ruleColor),
+    table: {
+      ...(optionalColor(table.headerFill) ? { headerFill: optionalColor(table.headerFill) } : {}),
+      ...(optionalColor(table.headerColor) ? { headerColor: optionalColor(table.headerColor) } : {}),
+      ...(table.headerUppercase === true ? { headerUppercase: true } : {}),
+      ...(optionalColor(table.zebra) ? { zebra: optionalColor(table.zebra) } : {}),
+      gridColor: color(table.gridColor, fallback.table.gridColor),
+      rowLines: table.rowLines !== false,
+      cellPadding: bounded(table.cellPadding, fallback.table.cellPadding, 1, 24),
+    },
+  };
+}
+
+/**
+ * The stamp across the page.
+ *
+ * No text is no watermark, and the key is left out entirely rather than stored
+ * as an empty one — the same rule the letterhead follows, and for the same
+ * reason: a template that has never had one should not carry one around.
+ */
+function readWatermark(raw: unknown): PdfWatermark | undefined {
+  const input = asRecord(raw);
+  const body = text(input.text, 60);
+  if (!body) return undefined;
+
+  return {
+    text: body,
+    ...(input.uppercase === true ? { uppercase: true } : {}),
+    ...(optionalColor(input.color) ? { color: optionalColor(input.color) } : {}),
+    ...(input.size !== undefined ? { size: bounded(input.size, 84, 8, 400) } : {}),
+    ...(input.opacity !== undefined ? { opacity: bounded(input.opacity, 0.08, 0.01, 1) } : {}),
+    ...(input.angle !== undefined ? { angle: bounded(input.angle, 45, -90, 90) } : {}),
+  };
+}
+
 function readBlock(raw: unknown, kind: TemplateKind): PdfBlock | null {
   const input = asRecord(raw);
 
@@ -927,6 +991,8 @@ export function readPdfTemplate(raw: unknown, kind: TemplateKind = "quote"): Val
 
   const footer = asRecord(source.footer);
   const header = asRecord(source.header);
+  const fontSize = bounded(page.fontSize, DEFAULT_PAGE.fontSize, 6, 18);
+  const watermark = readWatermark(source.watermark);
   // Held in a local rather than tested and used inline the way the cheap
   // readers above are: checking a logo means decoding it, and a letterhead can
   // be a few hundred kilobytes.
@@ -955,11 +1021,16 @@ export function readPdfTemplate(raw: unknown, kind: TemplateKind = "quote"): Val
         left: bounded(margins.left, DEFAULT_MARGINS.left, 12, 200),
       },
       family: oneOf(page.family, FONT_FAMILIES, DEFAULT_PAGE.family),
-      fontSize: bounded(page.fontSize, DEFAULT_PAGE.fontSize, 6, 18),
+      fontSize,
       textColor: color(page.textColor, DEFAULT_PAGE.textColor),
       mutedColor: color(page.mutedColor, DEFAULT_PAGE.mutedColor),
       accentColor: color(page.accentColor, DEFAULT_PAGE.accentColor),
     },
+    // Always stored, unlike the letterhead: a style is not an optional feature
+    // of a document, it is how the document is set, and writing it down is
+    // what stops the defaults shifting under a template that already exists.
+    style: readStyle(source.style, fontSize),
+    ...(watermark ? { watermark } : {}),
     blocks,
     footer: {
       text: text(footer.text, 300),

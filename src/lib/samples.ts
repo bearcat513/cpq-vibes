@@ -893,6 +893,29 @@ const PDF_BRANDED: PdfTemplate = {
     mutedColor: "#71717a",
     accentColor: "#1d4ed8",
   },
+  /*
+   * The house style, which is most of what makes this one look designed and
+   * the starter look generated: more air between the lines, headings set in
+   * capitals, and a table whose header is a band of the brand colour rather
+   * than a row of bold words.
+   */
+  style: {
+    lineHeight: 1.5,
+    paragraphSpacing: 6,
+    headingScale: 1.9,
+    headingUppercase: true,
+    ruleColor: "#cbd5e1",
+    table: {
+      headerFill: "#1d4ed8",
+      headerColor: "#ffffff",
+      headerUppercase: true,
+      zebra: "#f1f5f9",
+      gridColor: "#e2e8f0",
+      // The zebra already separates the rows; ruling them as well is a fence.
+      rowLines: false,
+      cellPadding: 7,
+    },
+  },
   header: {
     logo: SAMPLE_LOGO,
     logoWidth: 40,
@@ -1028,6 +1051,26 @@ const PDF_ORDER_FORM: PdfTemplate = {
     mutedColor: "#64748b",
     accentColor: "#0f172a",
   },
+  /*
+   * A form rather than a proposal: tighter leading, every row ruled, and no
+   * colour anywhere — it is going to be printed, signed and scanned.
+   */
+  style: {
+    lineHeight: 1.25,
+    paragraphSpacing: 3,
+    headingScale: 1.6,
+    headingUppercase: true,
+    ruleColor: "#94a3b8",
+    table: { headerUppercase: true, gridColor: "#cbd5e1", rowLines: true, cellPadding: 4 },
+  },
+  /*
+   * What the document *is*, said on the document.
+   *
+   * The token is the point: one template stamps DRAFT on a quote still being
+   * worked on and nothing misleading on one that has been sent, because the
+   * stamp reads the record rather than the template.
+   */
+  watermark: { text: "{{quote.status}}", uppercase: true, color: "#0f172a", opacity: 0.06, size: 120, angle: 38 },
   header: {
     logo: SAMPLE_LOGO,
     logoWidth: 32,

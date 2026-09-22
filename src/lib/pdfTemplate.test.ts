@@ -8,15 +8,17 @@ import { describe, expect, test } from "bun:test";
 import { encodePng, toDataUrl } from "./image";
 import {
   BLOCK_TYPES,
+  DEFAULT_LINE_COLUMNS,
   DEFAULT_TOTALS_ROWS,
   INVOICE_TOTALS_ROWS,
   blankBlock,
+  defaultStyle,
   renderInvoicePdf,
   renderPdf,
   starterPdfTemplate,
   type PdfTemplate,
 } from "./pdfTemplate";
-import { specimenInvoice, specimenQuote } from "./samples";
+import { SAMPLE_TEMPLATES, specimenInvoice, specimenQuote } from "./samples";
 import { readPdfTemplate } from "./validate";
 import { formatMoney } from "./money";
 
@@ -573,5 +575,357 @@ describe("an invoice template", () => {
     if (!parsed.ok) return;
     const totals = parsed.value.blocks[0] as Extract<PdfTemplate["blocks"][number], { type: "totals" }>;
     expect(totals.rows.map(row => row.field)).not.toContain("margin");
+  });
+});
+
+/**
+ * The house style: leading, the step from body to heading, and the weight and
+ * colour of every rule. All of it used to be constants in the renderer, so the
+ * first thing asserted is that leaving it alone changes nothing.
+ */
+describe("styling", () => {
+  /** The same document twice is the same bytes but for the moment it was made. */
+  const withoutTheClock = (bytes: Uint8Array) => decode(bytes).replace(/\/CreationDate \([^)]*\)/, "");
+
+  test("a template with no style renders exactly as one carrying the defaults", () => {
+    const bare: PdfTemplate = { ...starterPdfTemplate(), style: undefined };
+    const explicit: PdfTemplate = { ...starterPdfTemplate(), style: defaultStyle(bare.page.fontSize) };
+
+    expect(withoutTheClock(renderPdf(explicit, context()).bytes)).toBe(
+      withoutTheClock(renderPdf(bare, context()).bytes),
+    );
+  });
+
+  test("the default heading scale reproduces the fixed nine-point step, whatever the body size", () => {
+    for (const fontSize of [8, 10, 12, 14]) {
+      // Within a hundredth of a point: the scale is rounded for the editor's
+      // sake, and no printer resolves the difference.
+      expect(fontSize * defaultStyle(fontSize).headingScale).toBeCloseTo(fontSize + 9, 1);
+    }
+  });
+
+  test("the heading scale is what sets a heading's size", () => {
+    const heading = { type: "heading" as const, text: "Terms" };
+
+    // No size of its own: the scale decides. 10pt body × 1.9 is the old 19pt.
+    expect(render({ ...only(heading), style: defaultStyle(10) }).text).toContain(" 19 Tf");
+    expect(render({ ...only(heading), style: { ...defaultStyle(10), headingScale: 3 } }).text).toContain(" 30 Tf");
+
+    // A block that names its own size still wins — the scale is a default.
+    const sized = { ...only({ ...heading, size: 40 }), style: { ...defaultStyle(10), headingScale: 3 } };
+    expect(render(sized).text).toContain(" 40 Tf");
+  });
+
+  test("headings can be set in their own face", () => {
+    const template = {
+      ...only({ type: "heading", text: "Terms" }),
+      style: { ...defaultStyle(10), headingFamily: "times" as const },
+    };
+
+    const text = render(template).text;
+    expect(text).toContain("/timesb");
+    // The body face is still declared, because the footer is set in it.
+    expect(text).toContain("/helvetica");
+  });
+
+  test("capitals are applied to the drawn text, not to the template", () => {
+    const template: PdfTemplate = {
+      ...only({ type: "heading", text: "Scope of work" }),
+      style: { ...defaultStyle(10), headingUppercase: true },
+    };
+
+    expect(render(template).text).toContain("(SCOPE OF WORK)");
+    // The template itself is untouched: turning it off gives the original back.
+    expect(render({ ...template, style: defaultStyle(10) }).text).toContain("(Scope of work)");
+  });
+
+  test("leading is what decides how far a paragraph runs down the page", () => {
+    const paragraph = { type: "text" as const, text: "word ".repeat(1_200) };
+
+    const tight = renderPdf({ ...only(paragraph), style: { ...defaultStyle(10), lineHeight: 1 } }, context());
+    const loose = renderPdf({ ...only(paragraph), style: { ...defaultStyle(10), lineHeight: 3 } }, context());
+
+    expect(loose.pageCount).toBeGreaterThan(tight.pageCount);
+  });
+
+  test("the rule colour is every rule the document draws on its own account", () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      blocks: [{ type: "divider" }, { type: "signatures", parties: [{ label: "Signed" }] }],
+      style: { ...defaultStyle(10), ruleColor: "#ff0000" },
+    };
+
+    // Stroking red, twice: the divider and the line a signature is written on.
+    expect(render(template).text.split("1 0 0 RG").length - 1).toBe(2);
+  });
+
+  test("a divider with a colour of its own keeps it", () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      blocks: [{ type: "divider", color: "#0000ff" }],
+      style: { ...defaultStyle(10), ruleColor: "#ff0000" },
+    };
+
+    const text = render(template).text;
+    expect(text).toContain("0 0 1 RG");
+    expect(text).not.toContain("1 0 0 RG");
+  });
+});
+
+describe("the line-item table's style", () => {
+  const table = (style: Partial<PdfTemplate["style"]> = {}): PdfTemplate => ({
+    ...starterPdfTemplate(),
+    blocks: [{ type: "lineItems", columns: DEFAULT_LINE_COLUMNS }],
+    style: { ...defaultStyle(10), ...(style as object) } as PdfTemplate["style"],
+  });
+
+  test("column headings can be set in capitals", () => {
+    const style = { ...defaultStyle(10), table: { ...defaultStyle(10).table, headerUppercase: true } };
+    expect(render(table(style)).text).toContain("(UNIT PRICE)");
+    expect(render(table()).text).toContain("(Unit price)");
+  });
+
+  test("turning row lines off leaves only the rule under the header", () => {
+    const off = { ...defaultStyle(10), table: { ...defaultStyle(10).table, rowLines: false } };
+
+    const ruled = render(table()).text.split(" l S").length;
+    const plain = render(table(off)).text.split(" l S").length;
+    expect(plain).toBeLessThan(ruled);
+  });
+
+  test("the grid is its own colour, not the document's rule colour", () => {
+    // A grid is read *through* and a divider is read, so they are two
+    // settings — and setting one must not quietly move the other.
+    const style = {
+      ...defaultStyle(10),
+      ruleColor: "#ff0000",
+      table: { ...defaultStyle(10).table, gridColor: "#00ff00" },
+    };
+
+    const text = render(table(style)).text;
+    expect(text).toContain("0 1 0 RG");
+    expect(text).not.toContain("1 0 0 RG");
+  });
+
+  test("a block's own fill beats the document's", () => {
+    const style = { ...defaultStyle(10), table: { ...defaultStyle(10).table, headerFill: "#ff0000" } };
+
+    const inherited: PdfTemplate = { ...table(style) };
+    expect(render(inherited).text).toContain("1 0 0 rg");
+
+    const overridden: PdfTemplate = {
+      ...table(style),
+      blocks: [{ type: "lineItems", columns: DEFAULT_LINE_COLUMNS, headerFill: "#00ff00" }],
+    };
+    expect(render(overridden).text).toContain("0 1 0 rg");
+  });
+
+  test("cell padding changes the height of the table, not its columns", () => {
+    const tight = { ...defaultStyle(10), table: { ...defaultStyle(10).table, cellPadding: 1 } };
+    const loose = { ...defaultStyle(10), table: { ...defaultStyle(10).table, cellPadding: 24 } };
+
+    const before = render(table(tight));
+    const after = render(table(loose));
+    expect(after.bytes.length).not.toBe(before.bytes.length);
+    expect(after.unknownTokens).toEqual([]);
+  });
+});
+
+describe("the watermark", () => {
+  test("is stamped on every page, under the content", () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      watermark: { text: "DRAFT" },
+      blocks: [
+        { type: "text", text: "First page" },
+        { type: "pageBreak" },
+        { type: "text", text: "Second page" },
+      ],
+    };
+
+    const result = render(template);
+    expect(result.pageCount).toBe(2);
+    expect(result.text.split("(DRAFT)").length - 1).toBe(2);
+    // Under, not over: the stamp is written before the words that sit on it.
+    expect(result.text.indexOf("(DRAFT)")).toBeLessThan(result.text.indexOf("(First page)"));
+    // And it is see-through, or it would be a redaction rather than a stamp.
+    expect(result.text).toContain("/Type /ExtGState");
+  });
+
+  test("its text resolves tokens like everything else", () => {
+    const template: PdfTemplate = { ...starterPdfTemplate(), watermark: { text: "{{quote.number}}" } };
+    expect(render(template).text).toContain(`(${specimenQuote().number})`);
+  });
+
+  test("an unknown token in it is reported rather than printed", () => {
+    const template: PdfTemplate = { ...starterPdfTemplate(), watermark: { text: "{{quote.nonsense}}" } };
+    expect(render(template).unknownTokens).toContain("quote.nonsense");
+  });
+
+  test("no watermark means no transparency in the file at all", () => {
+    expect(render(starterPdfTemplate()).text).not.toContain("/ExtGState");
+  });
+
+  test("an invoice can be stamped too — one renderer, both kinds", () => {
+    const template: PdfTemplate = { ...starterPdfTemplate("invoice"), watermark: { text: "COPY" } };
+    expect(renderInvoice(template).text).toContain("(COPY)");
+  });
+});
+
+describe("validating the style and the stamp", () => {
+  const parse = (body: Record<string, unknown>) =>
+    readPdfTemplate(JSON.stringify({ page: {}, blocks: [{ type: "text", text: "x" }], footer: {}, ...body }));
+
+  test("a style is written down even when the template did not carry one", () => {
+    const parsed = parse({});
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    expect(parsed.value.style).toEqual(defaultStyle(parsed.value.page.fontSize));
+  });
+
+  test("the stored heading scale is read against the template's own body size", () => {
+    const parsed = parse({ page: { fontSize: 12 } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    expect(parsed.value.page.fontSize * parsed.value.style!.headingScale).toBeCloseTo(21, 5);
+  });
+
+  test("nonsense is clamped into what a document can be set in", () => {
+    const parsed = parse({
+      style: {
+        lineHeight: 99,
+        paragraphSpacing: -40,
+        headingScale: 0.1,
+        headingFamily: "Comic Sans",
+        ruleColor: "not a colour",
+        table: { cellPadding: 900, gridColor: "#zzz", zebra: "" },
+      },
+    });
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const style = parsed.value.style!;
+
+    expect(style.lineHeight).toBeLessThanOrEqual(3);
+    expect(style.paragraphSpacing).toBeGreaterThanOrEqual(0);
+    expect(style.headingScale).toBeGreaterThanOrEqual(1);
+    expect(style.headingFamily).toBeUndefined();
+    expect(style.ruleColor).toBe(defaultStyle(10).ruleColor);
+    expect(style.table.cellPadding).toBeLessThanOrEqual(24);
+    // The grid always has a colour, so nonsense falls back to the default one.
+    expect(style.table.gridColor).toBe(defaultStyle(10).table.gridColor);
+    // A *fill* is different: "none" has to stay expressible, so an unreadable
+    // one is absent rather than black. A zebra nobody asked for is worse than
+    // no zebra.
+    expect(style.table.zebra).toBeUndefined();
+  });
+
+  test("a watermark with no text is no watermark, and is not stored as an empty one", () => {
+    const parsed = parse({ watermark: { text: "   ", opacity: 0.5 } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.watermark).toBeUndefined();
+    expect(JSON.stringify(parsed.value)).not.toContain("watermark");
+  });
+
+  test("a watermark's numbers are clamped and its text is kept", () => {
+    const parsed = parse({ watermark: { text: "DRAFT", opacity: 40, angle: 900, size: 9_000 } });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const watermark = parsed.value.watermark!;
+    expect(watermark.text).toBe("DRAFT");
+    expect(watermark.opacity).toBeLessThanOrEqual(1);
+    expect(watermark.angle).toBeLessThanOrEqual(90);
+    expect(watermark.size).toBeLessThanOrEqual(400);
+  });
+
+  test("a styled, stamped template survives a round trip", () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      style: {
+        ...defaultStyle(10),
+        lineHeight: 1.6,
+        headingUppercase: true,
+        headingFamily: "times",
+        ruleColor: "#334155",
+        table: {
+          headerFill: "#f1f5f9",
+          headerUppercase: true,
+          zebra: "#f8fafc",
+          gridColor: "#e2e8f0",
+          rowLines: false,
+          cellPadding: 7,
+        },
+      },
+      watermark: { text: "DRAFT", opacity: 0.12, angle: 30 },
+    };
+
+    const parsed = readPdfTemplate(JSON.stringify(template));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    expect(parsed.value.style).toEqual(template.style!);
+    expect(parsed.value.watermark).toEqual(template.watermark!);
+    expect(renderPdf(parsed.value, context()).unknownTokens).toEqual([]);
+  });
+});
+
+/**
+ * The sample workspace ships these, so a typo in one is a typo every new
+ * account starts with — and nothing else renders them.
+ */
+describe("the sample templates", () => {
+  const pdfSamples = SAMPLE_TEMPLATES.filter(sample => sample.format === "pdf");
+
+  test("there are some, or this file is asserting nothing", () => {
+    expect(pdfSamples.length).toBeGreaterThan(0);
+  });
+
+  for (const sample of pdfSamples) {
+    test(`"${sample.name}" is valid, and renders with every token resolved`, () => {
+      const parsed = readPdfTemplate(sample.body, sample.kind);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+
+      const result =
+        sample.kind === "invoice"
+          ? renderInvoicePdf(parsed.value, invoiceContext())
+          : renderPdf(parsed.value, context());
+
+      expect(result.pageCount).toBeGreaterThanOrEqual(1);
+      expect(result.unknownTokens).toEqual([]);
+      expect(result.imageProblems).toEqual([]);
+    });
+  }
+
+  test("the branded proposal carries a house style, and the order form a stamp", () => {
+    // Not decoration in a test: they are the only worked examples of either,
+    // and a sample that quietly loses the feature it demonstrates is how a
+    // feature stops being discoverable.
+    const branded = readPdfTemplate(pdfSamples.find(one => one.name.includes("branded"))!.body);
+    const order = readPdfTemplate(pdfSamples.find(one => one.name.includes("Order form"))!.body);
+
+    expect(branded.ok && branded.value.style?.table.headerFill).toBeTruthy();
+    expect(order.ok && order.value.watermark?.text).toBeTruthy();
+  });
+});
+
+describe("the stamp's capitals", () => {
+  test("uppercase is applied after the token resolves, not to the template", () => {
+    const template: PdfTemplate = {
+      ...starterPdfTemplate(),
+      watermark: { text: "{{quote.status}}", uppercase: true },
+    };
+
+    // The status is stored lower case, which is exactly why the option exists.
+    expect(render(template).text).toContain(`(${specimenQuote().status.replace("_", " ").toUpperCase()})`);
+  });
+
+  test("off leaves the text as written, because a stamp can be a sentence", () => {
+    const template: PdfTemplate = { ...starterPdfTemplate(), watermark: { text: "Not for distribution" } };
+    expect(render(template).text).toContain("(Not for distribution)");
   });
 });

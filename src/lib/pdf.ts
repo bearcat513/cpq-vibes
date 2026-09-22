@@ -201,6 +201,8 @@ type Page = {
   fonts: Set<string>;
   /** Image resource names used, for the same reason. */
   images: Set<string>;
+  /** Graphics-state names used — transparency, and nothing else so far. */
+  states: Set<string>;
 };
 
 /** A hex string literal, which is how a palette reaches the file. */
@@ -243,6 +245,16 @@ export class PdfDocument {
    */
   private readonly pictures = new Map<EmbeddableImage, string>();
 
+  /**
+   * Every transparency this document asks for, by resource name.
+   *
+   * PDF has no per-operator alpha: a fill is opaque unless the graphics state
+   * in force says otherwise, and a graphics state is a named dictionary in the
+   * page's resources. One entry per distinct alpha, because a watermark on
+   * forty pages is one value used forty times.
+   */
+  private readonly alphas = new Map<number, string>();
+
   /** Distance from the top of the page to the next thing drawn. */
   private cursor: number;
 
@@ -253,7 +265,11 @@ export class PdfDocument {
    * them — a letterhead at the top and a footer at the bottom — and neither
    * can be drawn while the page count is still unknown.
    */
-  private readonly overlays: ((document: PdfDocument, page: number, total: number) => void)[] = [];
+  private readonly overlays: {
+    draw: (document: PdfDocument, page: number, total: number) => void;
+    /** Drawn before the page's own content rather than over it. */
+    beneath?: boolean;
+  }[] = [];
 
   constructor(options: Partial<DocumentOptions> = {}) {
     this.options = {
@@ -275,7 +291,7 @@ export class PdfDocument {
     this.fontSize = this.options.fontSize;
     this.color = this.options.color;
 
-    this.page = { operators: [], fonts: new Set(), images: new Set() };
+    this.page = { operators: [], fonts: new Set(), images: new Set(), states: new Set() };
     this.pages.push(this.page);
     this.cursor = this.margins.top;
   }
@@ -320,7 +336,7 @@ export class PdfDocument {
   /* ------------------------------- pages -------------------------------- */
 
   addPage(): void {
-    this.page = { operators: [], fonts: new Set(), images: new Set() };
+    this.page = { operators: [], fonts: new Set(), images: new Set(), states: new Set() };
     this.pages.push(this.page);
     this.cursor = this.margins.top;
   }
@@ -375,6 +391,73 @@ export class PdfDocument {
     for (const byte of pdfString(text)) bytes.push(byte);
     this.op(` ${bytes.join(",")}  Tj`);
     this.op("ET");
+  }
+
+  /**
+   * A word stamped across the page, rotated and see-through.
+   *
+   * Drawn in page coordinates rather than at the cursor, because it belongs to
+   * the sheet and not to the flow: it is centred on the paper whatever is on
+   * it, and it does not move anything. Pair it with `onEachPage(..., { beneath:
+   * true })` so the document is read over it rather than through it.
+   *
+   * The rotation is the *text* matrix, not a `cm` transform — the run is one
+   * line of text, and rotating the matrix that places it costs nothing and
+   * leaves the rest of the page alone.
+   */
+  drawWatermark(
+    text: string,
+    options: { color?: string; size?: number; opacity?: number; angle?: number; family?: FontFamily } = {},
+  ): void {
+    if (!text.trim()) return;
+
+    const family = options.family ?? this.family;
+    const size = Math.max(8, Math.min(options.size ?? 84, 400));
+    const style: FontStyle = { bold: true };
+    const key = fontKey(family, style);
+    this.page.fonts.add(key);
+    if (!this.faces.has(key)) this.faces.set(key, { family, style });
+
+    const state = this.alphaName(options.opacity ?? 0.08);
+    this.page.states.add(state);
+
+    const radians = ((options.angle ?? 45) * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const measured = measureText(text, family, size, style);
+
+    /*
+     * The run is centred on the sheet: start half its length back along the
+     * baseline, and a third of the size below the middle so the caps — not the
+     * baseline — sit on the centre line. Both offsets are then turned through
+     * the same angle as the text.
+     */
+    const back = measured / 2;
+    const drop = size * 0.35;
+    const x = this.width / 2 - cos * back + sin * drop;
+    const y = this.height / 2 - sin * back - cos * drop;
+
+    const bytes = pdfString(text);
+    this.op("q");
+    this.op(`/${state} gs`);
+    this.op("BT");
+    this.op(`/${key} ${round(size)} Tf`);
+    this.op(colorOp(options.color ?? "#111111"));
+    this.op(`${round(cos)} ${round(sin)} ${round(-sin)} ${round(cos)} ${round(x)} ${round(y)} Tm`);
+    this.op(` ${bytes.join(",")}  Tj`);
+    this.op("ET");
+    this.op("Q");
+  }
+
+  /** The resource name for a transparency, registering it on first use. */
+  private alphaName(opacity: number): string {
+    const alpha = Math.round(Math.max(0.01, Math.min(opacity, 1)) * 100) / 100;
+    let name = this.alphas.get(alpha);
+    if (!name) {
+      name = `GS${this.alphas.size + 1}`;
+      this.alphas.set(alpha, name);
+    }
+    return name;
   }
 
   /** A horizontal rule across the content width, and past it if asked. */
@@ -658,8 +741,11 @@ export class PdfDocument {
    * wants it; a letterhead ignores it and draws into the top margin by
    * absolute coordinates, since that is the one region content never occupies.
    */
-  onEachPage(draw: (document: PdfDocument, page: number, total: number) => void): void {
-    this.overlays.push(draw);
+  onEachPage(
+    draw: (document: PdfDocument, page: number, total: number) => void,
+    options: { beneath?: boolean } = {},
+  ): void {
+    this.overlays.push({ draw, beneath: options.beneath });
   }
 
   private runOverlays(): void {
@@ -673,7 +759,19 @@ export class PdfDocument {
       for (const overlay of this.overlays) {
         // Into the bottom margin, where content is not allowed to go.
         this.cursor = this.height - this.margins.bottom + 14;
-        overlay(this, index + 1, total);
+
+        if (!overlay.beneath) {
+          overlay.draw(this, index + 1, total);
+          continue;
+        }
+
+        // A watermark belongs *under* the document, and operators are drawn in
+        // the order they were pushed — so the overlay draws into an empty list
+        // and that list is spliced in front of the page's own content.
+        const content = page.operators;
+        page.operators = [];
+        overlay.draw(this, index + 1, total);
+        page.operators = [...page.operators, ...content];
       }
     });
 
@@ -774,6 +872,15 @@ export class PdfDocument {
       );
     }
 
+    /* --- one ExtGState per distinct transparency --- */
+
+    const stateIds = new Map<string, number>();
+    for (const [alpha, name] of this.alphas) {
+      // `ca` is fill, `CA` is stroke. A watermark only fills, but a state that
+      // set one and not the other would be a trap for the next thing drawn.
+      stateIds.set(name, add(ascii(`<< /Type /ExtGState /ca ${round(alpha)} /CA ${round(alpha)} >>`)));
+    }
+
     const pagesId = nextId++; // reserved: each page needs it as its /Parent
     const pageIds: number[] = [];
 
@@ -791,12 +898,18 @@ export class PdfDocument {
         .map(name => `/${name} ${imageIds.get(name)} 0 R`)
         .join(" ");
 
+      const states = [...page.states]
+        .sort()
+        .map(name => `/${name} ${stateIds.get(name)} 0 R`)
+        .join(" ");
+
       pageIds.push(
         add(
           ascii(
             `<< /Type /Page /Parent ${pagesId} 0 R ` +
               `/MediaBox [0 0 ${round(this.width)} ${round(this.height)}] ` +
-              `/Resources << /Font << ${fonts} >>${images ? ` /XObject << ${images} >>` : ""} >> ` +
+              `/Resources << /Font << ${fonts} >>${images ? ` /XObject << ${images} >>` : ""}` +
+              `${states ? ` /ExtGState << ${states} >>` : ""} >> ` +
               `/Contents ${contentId} 0 R >>`,
           ),
         ),
