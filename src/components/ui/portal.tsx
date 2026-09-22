@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
  * transform, a filter or a `will-change` — any of those makes the ancestor the
  * containing block instead, and the overlay is then pinned to, and sized
  * against, whatever happened to be on screen. The app's entrance animations do
- * exactly that: every screen is rendered inside `animate-unfurl`, so a panel
+ * exactly that: every screen is rendered inside `animate-extend`, so a panel
  * rendered in place gets the height of the view's content rather than the
  * height of the window.
  *

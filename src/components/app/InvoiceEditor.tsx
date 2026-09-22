@@ -405,8 +405,8 @@ export function InvoiceEditor({
           <Field label="Balance">
             <p
               className={cn(
-                "font-serif text-lg font-semibold tabular-nums",
-                status === "overdue" && "text-clay dark:text-chart-2",
+                "font-display text-lg font-semibold tabular-nums",
+                status === "overdue" && "text-alert",
                 status === "paid" && "text-primary",
               )}
             >
@@ -756,7 +756,7 @@ function Total({ label, value, strong }: { label: string; value: string; strong?
   return (
     <div className="text-right">
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className={cn("tabular-nums", strong && "font-serif text-base font-semibold")}>{value}</dd>
+      <dd className={cn("tabular-nums", strong && "font-display text-base font-semibold")}>{value}</dd>
     </div>
   );
 }

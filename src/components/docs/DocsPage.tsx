@@ -86,10 +86,10 @@ function Authorize({
   const chosen = CREDENTIAL_KINDS.find(entry => entry.kind === kind) ?? CREDENTIAL_KINDS[0]!;
 
   return (
-    <div className="leaf motion-safe:animate-settle rounded-lg border p-4 shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]">
+    <div className="panel motion-safe:animate-settle rounded-lg border p-4 shadow-[0_1px_2px_var(--cast)]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="font-serif text-[0.95rem] font-semibold">Credential</h2>
+          <h2 className="font-display text-[0.95rem] font-semibold">Credential</h2>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {user
               ? `Signed in as ${user.email}. Every call below already travels on that session — a key is only needed to try one as something else.`
@@ -154,7 +154,7 @@ function Model({ doc, name, schema }: { doc: OpenApiDoc; name: string; schema: S
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="leaf overflow-hidden rounded-lg border shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]">
+    <div className="panel overflow-hidden rounded-lg border shadow-[0_1px_2px_var(--cast)]">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -171,7 +171,7 @@ function Model({ doc, name, schema }: { doc: OpenApiDoc; name: string; schema: S
       </button>
 
       {open && (
-        <div className="motion-safe:animate-unfurl border-t px-4 py-3">
+        <div className="motion-safe:animate-extend border-t px-4 py-3">
           <SchemaView doc={doc} schema={schema} seen={[name]} />
         </div>
       )}
@@ -258,9 +258,9 @@ export function DocsPage() {
 
   if (error) {
     return (
-      <main className="paper mx-auto flex min-h-dvh max-w-2xl flex-col items-center justify-center gap-3 px-6 text-center">
+      <main className="slab mx-auto flex min-h-dvh max-w-2xl flex-col items-center justify-center gap-3 px-6 text-center">
         <AlertCircle className="size-6 text-destructive" />
-        <h1 className="font-serif text-lg font-semibold">The API document could not be loaded</h1>
+        <h1 className="font-display text-lg font-semibold">The API document could not be loaded</h1>
         <p className="text-sm text-muted-foreground">
           {error}. It is served from <span className="font-mono">{api.openApiUrl}</span>, with no credential needed —
           if that is failing, the server itself is probably down.
@@ -277,7 +277,7 @@ export function DocsPage() {
 
   if (!doc) {
     return (
-      <main className="paper flex min-h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
+      <main className="slab flex min-h-dvh items-center justify-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="size-4 animate-spin" />
         Reading the API document…
       </main>
@@ -285,9 +285,9 @@ export function DocsPage() {
   }
 
   return (
-    <div className="paper min-h-dvh">
+    <div className="slab min-h-dvh">
       {/* ------------------------------- header ------------------------------ */}
-      <header className="double-rule sticky top-0 z-20 border-b bg-background/85 backdrop-blur">
+      <header className="seam sticky top-0 z-20 border-b bg-background/85 backdrop-blur">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-3">
           <a href="/" className="rounded">
             <BrandLockup tagline="api reference" markClassName="size-7" />
@@ -348,7 +348,7 @@ export function DocsPage() {
 
       <div className="mx-auto grid max-w-6xl gap-6 px-4 py-6 lg:grid-cols-[13rem_minmax(0,1fr)]">
         {/* ------------------------------ sidebar ----------------------------- */}
-        <nav className="margin-rule hidden lg:block">
+        <nav className="rail hidden lg:block">
           <div className="sticky top-20 space-y-4 pr-3">
             <div className="space-y-1">
               {filtered.map(group => (
@@ -394,7 +394,7 @@ export function DocsPage() {
           )}
 
           {doc.info?.description && (
-            <section className="leaf motion-safe:animate-rise rounded-lg border p-4 shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]">
+            <section className="panel motion-safe:animate-rise rounded-lg border p-4 shadow-[0_1px_2px_var(--cast)]">
               <Markdown source={doc.info.description} />
               <div className="mt-3 border-t pt-3">
                 <p className="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">
@@ -414,7 +414,7 @@ export function DocsPage() {
           {filtered.map(group => (
             <section key={group.name} id={tagId(group.name)} className="scroll-mt-20 space-y-2">
               <div>
-                <h2 className="font-serif text-[0.95rem] font-semibold tracking-tight">{group.name}</h2>
+                <h2 className="font-display text-[0.95rem] font-semibold tracking-tight">{group.name}</h2>
                 {group.description && <p className="text-xs text-muted-foreground">{group.description}</p>}
               </div>
 
@@ -438,7 +438,7 @@ export function DocsPage() {
           {schemas.length > 0 && (
             <section id="models" className="scroll-mt-20 space-y-2">
               <div>
-                <h2 className="font-serif text-[0.95rem] font-semibold tracking-tight">Models</h2>
+                <h2 className="font-display text-[0.95rem] font-semibold tracking-tight">Models</h2>
                 <p className="text-xs text-muted-foreground">
                   The shapes the endpoints above send and answer with, as the document declares them.
                 </p>

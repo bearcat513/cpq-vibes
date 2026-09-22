@@ -43,7 +43,7 @@ function Blocks({ blocks }: { blocks: Block[] }) {
       {blocks.map((block, index) => {
         if (block.kind === "heading") {
           return (
-            <h3 key={index} className="mt-4 mb-1 font-serif text-sm font-semibold text-foreground first:mt-0">
+            <h3 key={index} className="mt-4 mb-1 font-display text-sm font-semibold text-foreground first:mt-0">
               <Spans spans={block.spans} />
             </h3>
           );

@@ -226,32 +226,50 @@ stakes are sharper: a client that could set its own balance could mark its own d
 Each collection keeps real columns for what the database queries on and one JSON field for the
 nested domain object the app reads whole.
 
-**The look is parchment and nature, and it lives in `styles/globals.css`.** The palette is oklch —
-warm paper, walnut ink, forest and moss for anything live, clay and ochre for anything waiting or
-wrong — with a dark mode that is the same wood at dusk. Four utilities carry it: `paper` (the page:
-flat parchment, soft blotches and a laid-paper hatch), `leaf` (a sheet on it — cards, panels,
-menus), `margin-rule` (the ruled binding edge on the nav) and `double-rule` (the hairline a printed
-page sets under a heading). Use those rather than `bg-card` / `bg-background` for surfaces, and
-`font-serif` for titles and for a number meant to read as printed matter.
+**The look is steel and concrete, and it lives in `styles/globals.css`.** The palette is oklch —
+cool concrete, graphite ink, and the signal colours of a plant floor for anything live, late or
+wrong — with a dark mode that is the same shop on the night shift. Corners are machined rather
+than moulded (`--radius` is `0.25rem`, so `rounded-sm` is square). Four utilities carry it: `slab`
+(the page: flat concrete, a drafting grid and raking light), `panel` (a plate laid on it — cards,
+form panels, menus), `rail` (the scribed line down the nav's mounting edge) and `seam` (the
+hairline a panel seam leaves under a heading). Use those rather than `bg-card` / `bg-background`
+for surfaces, and `font-display` for titles and for a number meant to read as machined.
+`--font-serif` still exists, but only for the reading faces that offer a serif — no chrome is set
+in it.
 
-**The accent and the reading face are preferences.** Seven earth tones, each one a `--tint-hue`
+**The accent and the reading face are preferences.** Seven signal colours, each one a `--tint-hue`
 and a chroma trim under `[data-accent=…]`, from which every tinted role (`--primary`, `--ring`,
 the sidebar's live colours) is *derived* — so never write a colour literal for one of those
 roles, and add an accent by adding the hue there and the name to `ACCENTS`. The status tones do
-not follow it: moss still means paid and clay still means overdue, or a state told by colour
-would start lying the moment somebody picked that colour. The face is `--font-sans` under
-`[data-font=…]`, system stacks only; headings keep the serif. `App.tsx` puts both on `<html>`,
-which is why the settings swatches can carry their own `data-accent` and paint themselves.
+not follow it: `--signal` still means paid and `--alert` still means overdue, or a state told by
+colour would start lying the moment somebody picked that colour. Those four (`signal`, `hazard`,
+`alert`, `flare`) are mapped through `@theme inline`, so they change with the theme and
+`text-alert` needs no `dark:` twin. **Their lightness is solved, not chosen**: a chip is the tone
+at 10% over the panel behind it, and each tone is as dark (or as light) as it has to be to clear
+4.5:1 against both that chip and the bare ground — which is why `--hazard` reads bronze in the
+light theme. Retune one and check the pair again before shipping it. The face is `--font-sans`
+under `[data-font=…]`, system stacks only; headings keep `--font-display`. `App.tsx` puts both on
+`<html>`, which is why the settings swatches can carry their own `data-accent` and paint
+themselves.
 
 **Texture is a background layer, never anything text sits on**, and it is built from repeating
 gradients rather than an SVG noise tile — a tiled `feTurbulence` seams visibly at the tile edges
-and puts a faint checkerboard across the page.
+and puts a faint checkerboard across the page. The drafting grid (`--mesh`) is on `slab` only: it
+would restart at the corner of every panel laid on it, and a grid that does not line up with the
+grid beside it is worse than none. The mill grain (`--tooth`) tiles at four pixels, so panels wear
+that instead.
 
-**Motion is `motion-safe:` and under half a second.** The named animations (`rise`, `unfurl`,
-`settle`, `vein`, `sway`, `drift`, `ripen`) are declared as `--animate-*` in the theme, so use
-`animate-rise` rather than an inline keyframe. Entrance animations fill `both` and therefore start
-at `opacity: 0` — which is why a screenshot tool that does not run animations photographs an empty
+**Motion is `motion-safe:` and under half a second.** The named animations (`rise`, `extend`,
+`settle`, `weld`, `tilt`, `drift`, `throb`) are declared as `--animate-*` in the theme, so use
+`animate-rise` rather than an inline keyframe. They are machine motion — driven along an axis on a
+sharp ease, nothing overshoots. Entrance animations fill `both` and therefore start at
+`opacity: 0` — which is why a screenshot tool that does not run animations photographs an empty
 page. `prefers-reduced-motion` is honoured globally at the bottom of the stylesheet.
+
+**Overlays are portalled onto `<body>`** (`components/ui/portal.tsx`, used by `Sheet` and
+`Dialog`). `position: fixed` is only fixed to the window while nothing above it has a transform,
+and every screen renders inside `animate-extend` — so an overlay left where it was written is
+pinned to, and sized against, the view that opened it.
 
 **`/docs` is its own HTML entry point, not a screen in the app** (`src/docs.html` → `src/docs.tsx`
 → `src/components/docs/`). It is read by people who have not signed in, the document it renders

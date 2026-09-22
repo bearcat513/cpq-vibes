@@ -269,7 +269,7 @@ export function App() {
   const navCollapsed = preferences.navCollapsed;
 
   return (
-    <div className="paper min-h-screen text-foreground">
+    <div className="slab min-h-screen text-foreground">
       <div className="mx-auto flex max-w-[110rem] flex-col gap-0 lg:flex-row">
         {/* ------------------------------ nav ------------------------------ */}
 
@@ -277,7 +277,7 @@ export function App() {
           className={cn(
             "bg-sidebar/70 text-sidebar-foreground shrink-0 border-b backdrop-blur-[2px]",
             "transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-            "lg:margin-rule lg:flex lg:h-screen lg:flex-col lg:border-r lg:border-b-0",
+            "lg:rail lg:flex lg:h-screen lg:flex-col lg:border-r lg:border-b-0",
             // Collapsing is a desktop affordance: on a phone the nav is
             // already a horizontal strip, and there is nothing to reclaim.
             navCollapsed ? "lg:w-16" : "lg:w-56",
@@ -323,12 +323,12 @@ export function App() {
                       : "text-muted-foreground hover:bg-accent/50 hover:text-foreground motion-safe:hover:translate-x-0.5",
                   )}
                 >
-                  {/* The page you are on is marked the way a leaf is veined:
-                      a stroke drawn down its length, not a filled block. */}
+                  {/* The page you are on is marked the way a seam is welded:
+                      a bead run down its length, not a filled block. */}
                   {active && (
                     <span
                       aria-hidden="true"
-                      className="bg-primary motion-safe:animate-vein absolute top-1.5 bottom-1.5 left-0 w-[3px] origin-top rounded-full"
+                      className="bg-primary motion-safe:animate-weld absolute top-1.5 bottom-1.5 left-0 w-[3px] origin-top rounded-full"
                     />
                   )}
                   <Icon
@@ -343,7 +343,7 @@ export function App() {
                     (navCollapsed ? (
                       // Collapsed, the count has nowhere to sit beside the
                       // label, so it becomes a corner dot with the number.
-                      <span className="bg-clay motion-safe:animate-ripen absolute top-1 right-1 hidden size-4 items-center justify-center rounded-full text-[10px] font-medium text-white lg:flex">
+                      <span className="bg-alert motion-safe:animate-throb absolute top-1 right-1 hidden size-4 items-center justify-center rounded-full text-[10px] font-medium text-white lg:flex">
                         {badge > 9 ? "9+" : badge}
                       </span>
                     ) : (
@@ -442,7 +442,7 @@ export function App() {
            * Without the key the class is applied once, at first paint, and
            * every view after that arrives without ceremony.
            */}
-          <div key={editingQuote ? `quote:${openQuote?.id ?? "new"}` : view} className="motion-safe:animate-unfurl">
+          <div key={editingQuote ? `quote:${openQuote?.id ?? "new"}` : view} className="motion-safe:animate-extend">
             {editingQuote ? (
               <QuoteEditor
                 quote={openQuote}

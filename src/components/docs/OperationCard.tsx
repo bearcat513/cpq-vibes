@@ -152,11 +152,11 @@ function ParameterRow({
   );
 }
 
-/** The tone a status reads in: moss for good, ochre for refused, clay for broken. */
+/** The tone a status reads in: signal for good, hazard for refused, red for broken. */
 function statusTone(status: number): string {
-  if (status >= 200 && status < 300) return "text-chart-1";
+  if (status >= 200 && status < 300) return "text-signal";
   if (status >= 500) return "text-destructive";
-  if (status >= 400) return "text-chart-3 dark:text-chart-2";
+  if (status >= 400) return "text-hazard";
   return "text-muted-foreground";
 }
 
@@ -291,7 +291,7 @@ export function OperationCard({ doc, operation, base, credential, open, onToggle
   return (
     <article
       id={anchorId(operation)}
-      className="leaf @container scroll-mt-24 overflow-hidden rounded-lg border shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]"
+      className="panel @container scroll-mt-24 overflow-hidden rounded-lg border shadow-[0_1px_2px_var(--cast)]"
     >
       <button
         type="button"
@@ -315,7 +315,7 @@ export function OperationCard({ doc, operation, base, credential, open, onToggle
       </button>
 
       {open && (
-        <div className="motion-safe:animate-unfurl space-y-5 border-t px-4 py-4">
+        <div className="motion-safe:animate-extend space-y-5 border-t px-4 py-4">
           <p className="text-xs text-muted-foreground @sm:hidden">{operation.summary}</p>
           {operation.description && <Markdown source={operation.description} className="text-xs" />}
 

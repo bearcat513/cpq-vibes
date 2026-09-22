@@ -56,9 +56,9 @@ export function StatusBadge({ status }: { status: QuoteStatus }) {
 }
 
 /**
- * A customer's standing, coloured the same way: ochre for somebody you are
- * still chasing, moss for somebody who has bought, and nothing at all for
- * somebody you have stopped quoting.
+ * A customer's standing, coloured the same way: hazard amber for somebody you
+ * are still chasing, signal green for somebody who has bought, and nothing at
+ * all for somebody you have stopped quoting.
  */
 const ACCOUNT_STATUS_TONE: Record<AccountStatus, "neutral" | "pending" | "success"> = {
   prospect: "pending",
@@ -73,16 +73,20 @@ export function AccountStatusBadge({ status }: { status: AccountStatus }) {
 /**
  * An invoice's condition — worked out by `invoiceStatus`, never stored.
  *
- * Clay for overdue, because it is the one that needs somebody to pick up the
- * phone; moss for paid; and nothing for a draft, which is not yet a
- * receivable and should not look like one.
+ * Alert orange for overdue, because it is the one that needs somebody to pick
+ * up the phone; signal green for paid; and nothing for a draft, which is not
+ * yet a receivable and should not look like one.
+ *
+ * Overdue is `warn` rather than `danger`: red is reserved for something that
+ * went *wrong* — a rejected quote, a written-off credit — and a bill nobody
+ * has paid yet is late, not broken.
  */
-const INVOICE_STATUS_TONE: Record<InvoiceStatus, "neutral" | "info" | "pending" | "success" | "danger"> = {
+const INVOICE_STATUS_TONE: Record<InvoiceStatus, "neutral" | "info" | "pending" | "success" | "warn"> = {
   draft: "neutral",
   open: "info",
   part_paid: "pending",
   paid: "success",
-  overdue: "danger",
+  overdue: "warn",
   void: "neutral",
 };
 
@@ -157,15 +161,15 @@ export function Section({
   return (
     <section
       className={cn(
-        "leaf motion-safe:animate-rise rounded-lg border shadow-[0_1px_2px_oklch(0.3_0.04_60/0.06)]",
+        "panel motion-safe:animate-rise rounded-lg border shadow-[0_1px_2px_var(--cast)]",
         className,
       )}
     >
-      {/* A printed page rules twice under a heading: a firm line and a
-          hairline. `double-rule` is the second one. */}
-      <div className="double-rule flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
+      {/* A panel is bolted down twice under a heading: a firm line and the
+          hairline of the seam behind it. `seam` is the second one. */}
+      <div className="seam flex flex-wrap items-start justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
-          <h2 className="font-serif text-[0.95rem] leading-tight font-semibold tracking-tight">{title}</h2>
+          <h2 className="font-display text-[0.95rem] leading-tight font-semibold tracking-tight">{title}</h2>
           {description && <p className="text-xs text-muted-foreground">{description}</p>}
         </div>
         {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
@@ -181,7 +185,7 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
       {/* The one screen with room for decoration, and the one that most needs
           to look deliberate rather than broken. */}
       <BrandWatermark className="-top-3 left-1/2 size-28 -translate-x-1/2" />
-      <p className="relative font-serif text-base font-semibold">{title}</p>
+      <p className="relative font-display text-base font-semibold">{title}</p>
       {children && <div className="relative mx-auto mt-1 max-w-md text-xs text-muted-foreground">{children}</div>}
     </div>
   );
@@ -190,11 +194,11 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
 /* --------------------------------- notices ------------------------------- */
 
 const NOTICE_STYLE = {
-  error: { className: "bg-destructive/10 text-destructive border-destructive/20", Icon: AlertCircle },
-  warning: { className: "bg-chart-2/15 text-chart-3 border-chart-2/25 dark:text-chart-2", Icon: AlertTriangle },
-  // Slate rather than moss: green already means "this went well" on a badge,
-  // and an informational line is not a result.
-  info: { className: "bg-chart-4/12 text-chart-4 border-chart-4/25", Icon: Info },
+  error: { className: "bg-flare/10 text-flare border-flare/25", Icon: AlertCircle },
+  warning: { className: "bg-hazard/10 text-hazard border-hazard/25", Icon: AlertTriangle },
+  // Arc blue rather than signal green: green already means "this went well"
+  // on a badge, and an informational line is not a result.
+  info: { className: "bg-chart-4/10 text-chart-4 border-chart-4/25", Icon: Info },
 } as const;
 
 export type NoticeKind = keyof typeof NOTICE_STYLE;

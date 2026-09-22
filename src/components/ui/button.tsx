@@ -17,8 +17,8 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        // A seal: the primary action is the greenest thing on the page, lit
-        // from the top the way something stamped into paper catches light.
+        // A machined face: the primary action is the only painted thing on
+        // the page, lit from the top the way a bevelled edge catches light.
         default:
           "bg-primary text-primary-foreground shadow-sm bg-[linear-gradient(to_bottom,color-mix(in_oklab,var(--primary)_88%,white),var(--primary))] hover:brightness-110 hover:shadow-md",
         destructive:

@@ -299,7 +299,7 @@ export function CustomerDetail({
                         {one.dueDate ? (
                           <>
                             {row.date(one.dueDate)}
-                            {late > 0 && <span className="text-clay dark:text-chart-2"> · {late}d</span>}
+                            {late > 0 && <span className="text-alert"> · {late}d</span>}
                           </>
                         ) : (
                           "—"
@@ -407,15 +407,15 @@ export function CustomerDetail({
   );
 }
 
-/** One number, set in the serif the rest of the app reserves for printed matter. */
+/** One number, set in the display face the rest of the app reserves for figures. */
 function Stat({ label, value, hint, tone }: { label: string; value: string; hint: string; tone?: "warn" }) {
   return (
-    <div className="leaf px-4 py-3">
+    <div className="panel px-4 py-3">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p
         className={cn(
-          "font-serif text-lg font-semibold tabular-nums",
-          tone === "warn" && "text-clay dark:text-chart-2",
+          "font-display text-lg font-semibold tabular-nums",
+          tone === "warn" && "text-alert",
         )}
       >
         {value}

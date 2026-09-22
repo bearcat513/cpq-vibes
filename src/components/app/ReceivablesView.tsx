@@ -208,15 +208,15 @@ export function ReceivablesView({ accounts, templates, preferences, onError, onN
                 onClick={() => setBucket(on ? "" : candidate)}
                 aria-pressed={on}
                 className={cn(
-                  "leaf px-4 py-3 text-left transition-colors",
+                  "panel px-4 py-3 text-left transition-colors",
                   on ? "bg-accent" : "hover:bg-accent/50",
                   // Anything past 60 days is the part of the book that needs
                   // a phone call, so it is coloured like a warning.
-                  candidate === "61-90" || candidate === "90+" ? "text-clay dark:text-chart-2" : "",
+                  candidate === "61-90" || candidate === "90+" ? "text-alert" : "",
                 )}
               >
                 <p className="text-xs text-muted-foreground">{AGING_BUCKET_LABELS[candidate]}</p>
-                <p className="font-serif text-lg font-semibold tabular-nums">
+                <p className="font-display text-lg font-semibold tabular-nums">
                   {loading ? "—" : format.money(cell.amount)}
                 </p>
                 <p className="text-xs text-muted-foreground">
@@ -348,7 +348,7 @@ export function ReceivablesView({ accounts, templates, preferences, onError, onN
                       {invoice.dueDate ? (
                         <>
                           {row.date(invoice.dueDate)}
-                          {late > 0 && <span className="text-clay dark:text-chart-2"> · {late}d</span>}
+                          {late > 0 && <span className="text-alert"> · {late}d</span>}
                         </>
                       ) : (
                         "—"
@@ -362,7 +362,7 @@ export function ReceivablesView({ accounts, templates, preferences, onError, onN
                       className={cn(
                         "font-medium",
                         condition === "paid" && "text-muted-foreground",
-                        condition === "overdue" && "text-clay dark:text-chart-2",
+                        condition === "overdue" && "text-alert",
                       )}
                     >
                       {row.money(invoice.totals.balance)}
@@ -395,8 +395,8 @@ function Figure({
       <dd
         className={cn(
           "tabular-nums",
-          strong && "font-serif text-base font-semibold",
-          tone === "warn" && "text-clay dark:text-chart-2",
+          strong && "font-display text-base font-semibold",
+          tone === "warn" && "text-alert",
         )}
       >
         {value}

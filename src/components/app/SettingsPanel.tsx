@@ -309,8 +309,8 @@ export function SettingsPanel(props: Props) {
 
 /**
  * The three choices that change nothing but the look of the place: light or
- * dark, which of the seven earth tones carries anything live, and the face it
- * is all read in.
+ * dark, which of the seven signal colours carries anything live, and the face
+ * it is all read in.
  *
  * The swatches paint themselves — each carries its own `data-accent`, so the
  * colour on the button is the colour the app will wear, out of the stylesheet
@@ -354,7 +354,7 @@ function AppearanceSection({
           </Select>
         </Field>
 
-        <Field label="Font" hint={font ? `${font.hint}. Headings stay in the printed serif.` : undefined}>
+        <Field label="Font" hint={font ? `${font.hint}. Headings stay in the display face.` : undefined}>
           <Select value={preferences.font} onValueChange={value => onChange({ font: value as Preferences["font"] })}>
             <SelectTrigger>
               <SelectValue />
@@ -371,7 +371,7 @@ function AppearanceSection({
           </Select>
         </Field>
 
-        <Field label="Accent" hint={accent ? `${accent.label} — seven earth tones.` : undefined}>
+        <Field label="Accent" hint={accent ? `${accent.label} — seven signal colours.` : undefined}>
           <div className="flex h-9 flex-wrap items-center gap-2">
             {ACCENTS.map(one => {
               const chosen = one.id === preferences.accent;
@@ -384,7 +384,7 @@ function AppearanceSection({
                   aria-pressed={chosen}
                   onClick={() => onChange({ accent: one.id })}
                   className={cn(
-                    "bg-primary ring-primary ring-offset-card flex size-7 items-center justify-center rounded-full",
+                    "bg-primary ring-primary ring-offset-card flex size-7 items-center justify-center rounded-sm",
                     "border border-black/10 ring-offset-2 dark:border-white/10",
                     "motion-safe:transition-transform motion-safe:duration-200 motion-safe:hover:-translate-y-px",
                     chosen && "ring-2",

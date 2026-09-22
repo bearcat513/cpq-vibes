@@ -49,32 +49,32 @@ export function AuthPanel({ onSignedIn }: { onSignedIn: (user: SessionUser) => v
   }
 
   return (
-    <div className="paper relative flex h-screen w-full items-center justify-center overflow-hidden p-6 text-foreground">
+    <div className="slab relative flex h-screen w-full items-center justify-center overflow-hidden p-6 text-foreground">
       {/*
-       * Light through leaves: two soft washes that drift very slowly against
-       * each other. It is the only decoration in the app that moves on its
-       * own, and it is on the one screen nobody is trying to work on.
+       * Arc light through a roof bay: two soft washes that drift very slowly
+       * against each other. It is the only decoration in the app that moves
+       * on its own, and it is on the one screen nobody is trying to work on.
        */}
       <div
         aria-hidden="true"
-        className="motion-safe:animate-drift pointer-events-none absolute -top-1/3 -left-1/4 size-[80vmax] rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--color-fern)_12%,transparent),transparent_62%)] blur-3xl"
+        className="motion-safe:animate-drift pointer-events-none absolute -top-1/3 -left-1/4 size-[80vmax] rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--color-voltage)_12%,transparent),transparent_62%)] blur-3xl"
       />
       <div
         aria-hidden="true"
-        className="motion-safe:animate-drift pointer-events-none absolute -right-1/4 -bottom-1/3 size-[70vmax] rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--color-clay)_10%,transparent),transparent_60%)] blur-3xl [animation-delay:-12s]"
+        className="motion-safe:animate-drift pointer-events-none absolute -right-1/4 -bottom-1/3 size-[70vmax] rounded-full bg-[radial-gradient(circle,color-mix(in_oklab,var(--color-alert)_10%,transparent),transparent_60%)] blur-3xl [animation-delay:-12s]"
       />
 
-      <div className="motion-safe:animate-unfurl relative w-full max-w-sm">
+      <div className="motion-safe:animate-extend relative w-full max-w-sm">
         <div className="mb-6">
           <BrandLockup markClassName="size-10 rounded-xl" tagline="configure · price · quote" />
-          <p className="mt-3 max-w-[30ch] font-serif text-sm leading-relaxed text-muted-foreground italic">
+          <p className="mt-3 max-w-[30ch] text-sm leading-relaxed text-muted-foreground">
             {registering
-              ? "Your own catalogue, your own customers, your own quotes — kept on your own paper."
+              ? "Your own catalogue, your own customers, your own quotes — on your own bench."
               : "Sign in to your catalogue and quotes."}
           </p>
         </div>
 
-        <form onSubmit={submit} className="leaf space-y-3 rounded-xl border p-4 shadow-lg">
+        <form onSubmit={submit} className="panel space-y-3 rounded-xl border p-4 shadow-lg">
           {registering && (
             <div>
               <Label htmlFor="auth-name" className="mb-1 text-xs">

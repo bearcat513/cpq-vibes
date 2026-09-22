@@ -17,38 +17,42 @@ import { CURRENCIES, type CurrencyCode } from "./types";
 export type Theme = "system" | "light" | "dark";
 
 /**
- * The earth tone the app is dressed in.
+ * The signal colour the app is painted in.
  *
  * Each one is a single hue turned in `styles/globals.css`, where the whole
  * accent palette — primary, ring, the sidebar's live colours — is derived
  * from that hue rather than listed. So an accent is two numbers in the
  * stylesheet and a name here, and the seven cannot drift apart.
  *
- * Nothing that *means* something moves with it: a paid invoice is still moss
- * and an overdue one still clay, because a status told by colour alone would
- * start lying the moment somebody chose that colour.
+ * Nothing that *means* something moves with it: a paid invoice is still
+ * signal green and an overdue one still alert orange, because a status told
+ * by colour alone would start lying the moment somebody chose that colour.
+ *
+ * An account that was dressed in one of the old earth tones has a name that
+ * is no longer on this list, which `normalizePreferences` handles the way it
+ * handles any value it does not recognise — by falling back to the default.
  */
-export type Accent = "moss" | "olive" | "ochre" | "clay" | "rust" | "heather" | "slate";
+export type Accent = "cobalt" | "arc" | "slate" | "signal" | "hazard" | "ember" | "plasma";
 
-/** In the order they are offered: the woods, then the soils, then the stone. */
+/** In the order they are offered: the painted steel, then the signage. */
 export const ACCENTS: { id: Accent; label: string }[] = [
-  { id: "moss", label: "Moss" },
-  { id: "olive", label: "Olive" },
-  { id: "ochre", label: "Ochre" },
-  { id: "clay", label: "Clay" },
-  { id: "rust", label: "Rust" },
-  { id: "heather", label: "Heather" },
+  { id: "cobalt", label: "Cobalt" },
+  { id: "arc", label: "Arc" },
   { id: "slate", label: "Slate" },
+  { id: "signal", label: "Signal" },
+  { id: "hazard", label: "Hazard" },
+  { id: "ember", label: "Ember" },
+  { id: "plasma", label: "Plasma" },
 ];
 
 /**
  * The face the app is read in.
  *
- * System stacks only, for the same reason `--font-serif` is one: a webfont is
- * a network dependency on a tool that runs locally, and the first paint would
- * be in the fallback regardless. Headings keep the printed serif whatever is
- * chosen here — the wordmark and the totals are this app's printed matter —
- * except of course when the choice *is* that serif.
+ * System stacks only, for the same reason `--font-display` is one: a webfont
+ * is a network dependency on a tool that runs locally, and the first paint
+ * would be in the fallback regardless. Headings keep the stencilled display
+ * face whatever is chosen here — the wordmark and the totals are this app's
+ * rating plate — so this is the body copy and nothing else.
  */
 export type FontChoice = "sans" | "grotesque" | "humanist" | "oldstyle" | "transitional" | "mono";
 
@@ -64,9 +68,9 @@ export const FONTS: { id: FontChoice; label: string; hint: string }[] = [
 export type Preferences = {
   /** "system" follows the OS; the other two override it. */
   theme: Theme;
-  /** Which of the seven earth tones carries anything live. */
+  /** Which of the seven signal colours carries anything live. */
   accent: Accent;
-  /** The face the app is set in. Headings keep the serif. */
+  /** The face the app is set in. Headings keep the display face. */
   font: FontChoice;
   /** The currency a new quote is denominated in. */
   defaultCurrency: CurrencyCode;
@@ -116,7 +120,7 @@ export const PREFERENCE_LIMITS = {
 
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
-  accent: "moss",
+  accent: "cobalt",
   font: "sans",
   defaultCurrency: DEFAULT_CURRENCY,
   defaultPriceBookId: "",
