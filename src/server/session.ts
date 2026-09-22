@@ -10,11 +10,30 @@
  *
  * An `Authorization: <token>` header is accepted too, for scripts holding a
  * token from PocketBase directly.
+ *
+ * An `X-API-Key` header is the third way in, for scripts that should not have
+ * to sign in at all. A key is forwarded to PocketBase exactly like a token,
+ * and a hook there turns it into the same `@request.auth` a token produces —
+ * so the collection rules are the only access model, whichever credential
+ * arrived. Nothing here validates a key either; PocketBase does that too.
  */
 import { normalizePreferences, type Preferences } from "../lib/preferences";
 import { ApiError } from "./http";
 
 export const SESSION_COOKIE = "cpq_session";
+
+/** The header a key arrives in, and the prefix every issued key carries. */
+export const API_KEY_HEADER = "X-API-Key";
+export const API_KEY_PREFIX = "cpq_";
+
+/**
+ * Whether a credential is an API key rather than a session token.
+ *
+ * The prefix is the whole test, and it is unambiguous: a PocketBase token is a
+ * JWT, which is base64url and always begins `eyJ`, so no token can be mistaken
+ * for a key.
+ */
+export const isApiKey = (credential: string): boolean => credential.startsWith(API_KEY_PREFIX);
 
 /** PocketBase's user tokens last a week by default; the cookie matches. */
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
@@ -96,6 +115,11 @@ function readCookie(req: Request, name: string): string | undefined {
 }
 
 export function readToken(req: Request): string | undefined {
+  // A key is checked first: a script that sends one means it, and should not
+  // silently fall back to a cookie the browser happened to attach.
+  const key = req.headers.get(API_KEY_HEADER)?.trim();
+  if (key) return key;
+
   return readCookie(req, SESSION_COOKIE) ?? req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? undefined;
 }
 
@@ -130,7 +154,29 @@ export class NoSession extends ApiError {
 }
 
 export function requireToken(req: Request): string {
-  const token = readToken(req);
-  if (!token || !isUsableToken(token)) throw new NoSession();
-  return token;
+  const credential = readToken(req);
+  if (!credential) throw new NoSession();
+
+  // A key carries no expiry this server can read — PocketBase holds that, and
+  // rejects a key that is past it. The shape check below is for JWTs only.
+  if (isApiKey(credential)) return credential;
+
+  if (!isUsableToken(credential)) throw new NoSession();
+  return credential;
+}
+
+/**
+ * The same, for the few routes a key may not reach: managing keys.
+ *
+ * Revoking and issuing are how someone recovers from a leaked key, so they are
+ * the one thing a leaked key must not be able to do. PocketBase refuses to
+ * issue one to a key as well — this is the near half of the same rule, so the
+ * message is a sentence rather than a 403 from two layers down.
+ */
+export function requireSessionToken(req: Request): string {
+  const credential = requireToken(req);
+  if (isApiKey(credential)) {
+    throw new ApiError("An API key cannot manage API keys — sign in to issue or revoke one.", 403);
+  }
+  return credential;
 }

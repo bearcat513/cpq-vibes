@@ -9,6 +9,7 @@ import { ApiError, asRecord, fail, handler, readJson } from "./http";
 import { clientFor, toApiError } from "./pocketbase";
 import {
   clearedSessionCookie,
+  isApiKey,
   readToken,
   requireToken,
   sessionCookie,
@@ -48,12 +49,22 @@ async function authenticate(req: Request, email: string, password: string): Prom
 
 /** The signed-in user, or null — asks PocketBase, which is what proves it. */
 export async function sessionUser(req: Request): Promise<SessionUser | null> {
-  const token = readToken(req);
-  if (!token) return null;
+  const credential = readToken(req);
+  if (!credential) return null;
 
   try {
+    if (isApiKey(credential)) {
+      // A key has no token to refresh. The `users` list rule is
+      // `id = @request.auth.id`, so a listing of that collection holds exactly
+      // one record — the account the key belongs to — which is both the answer
+      // and the proof that the key is still good.
+      const list = await clientFor(credential).collection("users").getList(1, 1);
+      const record = list.items[0] as unknown as Record<string, unknown> | undefined;
+      return record ? toSessionUser(record) : null;
+    }
+
     // A refresh is the only way to know the token has not been revoked.
-    const auth = await clientFor(token).collection("users").authRefresh();
+    const auth = await clientFor(credential).collection("users").authRefresh();
     return toSessionUser(auth.record as unknown as Record<string, unknown>);
   } catch {
     return null;

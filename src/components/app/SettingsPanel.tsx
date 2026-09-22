@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from "react";
-import { Check, Copy, Download, Loader2, Sparkles } from "lucide-react";
+import { BookOpen, Check, Copy, Download, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ApiKeys } from "./ApiKeys";
 import { Field, Notice, Section } from "./common";
 import { api, type Meta, type SessionUser } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
@@ -286,6 +287,22 @@ export function SettingsPanel(props: Props) {
       </Section>
 
       <PasswordSection email={me.email} onError={props.onError} onNotice={props.onNotice} />
+
+      {/* A key is a second way to prove the same thing the password does, so
+          it belongs beside the first rather than in a screen of its own. */}
+      <Section
+        title="API keys"
+        description="A long-lived credential for a script, in place of a session that expires in a week."
+        actions={
+          <Button variant="outline" size="sm" asChild>
+            <a href="/docs" target="_blank" rel="noreferrer">
+              <BookOpen /> API reference
+            </a>
+          </Button>
+        }
+      >
+        <ApiKeys confirmDestructive={preferences.confirmDestructive} />
+      </Section>
     </div>
   );
 }

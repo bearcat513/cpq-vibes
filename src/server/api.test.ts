@@ -1131,6 +1131,121 @@ async function bobToken(): Promise<string> {
 
 /* --------------------------------- sharing ------------------------------- */
 
+/* -------------------------------- api keys ------------------------------- */
+
+describe("an API key", () => {
+  /** Sent the way a script would: a header, and no cookie at all. */
+  const withKey = (path: string, key: string, init?: RequestInit) =>
+    fetch(`${BASE}${path}`, {
+      ...init,
+      headers: { ...(init?.body ? { "Content-Type": "application/json" } : {}), "X-API-Key": key },
+    });
+
+  signedIn("is returned once, and reaches exactly what its owner reaches", async () => {
+    const issued = await post("/api/keys", { name: "Nightly invoice run" });
+    expect(issued.key).toStartWith("cpq_");
+    expect(issued.id).toBeString();
+
+    // The listing describes it and never carries it again.
+    const listed = await json("/api/keys");
+    const row = listed.find((entry: any) => entry.id === issued.id);
+    expect(row.name).toBe("Nightly invoice run");
+    expect(row.key).toBeUndefined();
+    // Never expires, so the field is empty rather than a date in 1970.
+    expect(row.expiresAt).toBe("");
+
+    // It sees Alice's catalogue, because PocketBase resolves it to Alice.
+    const catalogue = await (await withKey("/api/products", issued.key)).json();
+    expect(catalogue.map((product: any) => product.sku)).toContain("PLAT");
+
+    // And it is Alice to /api/auth/me as well, which is what the docs page reads.
+    const me = await (await withKey("/api/auth/me", issued.key)).json();
+    expect(me.user.email).toBe(ALICE);
+
+    // It does not see Bob's.
+    const bobsKey = (await post("/api/keys", { name: "Bob's" }, { cookie: bobCookie })).key;
+    const bobsCatalogue = await (await withKey("/api/products", bobsKey)).json();
+    expect(bobsCatalogue.map((product: any) => product.sku)).not.toContain("PLAT");
+  });
+
+  signedIn("cannot manage keys, because revoking is how you recover from a leak", async () => {
+    const issued = await post("/api/keys", { name: "Leaked" });
+
+    for (const [path, method] of [
+      ["/api/keys", "GET"],
+      ["/api/keys", "POST"],
+      [`/api/keys/${issued.id}`, "DELETE"],
+    ] as const) {
+      const response = await withKey(path, issued.key, {
+        method,
+        ...(method === "POST" ? { body: JSON.stringify({ name: "another" }) } : {}),
+      });
+      expect(response.status, `${method} ${path}`).toBe(403);
+    }
+
+    // The sentence is the app's, not a 403 from two layers down.
+    const refused = await (await withKey("/api/keys", issued.key)).json();
+    expect(refused.error).toContain("cannot manage API keys");
+  });
+
+  signedIn("stops working the moment it is revoked", async () => {
+    const issued = await post("/api/keys", { name: "Short-lived" });
+    expect((await withKey("/api/products", issued.key)).status).toBe(200);
+
+    expect((await api(`/api/keys/${issued.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await withKey("/api/products", issued.key)).status).toBe(401);
+
+    // Revoking it twice is a 404, not a second success.
+    expect((await api(`/api/keys/${issued.id}`, { method: "DELETE" })).status).toBe(404);
+  });
+
+  signedIn("a key that was never issued is refused, whatever it looks like", async () => {
+    expect((await withKey("/api/products", "cpq_not_a_real_key_at_all")).status).toBe(401);
+  });
+
+  signedIn("carries an expiry when one is asked for", async () => {
+    const issued = await post("/api/keys", { name: "Ninety days", expiresInDays: 90 });
+    const days = Math.round((new Date(issued.expiresAt).getTime() - Date.now()) / 86_400_000);
+    expect(days).toBe(90);
+  });
+});
+
+/* -------------------------------- the docs ------------------------------- */
+
+describe("the API document", () => {
+  test("is served without a credential, because /docs is read before signing in", async () => {
+    const response = await api("/api/openapi.json", { cookie: " " });
+    expect(response.status).toBe(200);
+
+    const document = await response.json();
+    expect(document.openapi).toBe("3.0.3");
+    // It names the host it was fetched from, so an imported collection points
+    // back at this server rather than at whatever the file happened to say.
+    expect(document.servers[0].url).toBe(BASE);
+    expect(document.paths["/api/quotes"].get.operationId).toBe("listQuotes");
+  });
+
+  test("and /api prints the same list of endpoints", async () => {
+    const [index, document] = await Promise.all([
+      json("/api", { cookie: " " }),
+      json("/api/openapi.json", { cookie: " " }),
+    ]);
+
+    const documented = Object.values(document.paths as Record<string, Record<string, unknown>>).reduce(
+      (count, methods) => count + Object.keys(methods).length,
+      0,
+    );
+    expect(Object.keys(index.endpoints)).toHaveLength(documented);
+  });
+
+  test("/docs is a page, not the SPA's shell by accident", async () => {
+    const response = await api("/docs", { cookie: " " });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(await response.text()).toContain("API reference");
+  });
+});
+
 describe("sharing", () => {
   signedIn("a shared product is readable, not writable, and quotable", async () => {
     await post(`/api/products/${platformId}/shares`, { email: BOB });

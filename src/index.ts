@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import index from "./index.html";
+import docs from "./docs.html";
 import { authRoutes, sessionUser } from "./server/auth";
 import {
   createAccount,
@@ -56,7 +57,9 @@ import {
   productRows,
   quoteRows,
 } from "./server/export";
+import { createApiKey, deleteApiKey, listApiKeys, readKeyInput } from "./server/apiKeys";
 import { ApiError, asRecord, fail, formatParam, handler, intParam, query, readJson } from "./server/http";
+import { buildOpenApiDocument, endpointIndex, OPENAPI_PATH } from "./server/openapi";
 import { readPreferences, writePreferences } from "./server/preferences";
 import {
   createPricedQuote,
@@ -84,7 +87,7 @@ import {
   voidInvoice,
 } from "./server/invoices";
 import { installSample } from "./server/seed";
-import { requireToken } from "./server/session";
+import { API_KEY_HEADER, API_KEY_PREFIX, requireSessionToken, requireToken } from "./server/session";
 import {
   addShare,
   listDirectory,
@@ -355,110 +358,26 @@ const server = serve({
         Response.json({
           name: "cpq",
           what: "Configure, price and quote. Every UI action is available here. Errors are { error: string }.",
-          auth:
-            "Every endpoint below needs an account, except /api, /api/health and /api/auth/*. " +
-            "Sign in with POST /api/auth/login and keep the session cookie (curl: -c jar -b jar), " +
-            "or send a PocketBase user token as `Authorization: <token>`.",
-          endpoints: {
-            "POST   /api/auth/register": "{ email, password, name? } → create an account and sign in",
-            "POST   /api/auth/login": "{ email, password } → start a session",
-            "POST   /api/auth/logout": "End the session",
-            "GET    /api/auth/me": "The signed-in account, with its preferences",
-            "POST   /api/auth/password": "{ currentPassword, newPassword } → change the password",
-            "GET    /api/health": "Liveness check for this server",
-            "GET    /api/meta": "PocketBase URL, reachability and this account's record counts",
-            "GET    /api/directory": "The accounts on this instance (?search=) — id, email and name only",
-            "GET    /api/preferences": "This account's preferences",
-            "PUT    /api/preferences": "Replace this account's preferences",
-            "GET    /api/export": "Download the whole workspace — catalogue, customers, quotes, templates",
-            "POST   /api/sample": "Install the worked example: catalogue, policy, customers, a quote",
-            "GET    /api/reference": "Every enum, pricing variable and proposal token this app knows",
-            "POST   /api/formula/validate": "{ expression, scope } → check a pricing or approval formula",
-            "GET    /api/accounts": "List customers",
-            "POST   /api/accounts": "Create a customer",
-            "GET    /api/accounts/:id": "Read one customer",
-            "GET    /api/accounts/:id/quotes": "Every quote written for one customer, newest first",
-            "PUT    /api/accounts/:id": "Replace one customer",
-            "DELETE /api/accounts/:id": "Delete one customer",
-            "GET    /api/products": "List products you own or that are shared with you",
-            "POST   /api/products": "Create a product",
-            "GET    /api/products/:id": "Read one product",
-            "PUT    /api/products/:id": "Replace one product (owner only)",
-            "DELETE /api/products/:id": "Delete one product (owner only)",
-            "POST   /api/products/:id/configure": "{ selectedOptions, quantity, termMonths } → validate a configuration",
-            "GET    /api/products/:id/shares": "Who a product is shared with",
-            "POST   /api/products/:id/shares": "{ email } → share it with an account (owner only)",
-            "DELETE /api/products/:id/shares": "?email= → stop sharing it (owner, or yourself)",
-            "GET    /api/products/export": "Download the catalogue as CSV (?format=csv) or *.cpq.json",
-            "GET    /api/price-books": "List price books",
-            "POST   /api/price-books": "Create a price book",
-            "GET    /api/price-books/:id": "Read one price book",
-            "PUT    /api/price-books/:id": "Replace one price book (owner only)",
-            "DELETE /api/price-books/:id": "Delete one price book (owner only)",
-            "GET    /api/price-books/:id/shares": "Who a price book is shared with",
-            "POST   /api/price-books/:id/shares": "{ email } → share it (owner only)",
-            "DELETE /api/price-books/:id/shares": "?email= → stop sharing it",
-            "GET    /api/pricing-rules": "List pricing rules",
-            "POST   /api/pricing-rules": "Create a pricing rule",
-            "GET    /api/pricing-rules/:id": "Read one pricing rule",
-            "PUT    /api/pricing-rules/:id": "Replace one pricing rule",
-            "DELETE /api/pricing-rules/:id": "Delete one pricing rule",
-            "GET    /api/approval-rules": "List approval rules",
-            "POST   /api/approval-rules": "Create an approval rule",
-            "GET    /api/approval-rules/:id": "Read one approval rule",
-            "PUT    /api/approval-rules/:id": "Replace one approval rule",
-            "DELETE /api/approval-rules/:id": "Delete one approval rule",
-            "GET    /api/catalog/export": "Download products, price books and rules as *.cpq.json",
-            "POST   /api/catalog/import": "Create everything in a *.cpq.json body",
-            "GET    /api/quotes": "List quotes (?limit=)",
-            "POST   /api/quotes": "Create a quote — the server prices it",
-            "GET    /api/quotes/awaiting": "Quotes waiting on your approval",
-            "POST   /api/quotes/preview": "Price a quote without storing it",
-            "GET    /api/quotes/:id": "Read one quote, with its lines and totals",
-            "PUT    /api/quotes/:id": "Replace a draft quote — the server reprices it",
-            "DELETE /api/quotes/:id": "Delete one quote",
-            "POST   /api/quotes/:id/submit": "Reprice, run the approval rules, and submit",
-            "POST   /api/quotes/:id/decision": "{ decision: approved|rejected, comment? } → answer as an approver",
-            "POST   /api/quotes/:id/status": "{ status } → sent, accepted, declined, or back to draft",
-            "POST   /api/quotes/:id/revise": "Create the next revision, leaving this one as it was",
-            "GET    /api/quotes/:id/export": "Download a quote (?format=csv|json)",
-            "GET    /api/quotes/:id/document": "Render a quote through a template (?templateId=, &inline). A PDF template answers with the PDF",
-            "GET    /api/quotes/:id/shares": "Who a quote is shared with",
-            "POST   /api/quotes/:id/shares": "{ email } → share it read-only (owner only)",
-            "DELETE /api/quotes/:id/shares": "?email= → stop sharing it",
-            "GET    /api/receivables/aging": "The aging report (?currency=, ?asOf=, ?format=csv)",
-            "GET    /api/payments": "Every payment received (?invoiceId=, ?format=csv) — the cash receipts list",
-            "GET    /api/credits": "Every credit and write-off (?invoiceId=, ?format=csv)",
-            "GET    /api/invoices": "List invoices",
-            "POST   /api/invoices": "Create a draft invoice for a customer",
-            "GET    /api/invoices/export": "Download every invoice with its aging (?format=csv|json)",
-            "GET    /api/invoices/:id": "Read one invoice, with its lines and ledger",
-            "PUT    /api/invoices/:id": "Replace a draft invoice — the server re-totals it",
-            "DELETE /api/invoices/:id": "Discard a draft. An issued invoice is voided, never deleted",
-            "POST   /api/invoices/:id/issue": "{ issueDate? } → date it, set its due date, make it a receivable",
-            "POST   /api/invoices/:id/void": "Cancel one. Refused once a payment is recorded",
-            "GET    /api/invoices/:id/payments": "One invoice's payments",
-            "POST   /api/invoices/:id/payments": "{ amount, receivedOn?, method?, reference? } → record cash received",
-            "DELETE /api/invoices/:id/payments/:paymentId": "Remove a payment entered in error",
-            "GET    /api/invoices/:id/credits": "One invoice's credits",
-            "POST   /api/invoices/:id/credits": "{ amount, reason?, issuedOn? } → credit or write off",
-            "DELETE /api/invoices/:id/credits/:creditId": "Remove a credit entered in error",
-            "GET    /api/invoices/:id/export": "Download one invoice (?format=csv|json)",
-            "GET    /api/invoices/:id/document": "Render an invoice through an invoice template (?templateId=, &inline)",
-            "GET    /api/invoices/:id/shares": "Who an invoice is shared with",
-            "POST   /api/invoices/:id/shares": "{ email } → share it read-only (owner only)",
-            "DELETE /api/invoices/:id/shares": "?email= → stop sharing it",
-            "POST   /api/quotes/:id/invoice": "Raise an invoice for a sent or accepted quote",
-            "GET    /api/accounts/:id/invoices": "One customer's invoices",
-            "GET    /api/proposal-templates": "List templates you own or that are shared with you — quote and invoice alike",
-            "POST   /api/proposal-templates": "Create a template ({ kind: quote | invoice })",
-            "GET    /api/proposal-templates/:id": "Read one template",
-            "PUT    /api/proposal-templates/:id": "Replace one template (owner only)",
-            "DELETE /api/proposal-templates/:id": "Delete one template (owner only)",
-            "GET    /api/proposal-templates/:id/shares": "Who a template is shared with",
-            "POST   /api/proposal-templates/:id/shares": "{ email } → share it (owner only)",
-            "DELETE /api/proposal-templates/:id/shares": "?email= → stop sharing it",
+          docs: "A rendered, callable reference lives at /docs. The document behind it is GET " + OPENAPI_PATH,
+          openapi:
+            `GET ${OPENAPI_PATH} is this same list as an OpenAPI 3.0 document — import it into ` +
+            "Postman, Bruno or Insomnia, or generate a client from it.",
+          auth: {
+            what:
+              "Every endpoint below needs an account, except /api, /api/health, " +
+              `${OPENAPI_PATH} and /api/auth/register|login|logout.`,
+            apiKey: `${API_KEY_HEADER}: ${API_KEY_PREFIX}… — issue one with POST /api/keys. What a script should use.`,
+            token: "Authorization: <token> — a PocketBase user token, sent raw, with no Bearer prefix.",
+            cookie: "POST /api/auth/login sets the session cookie (curl: -c jar -b jar).",
+            keys:
+              "A key reaches exactly what its owner reaches — except that it cannot manage keys, " +
+              "since revoking is how you recover from a leaked one.",
           },
+          errors:
+            "{ error: string }, with an honest status: 400 for a bad request, 401 for a missing or " +
+            "spent credential, 403 where a key reaches for something only a session may do, 404 for " +
+            "a record that does not exist or is not yours, 422 where the record's own state refuses it.",
+          endpoints: endpointIndex(),
           pricing: {
             what: "The server prices every quote it stores. Totals in a request body are ignored.",
             pipeline: [
@@ -575,6 +494,18 @@ const server = serve({
       ),
     },
 
+    /**
+     * The same API, in the shape Postman, Bruno and the code generators read.
+     *
+     * The document names the origin it was fetched from, so a collection
+     * imported from a running server points back at that server — and the
+     * endpoint list above is built from the same operations, so the two
+     * descriptions of this API cannot drift apart.
+     */
+    [OPENAPI_PATH]: {
+      GET: handler(req => Response.json(buildOpenApiDocument({ serverUrl: new URL(req.url).origin }))),
+    },
+
     "/api/meta": {
       GET: guarded(async token => Response.json(await databaseMeta(token))),
     },
@@ -640,6 +571,26 @@ const server = serve({
      * Checks an expression against the variables its scope actually offers,
      * which is what the rule editors call on every keystroke.
      */
+    /* ------------------------------ api keys ----------------------------- */
+
+    "/api/keys": {
+      // Managing keys needs a real session: a leaked key must not be able to
+      // mint a replacement, or revoke the ones you would use to stop it.
+      GET: guarded(async (_token, req) => Response.json(await listApiKeys(requireSessionToken(req)))),
+      POST: guarded(async (_token, req) => {
+        const raw = asRecord(await readJson(req).catch(() => ({})));
+        return Response.json(await createApiKey(requireSessionToken(req), readKeyInput(raw)), { status: 201 });
+      }),
+    },
+
+    "/api/keys/:id": {
+      DELETE: guarded<{ params: { id: string } }>(async (_token, req) =>
+        (await deleteApiKey(requireSessionToken(req), req.params.id))
+          ? Response.json({ ok: true })
+          : fail("API key not found.", 404),
+      ),
+    },
+
     "/api/formula/validate": {
       POST: guarded(async (_token, req) => {
         const raw = await body(req);
@@ -1360,6 +1311,13 @@ const server = serve({
     // Unknown API paths must not fall through to the SPA's HTML.
     "/api/*": handler(req => fail(`No such endpoint: ${req.method} ${new URL(req.url).pathname}. See GET /api.`, 404)),
 
+    /**
+     * The API reference: its own HTML entry point rather than a view inside
+     * the app, because it is read by people who have not signed in and the
+     * document it renders needs no credential.
+     */
+    "/docs": docs,
+
     // Serve the SPA for everything else.
     "/*": index,
   },
@@ -1373,3 +1331,4 @@ const server = serve({
 console.log(`📄 CPQ running at ${server.url}`);
 console.log(`   data: ${databaseUrl()} (PocketBase)`);
 console.log(`   API:  ${new URL("/api", server.url).href}`);
+console.log(`   docs: ${new URL("/docs", server.url).href}`);

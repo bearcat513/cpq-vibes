@@ -474,7 +474,7 @@ them.
 
 ## Storage
 
-Everything lives in PocketBase, in seven collections created by `docker/pb_migrations/`:
+Everything lives in PocketBase, in eleven collections created by `docker/pb_migrations/`:
 
 | Collection | Holds |
 | --- | --- |
@@ -485,6 +485,10 @@ Everything lives in PocketBase, in seven collections created by `docker/pb_migra
 | `accounts` | Customers, with their currency, terms and tax position |
 | `quotes` | Lines, totals and approvals, stored as priced |
 | `proposal_templates` | Document bodies — text with `{{token}}` placeholders, or a PDF document description with its branding inside it |
+| `invoices` | What a customer owes: lines and line totals, `state`, `dueDate`. No `status` and no `balance` — both are derived on every read |
+| `payments` | Cash received. One row per payment, belonging to one invoice, so banking two at once cannot lose either |
+| `credits` | Amounts credited or written off, the same way |
+| `api_keys` | A SHA-256 per key, hidden, with its name, expiry and last use. Never the key |
 
 Each collection has real columns for what the *database* has to do something with — find by SKU,
 sort by name, filter by status, match an approver — and one JSON field for the nested domain object
@@ -504,11 +508,13 @@ it passes your token through and PocketBase evaluates those rules against *you*.
 route here cannot hand one account another's records, because the route has no authority to hand
 them over with. The browser never holds a PocketBase token either; it lives in an httpOnly cookie.
 
-Three hooks back that up (`docker/pb_hooks/`): `owner` is stamped from the authenticated account on
+Four hooks back that up (`docker/pb_hooks/`): `owner` is stamped from the authenticated account on
 create and restored on update, so it cannot be set from a request body; the sharing endpoints run
 inside PocketBase, where resolving an address does not require the ability to read the user list;
-and `rules/approvals.js` rebuilds a quote from what is *stored* when an approver writes it, putting
-back only the decision, the status and the timestamp.
+`rules/approvals.js` rebuilds a quote from what is *stored* when an approver writes it, putting back
+only the decision, the status and the timestamp; and `keys/routes.js` issues an API key — hashing it
+and handing the raw value back once — and resolves an incoming one to its owner, which is what lets
+every rule above apply to a key unchanged.
 
 The data is in the `pb_data` Docker volume. `docker compose down` keeps it; `docker compose down -v`
 deletes it. A stored quote is capped at 4 MB of line items.
@@ -516,14 +522,42 @@ deletes it. A stored quote is capped at 4 MB of line items.
 ## API
 
 Everything the UI can do is a REST call on the same `Bun.serve` router — no separate API server, no
-extra process. `GET /api` returns the endpoint index, so the app documents itself:
+extra process.
+
+### Three places the API describes itself
+
+| Where | What it is |
+| --- | --- |
+| `GET /api` | The endpoint index, plus the pricing pipeline, the approval ladder, the receivables conventions and the document vocabularies |
+| `GET /api/openapi.json` | The same API as an OpenAPI 3.0 document — import the URL into Postman, Bruno or Insomnia, or generate a client from it |
+| [`/docs`](http://localhost:3000/docs) | That document rendered, and **callable**: pick a credential, fill the parameters, press Execute, read the response |
+
+There is one list of endpoints, in `src/server/openapi.ts`, and all three of those print it. A route
+renamed there cannot go on being advertised under its old name anywhere else — which is why this
+README no longer keeps a table of its own. `src/server/openapi.test.ts` asserts the other half: that
+every path the document names is one the route table actually answers on.
 
 ```bash
-curl -s localhost:3000/api | jq
+curl -s localhost:3000/api | jq '.endpoints'
+curl -s localhost:3000/api/openapi.json -o cpq.openapi.json
+open http://localhost:3000/docs
 ```
 
-Everything except `/api`, `/api/health` and `/api/auth/*` needs a session. Sign in once with a
-cookie jar and every later call is authenticated:
+`/docs` is its own page rather than a screen inside the app: it is read by people who have not
+signed in, the document it renders needs no credential, and none of the quote editor has to load to
+show it. It wears your account's theme, accent and reading face if you are signed in.
+
+### Three ways in
+
+| Credential | Header | For |
+| --- | --- | --- |
+| API key | `X-API-Key: cpq_…` | A script, a cron job, a CI step |
+| User token | `Authorization: <token>` | Something already holding a PocketBase token — sent raw, no `Bearer` |
+| Session cookie | set by `POST /api/auth/login` | The app, and `curl -c jar -b jar` |
+
+All three reach the same account, and every endpoint takes any of them. `GET /api`, `GET
+/api/health`, `GET /api/openapi.json` and the three sign-in routes need no credential; everything
+else does.
 
 ```bash
 curl -sc jar -X POST localhost:3000/api/auth/login -H 'content-type: application/json' \
@@ -531,51 +565,44 @@ curl -sc jar -X POST localhost:3000/api/auth/login -H 'content-type: application
 curl -sb jar localhost:3000/api/quotes | jq
 ```
 
-An `Authorization: <token>` header works too, for a script holding a PocketBase user token.
+Every failure answers `{ "error": string }` with a sentence in it, and an honest status: 400 for a
+bad request, 401 for a missing or spent credential, 403 where a key reaches for something only a
+session may do, 404 for a record that does not exist — or that exists and is not yours, which this
+API declines to tell apart — and 422 where the request was understood and the record's own state
+refuses it (editing an issued invoice, voiding one that has been paid).
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `GET` | `/api` | Endpoint index |
-| `GET` | `/api/health` | Liveness check — what the container healthcheck polls |
-| `GET` | `/api/meta` | PocketBase URL, reachability and your record counts |
-| `GET` | `/api/reference` | Every enum, pricing variable and proposal token this app knows |
-| `POST` | `/api/auth/register` `login` `logout` | `{ email, password }` → a session |
-| `GET` | `/api/auth/me` | The signed-in account, with its preferences |
-| `POST` | `/api/auth/password` | `{ currentPassword, newPassword }` |
-| `GET` `PUT` | `/api/preferences` | Read / replace this account's preferences |
-| `POST` | `/api/formula/validate` | `{ expression, scope }` → check a rule before saving it |
-| `GET` `POST` | `/api/accounts` | List / create customers |
-| `GET` `PUT` `DELETE` | `/api/accounts/:id` | One customer |
-| `GET` `POST` | `/api/products` | List / create products |
-| `GET` `PUT` `DELETE` | `/api/products/:id` | One product |
-| `POST` | `/api/products/:id/configure` | `{ selectedOptions, quantity }` → validate a configuration |
-| `GET` | `/api/products/export` | The catalogue as `*.cpq.json`, or `?format=csv` |
-| `GET` `POST` | `/api/price-books` | List / create price books |
-| `GET` `PUT` `DELETE` | `/api/price-books/:id` | One price book |
-| `GET` `POST` | `/api/pricing-rules` | List / create pricing rules |
-| `GET` `PUT` `DELETE` | `/api/pricing-rules/:id` | One pricing rule |
-| `GET` `POST` | `/api/approval-rules` | List / create approval rules |
-| `GET` `PUT` `DELETE` | `/api/approval-rules/:id` | One approval rule |
-| `GET` | `/api/catalog/export` | Products, price books and rules as one `*.cpq.json` |
-| `POST` | `/api/catalog/import` | Create everything in a `*.cpq.json` body |
-| `GET` `POST` | `/api/quotes` | List (`?limit=`) / create — the server prices it |
-| `GET` | `/api/quotes/awaiting` | Quotes waiting on your approval |
-| `POST` | `/api/quotes/preview` | Price a quote without storing it |
-| `GET` `PUT` `DELETE` | `/api/quotes/:id` | Read / replace a draft / delete |
-| `POST` | `/api/quotes/:id/submit` | Reprice, run the approval rules, and submit |
-| `POST` | `/api/quotes/:id/decision` | `{ decision, comment? }` → answer as an approver |
-| `POST` | `/api/quotes/:id/status` | `{ status }` → sent, accepted, declined, back to draft |
-| `POST` | `/api/quotes/:id/revise` | The next revision, leaving this one as it was |
-| `GET` | `/api/quotes/:id/export` | Download a quote (`?format=csv\|json`) |
-| `GET` | `/api/quotes/:id/document` | Render through a template (`?templateId=`). A PDF template answers with the PDF; `&inline` dispositions it for an iframe |
-| `GET` `POST` | `/api/proposal-templates` | List / create templates |
-| `GET` `PUT` `DELETE` | `/api/proposal-templates/:id` | One template |
-| `GET` `POST` `DELETE` | `/api/{products\|price-books\|quotes\|proposal-templates}/:id/shares` | List / add (`{ email }`) / remove (`?email=`) a recipient |
-| `GET` | `/api/export` | The whole workspace as one JSON file |
-| `POST` | `/api/sample` | Install the worked example |
+### API keys
+
+A session expires in a week and lives in a cookie, which is right for a browser and useless for the
+nightly job that raises invoices. Issue a key under **Settings → API keys**, or:
+
+```bash
+curl -sb jar -X POST localhost:3000/api/keys -H 'content-type: application/json' \
+  -d '{"name":"Nightly invoice run","expiresInDays":365}' | jq -r .key
+```
+
+```bash
+export CPQ_API_KEY=cpq_…
+curl -s localhost:3000/api/receivables/aging -H "X-API-Key: $CPQ_API_KEY" | jq
+```
+
+| Decision | The rule |
+| --- | --- |
+| Format | `cpq_` plus 40 random characters. The prefix is the whole test for "is this a key", and it is unambiguous: a session token is a JWT, which always begins `eyJ` |
+| Storage | **Only a SHA-256 is stored**, in a hidden field. The raw value is in the issuing response and nowhere else, ever — lose it and the remedy is to revoke it and issue another |
+| Reach | Exactly what its owner reaches. A hook resolves a key to the same `@request.auth` a token produces, so the collection rules are the only access model whichever credential arrived |
+| **A key cannot manage keys** | Issuing and revoking need a real session. Revocation is how you recover from a leak, so it is the one thing a leaked key must not be able to do — refused by the app with a sentence, and by PocketBase on its own |
+| Expiry | Optional, capped at ten years. Revoking takes effect on the key's next request |
+| Last used | Written at most every few minutes, so a busy key does not cause a write per request |
+
+At most 25 keys per account. `GET /api/keys` lists them — with `name`, `createdAt`, `expiresAt` and
+`lastUsedAt`, and never the key — and `DELETE /api/keys/:id` revokes one.
+
+### Writing a quote
 
 Posting a quote sends the header plus `lines`, and gets back the priced quote with every
-intermediate number on each line:
+intermediate number on each line. **The server prices it**: totals in the request body are ignored
+and overwritten, and the same is true of an invoice's totals and balance.
 
 ```bash
 curl -sb jar -X POST localhost:3000/api/quotes -H 'content-type: application/json' -d '{

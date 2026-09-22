@@ -101,7 +101,26 @@ export type Shares = {
   canShare: boolean;
 };
 
-export type Shareable = "products" | "price-books" | "quotes" | "proposal-templates";
+export type Shareable = "products" | "price-books" | "quotes" | "invoices" | "proposal-templates";
+
+/**
+ * An API key, as the server will describe one after it exists.
+ *
+ * The secret is not here, and cannot be: only its SHA-256 is stored, so
+ * `IssuedApiKey` — the response that created it — is the one shape that ever
+ * carries the key itself.
+ */
+export type ApiKey = {
+  id: string;
+  name: string;
+  createdAt: string;
+  /** Empty when the key never expires. */
+  expiresAt: string;
+  /** Empty until it is first used. Written at most every few minutes. */
+  lastUsedAt: string;
+};
+
+export type IssuedApiKey = ApiKey & { key: string };
 
 export type QuoteBody = {
   name: string;
@@ -216,6 +235,8 @@ const invoiceDocumentUrl = (invoiceId: string, templateId: string) =>
 const invoiceDocumentInlineUrl = (invoiceId: string, templateId: string) =>
   `${invoiceDocumentUrl(invoiceId, templateId)}&inline`;
 
+const OPENAPI_URL = "/api/openapi.json";
+
 const WORKSPACE_EXPORT_URL = "/api/export";
 const CATALOG_EXPORT_URL = "/api/catalog/export";
 
@@ -236,6 +257,21 @@ export const api = {
   /* --------------------------------- meta -------------------------------- */
 
   meta: () => request<Meta>("/api/meta"),
+
+  /* ------------------------------- api keys ------------------------------ */
+
+  listApiKeys: () => request<ApiKey[]>("/api/keys"),
+  /** The one response that carries the key — there is no second chance to read it. */
+  createApiKey: (payload: { name: string; expiresInDays?: number }) =>
+    send<IssuedApiKey>("/api/keys", "POST", payload),
+  deleteApiKey: (id: string) => send<{ ok: true }>(`/api/keys/${encodeURIComponent(id)}`, "DELETE"),
+
+  /* --------------------------------- docs -------------------------------- */
+
+  /** What `/docs` renders, and what Postman and friends import. */
+  openApiUrl: OPENAPI_URL,
+  openApiFileName: "cpq.openapi.json",
+  openApiText: () => fetchText(OPENAPI_URL, "The OpenAPI document"),
 
   /** Everyone with an account here — what the approver and share pickers offer. */
   directory: () => request<{ users: DirectoryUser[]; truncated: boolean }>("/api/directory"),

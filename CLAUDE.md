@@ -115,10 +115,30 @@ Storage is **PocketBase**, not `bun:sqlite`. The app and the database run togeth
 Compose (`bun run docker:up`).
 
 **Access control lives in PocketBase, not in the Bun server.** Every request carries the caller's
-own token (httpOnly cookie, or an `Authorization` header) and the collection rules decide what they
-may see — the server holds no credentials and can grant nothing on its own. Never reintroduce a
-superuser client for ordinary reads and writes; if something needs privilege, it belongs in
-`docker/pb_hooks/` as a route, the way sharing and approver stamping do.
+own credential — an httpOnly cookie, an `Authorization` header, or an `X-API-Key` — and the
+collection rules decide what they may see. The server holds no credentials and can grant nothing on
+its own. Never reintroduce a superuser client for ordinary reads and writes; if something needs
+privilege, it belongs in `docker/pb_hooks/` as a route, the way sharing, approver stamping and key
+issuing do.
+
+**An API key is a credential, not a second access model.** `cpq_` plus 40 random characters; only
+its SHA-256 is stored, hidden, so the raw value exists in the issuing response and nowhere else. A
+middleware in `docker/pb_hooks/lib/apiKeys.js` resolves one to its owner's `@request.auth`, which is
+the whole point: every rule already written applies to a key unchanged. `clientFor` in
+`src/server/pocketbase.ts` picks the header by the prefix and everything downstream passes one
+string through without caring which it holds. **A key may not manage keys** — issuing and revoking
+take `requireSessionToken`, and PocketBase refuses a key of its own accord, because revocation is
+how you recover from a leak. `api_keys` is the one collection deliberately *not* in `OWNED`: it
+keys off `user`, set by the hook that creates the record.
+
+**The API documents itself from one list.** `src/server/openapi.ts` holds every endpoint, and all
+three surfaces print it: `GET /api/openapi.json` (the document), `GET /api` (its index, via
+`endpointIndex()`), and `/docs` (a React page that fetches and renders it, and can call it). Adding
+a route means adding an operation there — never a second list somewhere else, and never a bound
+retyped rather than imported from `lib/`. `src/lib/openapiDoc.ts` reads a document back and knows
+nothing about this API, so a new endpoint appears on `/docs` with nothing else to change.
+`src/server/openapi.test.ts` asserts that every documented path is one the route table answers on.
+OpenAPI 3.0.3, not 3.1 — every tool reads 3.0 today.
 
 **The server prices every quote and totals every invoice it stores.** Totals in a request body are
 ignored and overwritten. The engine is pure and lives in `src/lib/`, so the browser runs it for live
@@ -184,6 +204,13 @@ stakes are sharper: a client that could set its own balance could mark its own d
 - `src/server/share.ts` — proxies to PocketBase's `/api/cpq/...` hook routes: sharing, approver
   stamping, and the account directory (`GET /api/directory`, id/email/name only). All three need to
   read `users`, which no user token may do, so they live in `docker/pb_hooks/`
+- `src/server/apiKeys.ts` — listing and revoking are ordinary record calls the collection's own
+  rules allow; only issuing proxies to a hook, because only issuing has to hash a secret and hand
+  the raw value back once
+- `src/server/openapi.ts` — the document, and the only list of endpoints. See above
+- `src/lib/openapiDoc.ts` / `markdown.ts` / `highlight.ts` / `curl.ts` — what `/docs` is built from,
+  all pure: reading a document, the little Markdown a description carries, colouring JSON, and
+  writing a request out as cURL with the credential as a shell variable rather than as itself
 - `docker/pb_migrations/` — collections, ownership fields, API rules. A schema change is a new
   migration file here, not a dashboard edit, or a fresh volume comes up without it. **A JSON field
   reaches the JSVM as a byte array (`types.JSONRaw`)**, so reading one, mutating it and saving runs
@@ -225,6 +252,12 @@ and puts a faint checkerboard across the page.
 `animate-rise` rather than an inline keyframe. Entrance animations fill `both` and therefore start
 at `opacity: 0` — which is why a screenshot tool that does not run animations photographs an empty
 page. `prefers-reduced-motion` is honoured globally at the bottom of the stylesheet.
+
+**`/docs` is its own HTML entry point, not a screen in the app** (`src/docs.html` → `src/docs.tsx`
+→ `src/components/docs/`). It is read by people who have not signed in, the document it renders
+needs no credential, and none of the quote editor has to load for it. It applies the account's
+theme, accent and face the same way `App.tsx` does, so it does not flash a different look. Every
+`src/**/*.html` is a build entry point, so adding a page is adding a file.
 
 **Forms are panels, previews are modals.** Every editor opens in `components/ui/sheet.tsx` — a
 right-hand, full-height panel. Only things meant to be read (a rendered proposal, a PDF) use

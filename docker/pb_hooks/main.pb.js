@@ -13,6 +13,7 @@ const MODULES = [
   "rules/ownership.js",
   "rules/approvals.js",
   "share/routes.js",
+  "keys/routes.js",
 ];
 
 MODULES.forEach(path => {

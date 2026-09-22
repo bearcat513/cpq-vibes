@@ -8,6 +8,7 @@
  */
 import PocketBase, { ClientResponseError } from "pocketbase";
 import { ApiError } from "./http";
+import { API_KEY_HEADER, isApiKey } from "./session";
 
 /**
  * Inside Compose this is `http://pocketbase:8080` (the service name on the
@@ -22,19 +23,35 @@ export const POCKETBASE_URL = (
 ).replace(/\/+$/, "");
 
 /**
- * A client speaking as `token`, or anonymously when there is none (which is
- * only ever registration and sign-in).
+ * A client speaking as `credential`, or anonymously when there is none (which
+ * is only ever registration and sign-in).
+ *
+ * A session token and an API key are the same thing to everything downstream;
+ * the difference is only which header carries it. A token goes in
+ * `Authorization`, a key in `X-API-Key`, where a hook in PocketBase resolves
+ * it to the same account. Every call in db.ts passes one string through
+ * without caring which it holds.
  */
-export function clientFor(token?: string): PocketBase {
+export function clientFor(credential?: string): PocketBase {
   const client = new PocketBase(POCKETBASE_URL);
 
   // Server-side there is no "user navigated away" — the SDK's automatic
   // cancellation of same-key requests would just make concurrent calls fail.
   client.autoCancellation(false);
 
+  if (!credential) return client;
+
+  if (isApiKey(credential)) {
+    client.beforeSend = (url, options) => {
+      options.headers = { ...options.headers, [API_KEY_HEADER]: credential };
+      return { url, options };
+    };
+    return client;
+  }
+
   // The record is unknown and unneeded: the token is what PocketBase checks,
   // and the SDK sends it on every request once it is in the store.
-  if (token) client.authStore.save(token, null);
+  client.authStore.save(credential, null);
 
   return client;
 }
