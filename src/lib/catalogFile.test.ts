@@ -109,6 +109,33 @@ describe("what it refuses", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("a visibility formula naming an option that does not exist", () => {
+    // A group hidden by a typo would hide itself on every line ever
+    // configured, and nothing would ever say why.
+    const result = parseCatalogFile(
+      file({
+        products: [
+          {
+            ...product(),
+            optionGroups: [
+              { key: "t", name: "Tier", select: "one", options: [{ key: "std", name: "Standard" }] },
+              { key: "r", name: "Region", select: "one", visibleWhen: "option.ghost", options: [{ key: "eu", name: "EU" }] },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Unknown variable");
+  });
+
+  test("a pack nobody could buy, and a window that closes before it opens", () => {
+    expect(parseCatalogFile(file({ products: [{ ...product(), quantityIncrement: 10, maxQuantity: 6 }] })).ok).toBe(false);
+    expect(
+      parseCatalogFile(file({ products: [{ ...product(), availableFrom: "2026-06-01", availableTo: "2026-01-01" }] })).ok,
+    ).toBe(false);
+  });
+
   test("a price book floor above its own price, and a duplicated SKU in one book", () => {
     expect(
       parseCatalogFile(file({ priceBooks: [{ name: "B", entries: [{ sku: "PLAT", unitPrice: 50, minPrice: 80 }] }] })).ok,
@@ -176,6 +203,46 @@ describe("round trip", () => {
     const again = parseCatalogFile(JSON.parse(JSON.stringify({ kind: CATALOG_FILE_KIND, version: 1, ...parsed.catalog })));
     expect(again.ok).toBe(true);
     if (again.ok) expect(again.catalog.products).toEqual(parsed.catalog.products);
+  });
+
+  test("a condition, a pack size and a window survive the round trip", () => {
+    const result = parseCatalogFile(
+      file({
+        products: [
+          {
+            ...product(),
+            quantityIncrement: 4,
+            availableFrom: "2026-01-01",
+            availableTo: "2026-12-31",
+            optionGroups: [
+              {
+                key: "t",
+                name: "Tier",
+                select: "one",
+                options: [
+                  { key: "std", name: "Standard" },
+                  { key: "prem", name: "Premium", priceDelta: 40, costDelta: 12, visibleWhen: "quantity >= 10" },
+                ],
+              },
+              { key: "r", name: "Region", select: "one", visibleWhen: "option.prem", options: [{ key: "eu", name: "EU" }] },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const only = result.catalog.products[0]!;
+    expect(only.quantityIncrement).toBe(4);
+    expect(only.availableFrom).toBe("2026-01-01");
+    expect(only.availableTo).toBe("2026-12-31");
+    expect(only.optionGroups[1]!.visibleWhen).toBe("option.prem");
+    expect(only.optionGroups[0]!.options[1]!.costDelta).toBe(12);
+    expect(only.optionGroups[0]!.options[1]!.visibleWhen).toBe("quantity >= 10");
+    // "No condition" is left off rather than stored blank.
+    expect(only.optionGroups[0]!.options[0]).not.toHaveProperty("visibleWhen");
+    expect(only.optionGroups[0]).not.toHaveProperty("visibleWhen");
   });
 
   test("ids are stripped on export, so the file stays diffable", () => {

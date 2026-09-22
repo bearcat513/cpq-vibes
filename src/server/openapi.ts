@@ -573,8 +573,9 @@ export const OPERATIONS: Operation[] = [
     summary: "{ selectedOptions, quantity, termMonths } → validate a configuration",
     description:
       "Runs the product's option groups and configuration rules without pricing or storing " +
-      "anything: what the selection resolves to, what it costs per unit as a factor and a delta, " +
-      "and every rule it breaks or trips a recommendation on.",
+      "anything: what the selection resolves to, which groups and options it is actually offered, " +
+      "what it costs per unit as a factor and a delta, and every rule it breaks or trips a " +
+      "recommendation on.",
     parameters: [idParam("product")],
     requestBody: jsonBody("The selection to check.", ref("ConfigureInput")),
     responses: { "200": jsonResponse("The verdict.", ref("ConfigureResult")), "404": responseRef("NotFound") },
@@ -1601,32 +1602,51 @@ function schemas(): Record<string, Json> {
     /* ------------------------------ catalogue ----------------------------- */
     ProductOption: object("One choice inside an option group.", {
       key: string_("Unique across the whole product — a rule names an option by key alone."),
-      label: string_("What it is called on screen and on the document."),
+      name: string_("What it is called on screen and on the document."),
+      description: string_("What it is, for the person choosing it."),
       priceDelta: money("Added to the unit price when chosen."),
       priceFactor: number_("Multiplies the unit price. Applied before the delta."),
+      costDelta: money(
+        "Added to the unit cost when chosen, so margin is the margin on what is actually being sold. " +
+          "Internal: no document renders it.",
+      ),
+      visibleWhen: string_(
+        "A formula deciding whether this option is offered at all. Blank is always. Same variables as a " +
+          "`validate` rule.",
+      ),
       default: boolean_("Chosen when nothing else is."),
     }),
     OptionGroup: object("A set of choices on a product.", {
-      key: string_("The group's key."),
-      label: string_("What the group is called."),
+      key: string_("The group's key, unique across the product."),
+      name: string_("What the group is called."),
+      description: string_("What the choice is about."),
+      select: enum_(["one", "many"], "`one` is a radio group, `many` a checkbox list."),
       required: boolean_("Whether a choice has to be made."),
-      multiple: boolean_("Whether more than one may be chosen."),
+      minSelect: integer_("`many` only: the fewest that may be chosen."),
+      maxSelect: integer_("`many` only: the most."),
+      visibleWhen: string_(
+        "A formula over `quantity`, `term`, `selectedCount` and `option.<key>` deciding whether the group is " +
+          "asked at all. Blank is always. A hidden group is not required, its selections are dropped rather " +
+          "than priced, and nothing inside it can trigger a configuration rule.",
+      ),
       options: array(ref("ProductOption")),
     }),
     ProductRule: object("A configuration rule: what a selection must, must not, or ought to include.", {
       kind: enum_(PRODUCT_RULE_KINDS, "`validate` runs a formula; the rest name option keys."),
-      whenOption: string_("The option that arms the rule."),
-      thenOption: string_("The option it requires or excludes."),
+      when: array(string_("An option key that arms the rule. Every one of them has to be selected.")),
+      then: array(string_("An option key the rule requires, excludes or recommends.")),
       expression: string_("`validate` only: a formula over the option keys."),
       message: string_("What the configurator says when it fires."),
     }),
     BundleComponent: object("A product this one pulls onto the quote with it.", {
       sku: string_("The component's SKU."),
       quantity: number_("How many per parent unit."),
-      optional: boolean_("Whether it can be taken off."),
+      required: boolean_("Whether it has to stay on the quote."),
+      discountPercent: percent("A discount the bundle grants on this component."),
     }),
-    VolumeTier: object("A price break at a quantity.", {
-      minQuantity: number_("The quantity this tier starts at."),
+    VolumeTier: object("A price break at a quantity. Bands are not cumulative — the one a quantity falls into sets the whole line's price.", {
+      minQuantity: number_("The quantity this tier starts at, inclusive."),
+      maxQuantity: number_("The quantity it ends at, inclusive. `null` is “and above”.", { nullable: true }),
       kind: enum_(TIER_KINDS, "Percent off, amount off, or an outright override."),
       value: number_("The percentage, amount or price."),
     }),
@@ -1646,6 +1666,11 @@ function schemas(): Record<string, Json> {
         active: boolean_("Whether it can be quoted."),
         minQuantity: integer_("Smallest quantity a line may carry."),
         maxQuantity: integer_("Largest. `0` is unbounded."),
+        quantityIncrement: integer_(
+          "The pack size: a quantity has to be a multiple of it. `0` and `1` both mean any number.",
+        ),
+        availableFrom: date_("The first day it may be quoted. Blank is “already”."),
+        availableTo: date_("The last day it may be quoted. Blank is “indefinitely”. Quoting outside the window warns rather than refuses."),
         floorDiscountPercent: percent("The most a rep may discount this line before approval is needed."),
         optionGroups: array(ref("OptionGroup")),
         rules: array(ref("ProductRule")),
@@ -1915,6 +1940,9 @@ function schemas(): Record<string, Json> {
       optionNames: array(string_("Those options, by label.")),
       unitDelta: money("What the selection adds to the unit price."),
       unitFactor: number_("What it multiplies the unit price by."),
+      unitCostDelta: money("What it adds to the unit cost. Internal — no document renders it."),
+      visibleGroups: array(string_("The groups this configuration is offered, by key, in catalogue order.")),
+      visibleOptions: array(string_("The options it is offered, by key. Everything else is hidden by a `visibleWhen`.")),
       errors: array(string_("A rule it breaks.")),
       warnings: array(string_("A recommendation it trips.")),
       defaults: array(string_("Options chosen for you because nothing else was.")),

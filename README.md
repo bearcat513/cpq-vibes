@@ -35,14 +35,30 @@ A **product** is a SKU, a price, a cost, and a shape:
 | Part | What it is |
 | --- | --- |
 | Option groups | Choices the buyer makes. `one` is a radio group, `any` a checkbox list with optional bounds |
-| Options | Each adds a fixed amount (`+ $12/user`) and/or multiplies (`× 1.4` for a Premium edition) |
+| Options | Each adds a fixed amount (`+ $12/user`) and/or multiplies (`× 1.4` for a Premium edition), and carries what it costs to deliver |
+| Conditions | A group or an option can be shown only `when` a formula holds, so a question that does not apply is never asked |
 | Configuration rules | `requires`, `excludes`, `recommend`, and `validate` — an arbitrary formula over the line |
 | Volume tiers | Price breaks on quantity: `100–499: 18% off`, `500+: set to $75` |
+| Quantity | A minimum, a maximum, and a pack size a quantity has to be a multiple of |
+| Availability | The window it may be quoted in. Outside it, a quote warns rather than refuses |
 | Bundle components | Other SKUs pulled onto the quote as their own lines, each at its own bundle discount |
 | Attributes | Free-form catalogue metadata, rendered on a proposal as a spec table |
 
 Options are priced factor-first, then delta — so `100 × 1.4 + 15` is 155, not `(100 + 15) × 1.4`. A
-percentage uplift never silently scales a flat add-on.
+percentage uplift never silently scales a flat add-on. An option's `costDelta` goes the same way
+into the line's cost, so the margin on a configured line is the margin on what is actually being
+sold — and no document ever renders it.
+
+**Hiding is not forbidding.** A rule tells a rep that what they picked is not allowed; a
+`visibleWhen` means the question was never put to them. A hidden group is not required, its
+selections are dropped rather than priced, and a group with nothing left to choose from is not
+asked at all. Conditions are resolved to a fixed point, because hiding one group can hide the
+next:
+
+```
+option.enterprise                       only Enterprise is asked where its data lives
+quantity >= 50                          24×7 cover is only sold at scale
+```
 
 Rules reference options by **key**, not by id, so a catalogue survives being exported and imported
 somewhere else. `requires` and `excludes` block; `recommend` only warns. A `validate` rule is a

@@ -80,6 +80,25 @@ export type ProductOption = {
   priceDelta: number;
   /** Multiplies the unit price when selected. 1 (or absent) means no change. */
   priceFactor?: number;
+  /**
+   * Added to the unit cost when selected. Absent is zero, which is what every
+   * option cost before this field existed.
+   *
+   * An option that adds price usually adds cost — a premium tier is more
+   * machine, an on-site engineer is a person — and a margin that ignores that
+   * is wrong by exactly the amount the configuration changed. Never shown to
+   * a buyer, like every other cost here.
+   */
+  costDelta?: number;
+  /**
+   * A formula that decides whether this option is offered at all. Absent, or
+   * empty, means always — so nothing written before this field existed can be
+   * hidden by it.
+   *
+   * See `visibleWhen` on the group for what it may reference and what
+   * happens to a selection the formula turns off.
+   */
+  visibleWhen?: string;
   /** Preselected when the line is first configured. */
   default?: boolean;
 };
@@ -101,6 +120,19 @@ export type OptionGroup = {
   /** "many" groups only. Absent means unbounded. */
   minSelect?: number;
   maxSelect?: number;
+  /**
+   * A formula that decides whether the group is shown, over `quantity`,
+   * `term` / `termMonths`, `selectedCount` and `option.<key>` as 1 or 0 —
+   * the same variables a `validate` rule sees. Absent means always shown.
+   *
+   * This is the difference between a catalogue that can only say *no* and one
+   * that can say *not yet*: a rule tells a rep that what they picked is not
+   * allowed, while a hidden group means the question was never put to them.
+   * A group whose formula is false is not required, its selections are
+   * dropped rather than priced, and nothing inside it can trigger a rule —
+   * it is, for that line, as though the product did not have it.
+   */
+  visibleWhen?: string;
   options: ProductOption[];
 };
 
@@ -194,6 +226,29 @@ export type Product = {
   minQuantity: number;
   /** 0 means unbounded. */
   maxQuantity: number;
+  /**
+   * The pack size: a quantity has to be a multiple of it. Absent, 0 and 1 all
+   * mean "any number", which is what every product meant before this existed.
+   *
+   * A minimum and a maximum bound a quantity; this shapes it. Rack units come
+   * four to a shelf and licences are sold in blocks of five, and a catalogue
+   * that cannot say so leaves the rep to remember it.
+   */
+  quantityIncrement?: number;
+  /**
+   * The window the product may be quoted in, as ISO dates. Absent at either
+   * end is "open ended", and both absent — the default — is a product that is
+   * always available.
+   *
+   * `active` is a switch somebody flips; this is a date somebody knew in
+   * advance. A price rise on the first of the month, a model withdrawn at the
+   * end of the quarter: both are knowable now and neither should wait on
+   * remembering to flip a switch. Quoting outside the window warns rather
+   * than refuses, because the deadline is a commercial one and a quote priced
+   * last week must still price today.
+   */
+  availableFrom?: string;
+  availableTo?: string;
   /** The most a rep may discount this line before approval is needed, 0-100. */
   floorDiscountPercent: number;
   optionGroups: OptionGroup[];

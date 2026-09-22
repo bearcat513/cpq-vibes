@@ -174,7 +174,7 @@ function checkFormula(expression: string, variables: string[], what: string): st
 function readOption(raw: unknown, index: number): ProductOption {
   const input = asRecord(raw);
   const name = text(input.name, 120) || `Option ${index + 1}`;
-  return {
+  const option: ProductOption = {
     id: text(input.id, 60) || localId("opt"),
     key: slug(input.key ?? name, `option_${index + 1}`),
     name,
@@ -183,8 +183,16 @@ function readOption(raw: unknown, index: number): ProductOption {
     // A factor of 0 would make the option free rather than neutral, which is
     // never what someone meant to type.
     priceFactor: number(input.priceFactor, 1) > 0 ? number(input.priceFactor, 1) : 1,
+    costDelta: number(input.costDelta, 0),
     default: flag(input.default, false),
   };
+
+  // An empty condition is no condition, so it is left off rather than stored
+  // blank — the same rule a letterhead and a watermark follow.
+  const visibleWhen = text(input.visibleWhen, 2_000);
+  if (visibleWhen) option.visibleWhen = visibleWhen;
+
+  return option;
 }
 
 function readOptionGroup(raw: unknown, index: number): OptionGroup {
@@ -212,6 +220,9 @@ function readOptionGroup(raw: unknown, index: number): OptionGroup {
     required: flag(input.required, false),
     options,
   };
+
+  const visibleWhen = text(input.visibleWhen, 2_000);
+  if (visibleWhen) group.visibleWhen = visibleWhen;
 
   if (select === "many") {
     if (input.minSelect !== undefined && input.minSelect !== null) {
@@ -298,14 +309,35 @@ export function readProduct(raw: unknown): Validated<ProductInput> {
   const optionGroups = (Array.isArray(input.optionGroups) ? input.optionGroups : []).map(readOptionGroup);
 
   // Keys are unique across the product, not just within a group: a rule names
-  // an option by key alone, so two groups sharing one would be ambiguous.
+  // an option by key alone, so two groups sharing one would be ambiguous. A
+  // group's key is deduplicated for the same reason — the configurator shows
+  // and hides groups by key.
   const optionKeys = new Set<string>();
+  const groupKeys = new Set<string>();
   for (const group of optionGroups) {
+    let groupKey = group.key;
+    for (let suffix = 2; groupKeys.has(groupKey); suffix++) groupKey = `${group.key}_${suffix}`;
+    group.key = groupKey;
+    groupKeys.add(groupKey);
+
     for (const option of group.options) {
       let key = option.key;
       for (let suffix = 2; optionKeys.has(key); suffix++) key = `${option.key}_${suffix}`;
       option.key = key;
       optionKeys.add(key);
+    }
+  }
+
+  // Visibility conditions are checked once the keys are final, so one naming
+  // an option that does not exist is refused here rather than silently
+  // hiding a group for every line that is ever configured.
+  const variables = productRuleVariables([...optionKeys]);
+  for (const group of optionGroups) {
+    const groupError = group.visibleWhen && checkFormula(group.visibleWhen, variables, `the condition on “${group.name}”`);
+    if (groupError) return invalid(`${name}: ${groupError}`);
+    for (const option of group.options) {
+      const error = option.visibleWhen && checkFormula(option.visibleWhen, variables, `the condition on “${option.name}”`);
+      if (error) return invalid(`${name}: ${error}`);
     }
   }
 
@@ -321,6 +353,22 @@ export function readProduct(raw: unknown): Validated<ProductInput> {
   const maxQuantity = integer(input.maxQuantity, 0, 0, 1_000_000_000);
   if (maxQuantity > 0 && maxQuantity < minQuantity) {
     return invalid(`${name}: the maximum quantity (${maxQuantity}) is below the minimum (${minQuantity}).`);
+  }
+
+  const quantityIncrement = integer(input.quantityIncrement, 0, 0, 1_000_000);
+  // A pack that does not fit under the ceiling is a product nobody can buy:
+  // the smallest legal quantity is one whole pack.
+  if (quantityIncrement > 1 && maxQuantity > 0 && maxQuantity < quantityIncrement) {
+    return invalid(
+      `${name}: sold in multiples of ${quantityIncrement}, but the maximum quantity is ${maxQuantity} — ` +
+        "no quantity satisfies both.",
+    );
+  }
+
+  const availableFrom = isoDate(input.availableFrom);
+  const availableTo = isoDate(input.availableTo);
+  if (availableFrom && availableTo && availableTo < availableFrom) {
+    return invalid(`${name}: it is withdrawn (${availableTo}) before it is available (${availableFrom}).`);
   }
 
   const attributes: Record<string, string> = {};
@@ -350,6 +398,12 @@ export function readProduct(raw: unknown): Validated<ProductInput> {
       .map(readTier)
       .sort((a, b) => a.minQuantity - b.minQuantity),
     attributes,
+    // Absent rather than zero or blank: every one of these means "no
+    // constraint", and a product written before they existed has to keep
+    // reading exactly as it did.
+    ...(quantityIncrement > 1 ? { quantityIncrement } : {}),
+    ...(availableFrom ? { availableFrom } : {}),
+    ...(availableTo ? { availableTo } : {}),
   });
 }
 

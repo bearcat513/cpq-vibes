@@ -12,7 +12,7 @@
  * is the copy that decides what gets stored. A client that skips the check, or
  * lies about the result, changes nothing.
  */
-import { conditionHolds } from "./formula";
+import { conditionHolds, runFormula } from "./formula";
 import { clampPercent, round, type CurrencyCode } from "./money";
 import type { OptionGroup, Product, ProductOption, ProductRule } from "./types";
 
@@ -35,6 +35,15 @@ export type ConfigurationResult = {
   unitDelta: number;
   /** Multiplied into the unit price. 1 when no option carries a factor. */
   unitFactor: number;
+  /** Added to the unit cost by the selected options. Internal, like every cost. */
+  unitCostDelta: number;
+  /**
+   * The groups and options this line is actually offered, by key — what the
+   * configurator draws. Everything else is hidden by a `visibleWhen` that
+   * came out false, and is not required, not priced and not selectable.
+   */
+  visibleGroups: string[];
+  visibleOptions: string[];
   issues: ConfigurationIssue[];
   errors: string[];
   warnings: string[];
@@ -61,13 +70,111 @@ export function optionIndex(product: Pick<Product, "optionGroups">): Map<string,
   return index;
 }
 
+/* ------------------------------ visibility ------------------------------- */
+
+/**
+ * The variable bag a product's own formulas see — a `validate` rule's, and a
+ * `visibleWhen`. Every option the product has is present as 1 or 0, so a
+ * formula can weigh a choice without knowing whether it was offered.
+ */
+function formulaVariables(
+  index: ReturnType<typeof optionIndex>,
+  chosen: ReadonlySet<string>,
+  input: ConfigurationInput,
+): Record<string, number> {
+  const quantity = Number.isFinite(input.quantity) ? input.quantity : 0;
+  const variables: Record<string, number> = {
+    quantity,
+    term: input.termMonths,
+    termMonths: input.termMonths,
+    selectedCount: chosen.size,
+  };
+  for (const key of index.keys()) variables[`option.${key}`] = chosen.has(key) ? 1 : 0;
+  return variables;
+}
+
+/**
+ * Whether a `visibleWhen` lets something through.
+ *
+ * No formula is no condition. A formula that will not run shows it anyway:
+ * `readProduct` refuses an expression that does not parse, so one that gets
+ * here came from outside, and a catalogue that quietly stops offering half
+ * its options is a worse failure than one that offers too many.
+ */
+const shown = (expression: string | undefined, variables: Record<string, number>): boolean => {
+  const trimmed = expression?.trim();
+  if (!trimmed) return true;
+  const result = runFormula(trimmed, variables);
+  return result.ok ? result.value !== null && result.value !== 0 : true;
+};
+
+/** What a line is actually offered, and what survives of its selection. */
+export type Visibility = {
+  /** Group keys. A group with no visible option is not one of them. */
+  groups: Set<string>;
+  /** Option keys, across every visible group. */
+  options: Set<string>;
+  /** The selection, minus anything that is no longer on offer. */
+  selected: Set<string>;
+};
+
+/**
+ * Resolves `visibleWhen` across the whole product.
+ *
+ * Visibility is a fixed point, not a pass: a group can be shown by a choice
+ * that another formula has just hidden, and answering that in one sweep would
+ * make the result depend on the order the groups happen to be in. So the
+ * selection is pruned and the formulas are run again until nothing more
+ * drops — which always terminates, because a pass can only ever remove.
+ *
+ * A hidden selection is dropped silently, like a selection whose option the
+ * product no longer has: the line was configured under conditions that have
+ * since changed, and that is the catalogue's business to explain, not this
+ * line's error.
+ */
+export function resolveVisibility(
+  product: Pick<Product, "optionGroups">,
+  input: ConfigurationInput,
+  selected: Iterable<string>,
+): Visibility {
+  const index = optionIndex(product);
+  let chosen = new Set([...selected].filter(key => index.has(key)));
+  let groups = new Set<string>();
+  let options = new Set<string>();
+
+  for (;;) {
+    const variables = formulaVariables(index, chosen, input);
+    groups = new Set();
+    options = new Set();
+
+    for (const group of product.optionGroups) {
+      if (!shown(group.visibleWhen, variables)) continue;
+      const visible = group.options.filter(option => shown(option.visibleWhen, variables));
+      // A group with nothing left to choose from is not a question worth
+      // asking, and a *required* one would be a question with no answer.
+      if (!visible.length) continue;
+      groups.add(group.key);
+      for (const option of visible) options.add(option.key);
+    }
+
+    const next = new Set([...chosen].filter(key => options.has(key)));
+    if (next.size === chosen.size) break;
+    chosen = next;
+  }
+
+  return { groups, options, selected: chosen };
+}
+
 /**
  * What a freshly added line starts with: every option marked `default`, plus
  * the first option of any required single-select group that named none —
  * a required choice with nothing chosen is a line that is born invalid, which
  * is a worse first impression than a defensible default.
  */
-export function defaultSelection(product: Pick<Product, "optionGroups">): string[] {
+export function defaultSelection(
+  product: Pick<Product, "optionGroups" | "minQuantity">,
+  input?: Partial<ConfigurationInput>,
+): string[] {
   const selected: string[] = [];
   for (const group of product.optionGroups) {
     const defaults = group.options.filter(option => option.default);
@@ -78,7 +185,21 @@ export function defaultSelection(product: Pick<Product, "optionGroups">): string
     }
     if (group.required && group.select === "one" && group.options[0]) selected.push(group.options[0].key);
   }
-  return selected;
+
+  // Defaults are chosen first and pruned after, so a group that is only shown
+  // *because* of a default still gets its own. The quantity a visibility
+  // formula sees is the smallest the product can be bought in, since that is
+  // what the line is about to be created with.
+  const { selected: visible } = resolveVisibility(
+    product,
+    {
+      selectedOptions: selected,
+      quantity: input?.quantity ?? product.minQuantity ?? 1,
+      termMonths: input?.termMonths ?? 0,
+    },
+    selected,
+  );
+  return selected.filter(key => visible.has(key));
 }
 
 /** Human-readable name for a rule's target, used in rule messages. */
@@ -103,7 +224,7 @@ const triggered = (rule: ProductRule, selected: Set<string>) =>
  * of it.
  */
 export function validateConfiguration(
-  product: Pick<Product, "optionGroups" | "rules" | "minQuantity" | "maxQuantity" | "name">,
+  product: Pick<Product, "optionGroups" | "rules" | "minQuantity" | "maxQuantity" | "quantityIncrement" | "name">,
   input: ConfigurationInput,
   currency: CurrencyCode = "USD",
 ): ConfigurationResult {
@@ -112,13 +233,18 @@ export function validateConfiguration(
 
   // Selections the product no longer has are dropped silently: the line was
   // valid when it was written, and an option that has since been retired is
-  // the catalogue's change to explain, not this line's error.
-  const chosen = new Set(input.selectedOptions.filter(key => index.has(key)));
+  // the catalogue's change to explain, not this line's error. A selection the
+  // product still has but no longer offers this line goes the same way.
+  const visibility = resolveVisibility(product, input, input.selectedOptions);
+  const chosen = visibility.selected;
 
   /* --- group cardinality --- */
 
   for (const group of product.optionGroups) {
-    const picked = group.options.filter(option => chosen.has(option.key));
+    // A hidden group asks nothing: not required, not bounded, not priced.
+    if (!visibility.groups.has(group.key)) continue;
+    const offered = group.options.filter(option => visibility.options.has(option.key));
+    const picked = offered.filter(option => chosen.has(option.key));
 
     if (group.select === "one") {
       if (picked.length > 1) {
@@ -136,7 +262,7 @@ export function validateConfiguration(
     }
 
     const min = group.required ? Math.max(1, group.minSelect ?? 1) : (group.minSelect ?? 0);
-    const max = group.maxSelect ?? group.options.length;
+    const max = group.maxSelect ?? offered.length;
 
     if (picked.length < min) {
       issues.push({
@@ -173,19 +299,26 @@ export function validateConfiguration(
         message: `${product.name} has a maximum of ${product.maxQuantity}.`,
       });
     }
+
+    const increment = product.quantityIncrement ?? 0;
+    // A pack size shapes a quantity where the minimum and maximum only bound
+    // it. The nearest whole pack is named, because "not a multiple of 4" is a
+    // complaint and "try 12" is an answer.
+    if (increment > 1 && quantity % increment !== 0) {
+      const nearest = Math.max(increment, Math.round(quantity / increment) * increment);
+      issues.push({
+        severity: "error",
+        source: "Quantity",
+        message: `${product.name} is sold in multiples of ${increment} — ${quantity} is not one. The nearest is ${nearest}.`,
+      });
+    }
   }
 
   /* --- product rules --- */
 
-  // Variables a `validate` rule sees. Every option is present as 1 or 0, so a
-  // formula can weigh a choice without knowing whether it was offered.
-  const variables: Record<string, number> = {
-    quantity: Number.isFinite(quantity) ? quantity : 0,
-    term: input.termMonths,
-    termMonths: input.termMonths,
-    selectedCount: chosen.size,
-  };
-  for (const key of index.keys()) variables[`option.${key}`] = chosen.has(key) ? 1 : 0;
+  // What a `validate` rule sees — the same bag the visibility formulas were
+  // run against, rebuilt now that cardinality has had its say.
+  const variables = formulaVariables(index, chosen, input);
 
   for (const rule of product.rules) {
     switch (rule.kind) {
@@ -257,6 +390,7 @@ export function validateConfiguration(
   const optionNames: string[] = [];
   let unitDelta = 0;
   let unitFactor = 1;
+  let unitCostDelta = 0;
 
   for (const group of product.optionGroups) {
     for (const option of group.options) {
@@ -264,6 +398,7 @@ export function validateConfiguration(
       selected.push(option.key);
       optionNames.push(option.name);
       unitDelta += Number.isFinite(option.priceDelta) ? option.priceDelta : 0;
+      unitCostDelta += Number.isFinite(option.costDelta) ? (option.costDelta as number) : 0;
       const factor = option.priceFactor;
       if (typeof factor === "number" && Number.isFinite(factor) && factor > 0) unitFactor *= factor;
     }
@@ -278,6 +413,9 @@ export function validateConfiguration(
     optionNames,
     unitDelta: round(unitDelta, currency),
     unitFactor,
+    unitCostDelta: round(unitCostDelta, currency),
+    visibleGroups: product.optionGroups.filter(group => visibility.groups.has(group.key)).map(group => group.key),
+    visibleOptions: [...visibility.options],
     issues,
     errors,
     warnings,
@@ -312,6 +450,39 @@ export function toggleOption(
   }
   next.add(key);
   return [...next];
+}
+
+/* ----------------------------- availability ------------------------------ */
+
+/** Where a product sits in its availability window, today. */
+export type Availability = {
+  state: "available" | "early" | "withdrawn";
+  /** Empty while it is available; a sentence for a rep otherwise. */
+  message: string;
+};
+
+/**
+ * Whether a product may be quoted today.
+ *
+ * Derived, never stored, for the reason every other date-dependent fact here
+ * is derived: a product stored as "withdrawn" is wrong the morning after
+ * somebody writes it, and a product stored as "available" is wrong the
+ * morning after that.
+ */
+export function availabilityOf(
+  product: Pick<Product, "name" | "availableFrom" | "availableTo">,
+  today: string = new Date().toISOString().slice(0, 10),
+): Availability {
+  const from = product.availableFrom?.trim();
+  const to = product.availableTo?.trim();
+
+  if (from && today < from) {
+    return { state: "early", message: `${product.name} is not available to quote until ${from}.` };
+  }
+  if (to && today > to) {
+    return { state: "withdrawn", message: `${product.name} was withdrawn from the catalogue on ${to}.` };
+  }
+  return { state: "available", message: "" };
 }
 
 /** A percentage a bundle grants on a component, kept in range. */

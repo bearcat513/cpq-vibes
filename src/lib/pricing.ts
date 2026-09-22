@@ -34,7 +34,7 @@
  * is a cent away from its own visible lines costs more to explain than it
  * could ever save.
  */
-import { validateConfiguration } from "./configurator";
+import { availabilityOf, validateConfiguration } from "./configurator";
 import { conditionHolds, runFormula } from "./formula";
 import { atLeastZero, clampPercent, percentBetween, percentOf, round, sum, type CurrencyCode } from "./money";
 import {
@@ -100,7 +100,7 @@ export const PRICING_VARIABLES: Record<"line" | "quote", { name: string; descrip
     { name: "discountPercent", description: "The discount currently on the line, 0-100" },
     { name: "termMonths", description: "This line's subscription term in months" },
     { name: "periods", description: "Billing periods charged: term ÷ billing period" },
-    { name: "unitCost", description: "What one unit costs to deliver" },
+    { name: "unitCost", description: "What one unit costs to deliver, selected options included" },
     { name: "listTotal", description: "Undiscounted value of the line" },
     { name: "netTotal", description: "Line value as it currently stands" },
     { name: "marginPercent", description: "Margin on the line as it currently stands" },
@@ -246,6 +246,12 @@ function priceLine(line: PriceableLine, header: QuoteHeader, context: PricingCon
   issues.push(...configuration.errors);
   warnings.push(...configuration.warnings);
 
+  // A product quoted outside its availability window still prices — a quote
+  // written last month has to survive the catalogue moving on — but it says
+  // so, every time it is priced, because the window is a date and not a flag.
+  const availability = availabilityOf(product);
+  if (availability.state !== "available") warnings.push(availability.message);
+
   /* 1 — list price */
 
   const entry = context.priceBook?.entries.find(
@@ -282,6 +288,10 @@ function priceLine(line: PriceableLine, header: QuoteHeader, context: PricingCon
 
   /* 5 & 6 — rules and the discount */
 
+  // The options are part of what this unit costs to deliver, so the margin a
+  // rule reads is the margin on the thing actually being sold.
+  const unitCost = round(product.cost + configuration.unitCostDelta, currency);
+
   let discountPercent = clampPercent(line.discountPercent);
   const periods = periodsFor(product.chargeType, product.billingPeriod, termMonths);
 
@@ -289,7 +299,7 @@ function priceLine(line: PriceableLine, header: QuoteHeader, context: PricingCon
   const variables = () => {
     const netUnit = round(baseUnitPrice * (1 - discountPercent / 100), currency);
     const netTotal = round(netUnit * quantity * periods, currency);
-    const costTotal = round(product.cost * quantity * periods, currency);
+    const costTotal = round(unitCost * quantity * periods, currency);
     return {
       quantity,
       listPrice: listUnitPrice,
@@ -298,7 +308,7 @@ function priceLine(line: PriceableLine, header: QuoteHeader, context: PricingCon
       discountPercent,
       termMonths,
       periods,
-      unitCost: product.cost,
+      unitCost,
       listTotal: round(listUnitPrice * quantity * periods, currency),
       netTotal,
       marginPercent: percentBetween(netTotal - costTotal, netTotal),
@@ -386,7 +396,6 @@ function priceLine(line: PriceableLine, header: QuoteHeader, context: PricingCon
   const netTotal = round(round(unitPrice * quantity * periods, currency) + adjustment, currency);
   const discountAmount = round(listTotal - netTotal, currency);
 
-  const unitCost = round(product.cost, currency);
   const costTotal = round(unitCost * quantity * periods, currency);
   const margin = round(netTotal - costTotal, currency);
 

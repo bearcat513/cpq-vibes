@@ -198,6 +198,48 @@ describe("configured options", () => {
     expect(priced.totals.effectiveDiscountPercent).toBe(20);
   });
 
+  test("an option's cost lands in the margin", () => {
+    // The bug this guards: an option that adds 55 of price and 20 of cost
+    // read as pure margin, and every configured line looked better than it
+    // was by exactly what the configuration cost to deliver.
+    const costed = product({
+      optionGroups: structuredClone(configurable.optionGroups),
+    });
+    costed.optionGroups[0]!.options[1]!.costDelta = 12;
+    costed.optionGroups[1]!.options[0]!.costDelta = 8;
+
+    const priced = priceQuote(
+      [line({ selectedOptions: ["prem", "sso"], quantity: 10, termMonths: 1 })],
+      header(),
+      context([costed]),
+    );
+    const only = priced.lines[0]!;
+
+    // 30 of product, 12 for Premium, 8 for SSO.
+    expect(only.unitCost).toBe(50);
+    expect(only.costTotal).toBe(500);
+    expect(only.netTotal).toBe(1_550);
+    expect(only.margin).toBe(1_050);
+    expect(priced.totals.costTotal).toBe(500);
+  });
+
+  test("an option nothing offers costs nothing, because it is not selected", () => {
+    const hidden = product({ optionGroups: structuredClone(configurable.optionGroups) });
+    hidden.optionGroups[1]!.options[0]!.costDelta = 8;
+    hidden.optionGroups[1]!.options[0]!.visibleWhen = "quantity >= 100";
+
+    const priced = priceQuote(
+      [line({ selectedOptions: ["std", "sso"], quantity: 10, termMonths: 1 })],
+      header(),
+      context([hidden]),
+    );
+    const only = priced.lines[0]!;
+
+    expect(only.optionNames).toEqual(["Standard"]);
+    expect(only.unitPrice).toBe(100);
+    expect(only.unitCost).toBe(30);
+  });
+
   test("an invalid configuration prices, and says what is wrong", () => {
     const priced = priceQuote([line({ selectedOptions: [] })], header(), context([configurable]));
 
@@ -206,6 +248,38 @@ describe("configured options", () => {
     // It still produces a number: a rep needs to see the consequence of the
     // thing they have half-finished.
     expect(priced.lines[0]!.netTotal).toBe(12_000);
+  });
+});
+
+/* ----------------------------- availability ------------------------------ */
+
+describe("the availability window", () => {
+  test("a withdrawn product still prices, and says so every time", () => {
+    // A quote written before the withdrawal has to survive it: the number
+    // stays, the warning is what changes.
+    const priced = priceQuote(
+      [line({ quantity: 10, termMonths: 1 })],
+      header(),
+      context([product({ availableTo: "2020-01-01" })]),
+    );
+
+    expect(priced.lines[0]!.netTotal).toBe(1_000);
+    expect(priced.issues).toEqual([]);
+    expect(priced.warnings).toEqual(["Platform was withdrawn from the catalogue on 2020-01-01."]);
+  });
+
+  test("a product not yet on sale warns the same way", () => {
+    const priced = priceQuote(
+      [line({ quantity: 10, termMonths: 1 })],
+      header(),
+      context([product({ availableFrom: "2999-01-01" })]),
+    );
+    expect(priced.warnings).toEqual(["Platform is not available to quote until 2999-01-01."]);
+  });
+
+  test("no window is no warning", () => {
+    const priced = priceQuote([line({ quantity: 10, termMonths: 1 })], header(), context([product()]));
+    expect(priced.warnings).toEqual([]);
   });
 });
 

@@ -240,8 +240,13 @@ export function productRows(products: Product[]): Row[] {
     active: product.active,
     minQuantity: product.minQuantity,
     maxQuantity: product.maxQuantity || "",
+    quantityIncrement: (product.quantityIncrement ?? 0) > 1 ? product.quantityIncrement : "",
+    availableFrom: product.availableFrom ?? "",
+    availableTo: product.availableTo ?? "",
     floorDiscountPercent: product.floorDiscountPercent,
-    optionGroups: product.optionGroups.map(group => `${group.name} (${group.options.length})`).join("; "),
+    optionGroups: product.optionGroups
+      .map(group => `${group.name} (${group.options.length})${group.visibleWhen ? ` when ${group.visibleWhen}` : ""}`)
+      .join("; "),
     options: product.optionGroups.flatMap(group => group.options.map(option => option.name)).join("; "),
     configurationRules: product.rules.length,
     bundleComponents: product.components.map(component => `${component.sku}×${component.quantity}`).join("; "),

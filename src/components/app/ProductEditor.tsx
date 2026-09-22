@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Check, Loader2, Plus, Trash2 } from "lucide-react";
+import { Check, Eye, Loader2, Plus, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
@@ -18,6 +18,7 @@ import {
   TIER_KINDS,
   type OptionGroup,
   type Product,
+  type ProductOption,
   type ProductRule,
   type VolumeTier,
 } from "@/lib/types";
@@ -143,6 +144,7 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
           description: "",
           priceDelta: 0,
           priceFactor: 1,
+          costDelta: 0,
           default: false,
         },
       ],
@@ -328,6 +330,31 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
                 </div>
               </Field>
             </div>
+
+            <div className="grid gap-3 @md:grid-cols-2 @2xl:grid-cols-3">
+              <Field label="Sold in multiples of" hint="0 or 1 is any number.">
+                <Input
+                  type="number"
+                  min={0}
+                  value={draft.quantityIncrement ?? 0}
+                  onChange={event => patch({ quantityIncrement: Number(event.target.value) })}
+                />
+              </Field>
+              <Field label="Available from" hint="Blank starts it today.">
+                <Input
+                  type="date"
+                  value={draft.availableFrom ?? ""}
+                  onChange={event => patch({ availableFrom: event.target.value })}
+                />
+              </Field>
+              <Field label="Available until" hint="Blank never withdraws it.">
+                <Input
+                  type="date"
+                  value={draft.availableTo ?? ""}
+                  onChange={event => patch({ availableTo: event.target.value })}
+                />
+              </Field>
+            </div>
           </>
         )}
 
@@ -382,21 +409,31 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
                       </Button>
                     </div>
                   </Field>
+
+                  <Field
+                    label="Shown when"
+                    hint="Blank is always. A hidden group is not asked, not required and not priced."
+                    className="@md:col-span-2 @2xl:col-span-4"
+                  >
+                    <Input
+                      value={group.visibleWhen ?? ""}
+                      onChange={event => patchGroup(group.id, { visibleWhen: event.target.value })}
+                      className="font-mono text-xs"
+                      placeholder="always — or e.g. option.enterprise"
+                    />
+                  </Field>
                 </div>
 
                 <div className="space-y-2 p-3">
                   {group.options.map(option => (
-                    <div key={option.id} className="grid items-end gap-2 @xl:grid-cols-[1fr_5rem_5rem_4rem_2rem]">
+                    <div key={option.id} className="grid items-end gap-2 @xl:grid-cols-[1fr_5rem_5rem_5rem_4rem_2rem_2rem]">
                       <Field label="Option">
                         <Input
                           value={option.name}
                           onChange={event =>
-                            patchGroup(group.id, {
-                              options: group.options.map(entry =>
-                                entry.id === option.id
-                                  ? { ...entry, name: event.target.value, key: slugify(event.target.value) }
-                                  : entry,
-                              ),
+                            patchOption(group, option.id, {
+                              name: event.target.value,
+                              key: slugify(event.target.value),
                             })
                           }
                         />
@@ -406,13 +443,7 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
                           type="number"
                           step="0.01"
                           value={option.priceDelta}
-                          onChange={event =>
-                            patchGroup(group.id, {
-                              options: group.options.map(entry =>
-                                entry.id === option.id ? { ...entry, priceDelta: Number(event.target.value) } : entry,
-                              ),
-                            })
-                          }
+                          onChange={event => patchOption(group, option.id, { priceDelta: Number(event.target.value) })}
                         />
                       </Field>
                       <Field label="× Factor">
@@ -421,12 +452,16 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
                           step="0.05"
                           min={0}
                           value={option.priceFactor ?? 1}
+                          onChange={event => patchOption(group, option.id, { priceFactor: Number(event.target.value) })}
+                        />
+                      </Field>
+                      <Field label="+ Cost">
+                        <Input
+                          type="number"
+                          step="0.01"
+                          value={option.costDelta ?? 0}
                           onChange={event =>
-                            patchGroup(group.id, {
-                              options: group.options.map(entry =>
-                                entry.id === option.id ? { ...entry, priceFactor: Number(event.target.value) } : entry,
-                              ),
-                            })
+                            patchOption(group, option.id, { costDelta: Number(event.target.value) })
                           }
                         />
                       </Field>
@@ -434,16 +469,25 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
                         <div className="flex h-9 items-center">
                           <Switch
                             checked={option.default ?? false}
-                            onChange={event =>
-                              patchGroup(group.id, {
-                                options: group.options.map(entry =>
-                                  entry.id === option.id ? { ...entry, default: event.target.checked } : entry,
-                                ),
-                              })
-                            }
+                            onChange={event => patchOption(group, option.id, { default: event.target.checked })}
                           />
                         </div>
                       </Field>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="self-end"
+                        onClick={() =>
+                          patchOption(group, option.id, {
+                            visibleWhen: option.visibleWhen === undefined ? "" : undefined,
+                          })
+                        }
+                        aria-label={`Show ${option.name} only sometimes`}
+                      >
+                        <Eye
+                          className={option.visibleWhen === undefined ? "text-muted-foreground" : "text-primary"}
+                        />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -454,6 +498,17 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
                       >
                         <Trash2 className="text-muted-foreground hover:text-destructive" />
                       </Button>
+
+                      {option.visibleWhen !== undefined && (
+                        <Field label="Shown when" className="@xl:col-span-7">
+                          <Input
+                            value={option.visibleWhen}
+                            onChange={event => patchOption(group, option.id, { visibleWhen: event.target.value })}
+                            className="font-mono text-xs"
+                            placeholder="e.g. quantity >= 100"
+                          />
+                        </Field>
+                      )}
                     </div>
                   ))}
 
@@ -751,6 +806,12 @@ export function ProductEditor({ product, products, onSave, onClose }: Props) {
       <Notice kind="error" lines={error ? [error] : []} className="mt-3" />
     </Sheet>
   );
+
+  function patchOption(group: OptionGroup, optionId: string, changes: Partial<ProductOption>) {
+    patchGroup(group.id, {
+      options: group.options.map(entry => (entry.id === optionId ? { ...entry, ...changes } : entry)),
+    });
+  }
 
   function patchTier(index: number, changes: Partial<VolumeTier>) {
     patch({ volumeTiers: draft.volumeTiers.map((tier, at) => (at === index ? { ...tier, ...changes } : tier)) });

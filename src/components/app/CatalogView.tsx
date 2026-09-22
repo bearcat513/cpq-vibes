@@ -7,6 +7,7 @@ import { EmptyState, Section, formatters } from "./common";
 import { PriceBookEditor } from "./PriceBookEditor";
 import { ProductEditor } from "./ProductEditor";
 import { api, type Shareable } from "@/lib/api";
+import { availabilityOf } from "@/lib/configurator";
 import type { Preferences } from "@/lib/preferences";
 import type { PriceBook, Product } from "@/lib/types";
 import type { PriceBookInput, ProductInput } from "@/lib/validate";
@@ -143,6 +144,7 @@ export function CatalogView(props: Props) {
               {products.map(product => {
                 const mine = product.ownerId === myId;
                 const margin = product.listPrice ? ((product.listPrice - product.cost) / product.listPrice) * 100 : 0;
+                const availability = availabilityOf(product);
 
                 return (
                   <Tr key={product.id} className={product.active ? undefined : "opacity-60"}>
@@ -152,6 +154,8 @@ export function CatalogView(props: Props) {
                         <span className="font-medium">{product.name}</span>
                         <span className="font-mono text-xs text-muted-foreground">{product.sku}</span>
                         {!product.active && <Badge tone="neutral">inactive</Badge>}
+                        {availability.state === "early" && <Badge tone="warn">from {product.availableFrom}</Badge>}
+                        {availability.state === "withdrawn" && <Badge tone="warn">until {product.availableTo}</Badge>}
                         {!mine && <Badge tone="info">shared with you</Badge>}
                       </div>
                       {product.description && (
@@ -177,6 +181,9 @@ export function CatalogView(props: Props) {
                         {product.volumeTiers.length > 0 && <Badge tone="outline">{product.volumeTiers.length} tiers</Badge>}
                         {product.rules.length > 0 && <Badge tone="outline">{product.rules.length} rules</Badge>}
                         {product.components.length > 0 && <Badge tone="info">bundle</Badge>}
+                        {(product.quantityIncrement ?? 0) > 1 && (
+                          <Badge tone="outline">packs of {product.quantityIncrement}</Badge>
+                        )}
                       </div>
                     </Td>
                     <Td>

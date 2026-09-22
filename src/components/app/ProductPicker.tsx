@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { formatters } from "./common";
+import { availabilityOf } from "@/lib/configurator";
 import type { CurrencyCode, Product } from "@/lib/types";
 
 type Props = {
@@ -23,6 +24,11 @@ type Props = {
  * size is unusable as one flat list and reps think in families. Inactive
  * products are left out entirely: they are in the catalogue for the quotes
  * that already reference them, not for new ones.
+ *
+ * A product outside its availability window is shown and flagged rather than
+ * hidden. The window is a commercial date, not a switch — a deal closing this
+ * week on a product withdrawn next Monday is an ordinary thing to quote, and
+ * a rep who cannot find the product at all has no way to know that.
  */
 export function ProductPicker({ products, currency, locale, onPick, onClose }: Props) {
   const [search, setSearch] = useState("");
@@ -74,6 +80,7 @@ export function ProductPicker({ products, currency, locale, onPick, onClose }: P
               <ul className="divide-y rounded-md border">
                 {entries.map(product => {
                   const wrongCurrency = product.currency !== currency;
+                  const availability = availabilityOf(product);
                   return (
                     <li key={product.id}>
                       <button
@@ -93,6 +100,8 @@ export function ProductPicker({ products, currency, locale, onPick, onClose }: P
                             {product.optionGroups.length > 0 && <Badge tone="outline">configurable</Badge>}
                             {product.components.length > 0 && <Badge tone="info">bundle</Badge>}
                             {wrongCurrency && <Badge tone="pending">{product.currency}</Badge>}
+                            {availability.state === "early" && <Badge tone="warn">from {product.availableFrom}</Badge>}
+                            {availability.state === "withdrawn" && <Badge tone="warn">withdrawn</Badge>}
                           </span>
                           {product.description && (
                             <span className="line-clamp-1 text-xs text-muted-foreground">{product.description}</span>

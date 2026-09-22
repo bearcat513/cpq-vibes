@@ -53,8 +53,8 @@ export const SAMPLE_PRODUCTS: ProductInput[] = [
         required: true,
         options: [
           { id: "opt_std", key: "standard", name: "Standard", description: "Core platform.", priceDelta: 0, priceFactor: 1, default: true },
-          { id: "opt_pro", key: "professional", name: "Professional", description: "Adds workflow automation and the reporting suite.", priceDelta: 0, priceFactor: 1.35 },
-          { id: "opt_ent", key: "enterprise", name: "Enterprise", description: "Adds residency controls, audit and the admin API.", priceDelta: 0, priceFactor: 1.8 },
+          { id: "opt_pro", key: "professional", name: "Professional", description: "Adds workflow automation and the reporting suite.", priceDelta: 0, priceFactor: 1.35, costDelta: 6 },
+          { id: "opt_ent", key: "enterprise", name: "Enterprise", description: "Adds residency controls, audit and the admin API.", priceDelta: 0, priceFactor: 1.8, costDelta: 14 },
         ],
       },
       {
@@ -66,9 +66,27 @@ export const SAMPLE_PRODUCTS: ProductInput[] = [
         required: false,
         maxSelect: 3,
         options: [
-          { id: "opt_sso", key: "sso", name: "SSO and SCIM", description: "SAML sign-on and directory sync.", priceDelta: 12 },
-          { id: "opt_audit", key: "audit_log", name: "Audit log export", description: "Streams the audit log to your SIEM.", priceDelta: 8 },
-          { id: "opt_hsm", key: "hsm", name: "Customer-managed keys", description: "Keys held in your own HSM.", priceDelta: 25 },
+          { id: "opt_sso", key: "sso", name: "SSO and SCIM", description: "SAML sign-on and directory sync.", priceDelta: 12, costDelta: 3 },
+          { id: "opt_audit", key: "audit_log", name: "Audit log export", description: "Streams the audit log to your SIEM.", priceDelta: 8, costDelta: 2 },
+          { id: "opt_hsm", key: "hsm", name: "Customer-managed keys", description: "Keys held in your own HSM.", priceDelta: 25, costDelta: 9 },
+        ],
+      },
+      {
+        // Only Enterprise is asked where its data lives, so nobody else is
+        // shown a question whose answer would not be honoured. The rule
+        // below it still exists for the choice that *is* offered to
+        // everybody — hiding is not the same as forbidding.
+        id: "grp_region",
+        key: "region",
+        name: "Data residency",
+        description: "Where the subscription's data is held.",
+        select: "one",
+        required: true,
+        visibleWhen: "option.enterprise",
+        options: [
+          { id: "opt_eu", key: "eu_region", name: "EU (Frankfurt)", priceDelta: 0, default: true },
+          { id: "opt_us", key: "us_region", name: "US (Virginia)", priceDelta: 0 },
+          { id: "opt_apac", key: "apac_region", name: "APAC (Singapore)", description: "A smaller region: the uplift covers the replica.", priceDelta: 6, costDelta: 4 },
         ],
       },
     ],
@@ -103,7 +121,7 @@ export const SAMPLE_PRODUCTS: ProductInput[] = [
       { minQuantity: 100, maxQuantity: 499, kind: "percent", value: 18 },
       { minQuantity: 500, maxQuantity: null, kind: "override", value: 75 },
     ],
-    attributes: { Hosting: "Multi-tenant SaaS", SLA: "99.9%", "Data residency": "EU or US" },
+    attributes: { Hosting: "Multi-tenant SaaS", SLA: "99.9%", "Data residency": "EU, US or APAC, on Enterprise" },
   },
   {
     sku: "PLAT-API",
@@ -120,6 +138,9 @@ export const SAMPLE_PRODUCTS: ProductInput[] = [
     minQuantity: 1,
     maxQuantity: 0,
     floorDiscountPercent: 20,
+    // The gateway is being replaced, and the date is already known. Quoting
+    // it after that warns rather than refuses, so a deal in flight closes.
+    availableTo: addDays(todayIso(), 180),
     optionGroups: [],
     rules: [],
     components: [],
@@ -141,8 +162,11 @@ export const SAMPLE_PRODUCTS: ProductInput[] = [
     cost: 6,
     currency: "USD",
     active: true,
-    minQuantity: 1,
+    // Replicated storage is provisioned a shelf at a time, so the catalogue
+    // says so rather than leaving the rep to remember it.
+    minQuantity: 4,
     maxQuantity: 0,
+    quantityIncrement: 4,
     floorDiscountPercent: 25,
     optionGroups: [],
     rules: [],
@@ -1180,7 +1204,7 @@ export const SAMPLE_QUOTE = {
   notes: "Pricing assumes a 36-month commitment and a single production environment.",
   internalNotes: "Dana wants the residency controls; the training seats are the negotiable part.",
   lines: [
-    { sku: "PLAT-CORE", quantity: 40, discountPercent: 22, options: ["enterprise", "sso", "audit_log"] },
+    { sku: "PLAT-CORE", quantity: 40, discountPercent: 22, options: ["enterprise", "sso", "audit_log", "eu_region"] },
     { sku: "STOR", quantity: 60, discountPercent: 10, options: [] },
     { sku: "ONBOARD", quantity: 1, discountPercent: 0, options: ["standard_scope"] },
     { sku: "TRAIN", quantity: 12, discountPercent: 0, options: [] },
