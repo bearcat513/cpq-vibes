@@ -7,6 +7,7 @@
  */
 import type { Preferences } from "./preferences";
 import type { AgingReport } from "./receivable";
+import type { SampleSetName } from "./samples";
 import type {
   Account,
   Invoice,
@@ -406,5 +407,5 @@ export const api = {
   workspaceExportUrl: WORKSPACE_EXPORT_URL,
   workspaceExportText: () => fetchText(WORKSPACE_EXPORT_URL, "The workspace export"),
 
-  installSample: () => send<SeedReport>("/api/sample", "POST"),
+  installSample: (set: SampleSetName = "nimbus") => send<SeedReport>(`/api/sample?set=${set}`, "POST"),
 };

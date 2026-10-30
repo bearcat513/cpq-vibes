@@ -21,6 +21,7 @@ import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NA
 import { FUNCTION_NAMES } from "../lib/formula";
 import { DEFAULT_PREFERENCES, PREFERENCE_LIMITS, ACCENTS, FONTS, THEMES } from "../lib/preferences";
 import { AGING_BUCKETS } from "../lib/receivable";
+import { SAMPLE_SETS } from "../lib/samples";
 import {
   ACCOUNT_STATUSES,
   APPROVAL_METRICS,
@@ -1254,8 +1255,14 @@ export const OPERATIONS: Operation[] = [
     path: "/api/sample",
     tag: "Workspace",
     operationId: "installSample",
-    summary: "Install the worked example: catalogue, policy, customers, a quote",
+    summary: "Install a worked example: catalogue, policy, customers, quotes",
     description: "Additive — anything already here under the same SKU or name is left exactly as it is.",
+    parameters: [
+      queryParam("set", "Which example. `nimbus`, the default, is B2B software; `healthcare` is data archiving.", {
+        type: "string",
+        enum: [...SAMPLE_SETS],
+      }),
+    ],
     responses: { "201": jsonResponse("What was installed.", ref("SeedReport")) },
   },
 ];

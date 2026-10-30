@@ -1616,6 +1616,43 @@ describe("the worked example", () => {
     expect(second.skipped.products).toBe(8);
   });
 
+  signedIn("the healthcare set arrives with quotes at every stage", async () => {
+    const hana = await register(`hana-${suffix}@example.com`);
+
+    const first = await post("/api/sample?set=healthcare", {}, { cookie: hana });
+    expect(first.created.products).toBe(42);
+    expect(first.created.priceBooks).toBe(4);
+    expect(first.created.accounts).toBe(5);
+    expect(first.created.quotes).toBe(5);
+    expect(first.notes.filter((note: string) => note.includes("stopped short"))).toEqual([]);
+
+    const quotes = await json("/api/quotes?limit=0", { cookie: hana });
+    const statuses = Object.fromEntries(quotes.map((quote: any) => [quote.name.split(" - ")[0], quote.status]));
+    expect(statuses).toEqual({
+      Riverbend: "accepted",
+      Lakeshore: "approved",
+      "Prairie View": "sent",
+      "Bluff County": "in_review",
+      "Cedar Valley": "draft",
+    });
+
+    // A customer with a contract book is priced from it without the quote naming it.
+    const riverbend = quotes.find((quote: any) => quote.name.startsWith("Riverbend"));
+    const whole = await json(`/api/quotes/${riverbend.id}`, { cookie: hana });
+    expect(whole.lines.find((line: any) => line.sku === "HST-HOT").unitPrice).toBe(240);
+
+    const second = await post("/api/sample?set=healthcare", {}, { cookie: hana });
+    expect(second.created.quotes ?? 0).toBe(0);
+    expect(second.skipped.quotes).toBe(5);
+    expect(second.skipped.products).toBe(42);
+  });
+
+  signedIn("an unknown set is refused", async () => {
+    const ivo = await register(`ivo-${suffix}@example.com`);
+    const response = await fetch(`${BASE}/api/sample?set=nope`, { method: "POST", headers: { cookie: ivo } });
+    expect(response.status).toBe(400);
+  });
+
   signedIn("it arrives with a receivables book spread across the aging", async () => {
     const erin = await register(`erin-${suffix}@example.com`);
     const report = await post("/api/sample", {}, { cookie: erin });

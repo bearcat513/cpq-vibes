@@ -213,6 +213,9 @@ stakes are sharper: a client that could set its own balance could mark its own d
   than a clean one. No text is no watermark: the key is dropped rather than stored empty, the same
   rule the letterhead follows
 - `src/lib/validate.ts` — every untrusted input, shared by the REST API and the file importer
+- `src/lib/samples.ts` / `samplesHealthcare.ts` — the two worked examples, installed by
+  `src/server/seed.ts` (`POST /api/sample?set=`). The second is the workbook in `tools/`, and its
+  header explains how block and percent-of-license pricing map onto this engine
 - `src/server/quotes.ts` — pricing orchestration, lifecycle and revisions
 - `src/server/invoices.ts` — the receivables orchestration, and where three rules are enforced
   rather than left to the UI: **an issued invoice's lines are fixed** (change what is owed with a

@@ -347,6 +347,13 @@ between them they use every block, the letterhead, the whole customer-facing tot
 kinds of image, and **Start from an example** on the Templates screen opens any of them as a draft
 to take apart.
 
+**Install the healthcare sample** beside it adds a second example built from the workbook in
+`tools/`: 42 data-archiving products, a list price book and three customer contract books, five
+fictional customers, and five quotes left at every stage from draft to accepted. Its prices are the
+workbook's illustrative ones; its costs, and the subsystem prices the workbook leaves out, are
+invented and marked in `src/lib/samplesHealthcare.ts`. Install it in an empty account: pricing and
+approval rules apply to the whole workspace, so the first sample's would apply to its quotes too.
+
 It is additive and idempotent by SKU and name — running it twice does not produce two catalogues,
 and it never overwrites something you have edited. Everything goes in through the same validators
 and the same pricing engine as anything else: if it would not import as a file, it does not install

@@ -87,6 +87,7 @@ import {
   voidInvoice,
 } from "./server/invoices";
 import { installSample } from "./server/seed";
+import { SAMPLE_SETS, type SampleSetName } from "./lib/samples";
 import { API_KEY_HEADER, API_KEY_PREFIX, requireSessionToken, requireToken } from "./server/session";
 import {
   addShare,
@@ -1303,8 +1304,14 @@ const server = serve({
       POST: guarded(async (token, req) => {
         const me = await sessionUser(req);
         if (!me) return fail("Sign in to continue.", 401);
+        const set = new URL(req.url).searchParams.get("set") ?? "nimbus";
+        if (!SAMPLE_SETS.includes(set as SampleSetName)) {
+          return fail(`No such sample: "${set}". Choose one of ${SAMPLE_SETS.join(", ")}.`, 400);
+        }
         const preferences = await readPreferences(token);
-        return Response.json(await installSample(token, me.email, preferences.quoteValidDays), { status: 201 });
+        return Response.json(await installSample(token, me.email, preferences.quoteValidDays, set as SampleSetName), {
+          status: 201,
+        });
       }),
     },
 

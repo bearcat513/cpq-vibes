@@ -9,6 +9,7 @@ import { Field, Notice, Section } from "./common";
 import { api, type Meta, type SessionUser } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { ACCENTS, CURRENCIES, FONTS, PREFERENCE_LIMITS, THEMES, type Preferences } from "@/lib/preferences";
+import type { SampleSetName } from "@/lib/samples";
 import type { PriceBook, ProposalTemplate } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -41,10 +42,10 @@ export function SettingsPanel(props: Props) {
   const { me, preferences, priceBooks, templates, meta } = props;
   const [installing, setInstalling] = useState(false);
 
-  const installSample = async () => {
+  const installSample = async (set: SampleSetName) => {
     setInstalling(true);
     try {
-      const report = await api.installSample();
+      const report = await api.installSample(set);
       await props.onSampleInstalled();
       const created = Object.entries(report.created)
         .map(([what, count]) => `${count} ${what}`)
@@ -227,16 +228,19 @@ export function SettingsPanel(props: Props) {
 
       <Section
         title="The worked example"
-        description="A catalogue, the policy around it, two customers and a quote that trips the approval ladder."
+        description="A catalogue, the policy around it, customers and quotes that trip the approval ladder."
       >
         <div className="flex flex-wrap items-center gap-3 p-4">
-          <Button onClick={() => void installSample()} disabled={installing}>
+          <Button onClick={() => void installSample("nimbus")} disabled={installing}>
             {installing ? <Loader2 className="animate-spin" /> : <Sparkles />} Install the sample
+          </Button>
+          <Button variant="outline" onClick={() => void installSample("healthcare")} disabled={installing}>
+            {installing ? <Loader2 className="animate-spin" /> : <Sparkles />} Install the healthcare sample
           </Button>
           <p className="text-xs text-muted-foreground">
             {props.hasCatalogue
               ? "Additive — anything already here by the same SKU or name is left exactly as it is."
-              : "Eight products, two price books, three pricing rules, five approval rules and a sample quote."}
+              : "Software: eight products, a quote and a receivables book. Healthcare: 42 archive products, four price books, five customers and five quotes at every stage."}
           </p>
         </div>
       </Section>

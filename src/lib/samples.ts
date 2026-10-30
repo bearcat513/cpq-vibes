@@ -25,6 +25,10 @@ import { SAMPLE_COVER_BANNER, SAMPLE_LOGO } from "./sampleBrand";
 import type { Invoice, InvoiceLine, ProposalFormat, Product, Quote, TemplateKind } from "./types";
 import type { AccountInput, ApprovalRuleInput, PriceBookInput, PricingRuleInput, ProductInput } from "./validate";
 
+/** The worked examples there are to install. This file is `nimbus`. */
+export const SAMPLE_SETS = ["nimbus", "healthcare"] as const;
+export type SampleSetName = (typeof SAMPLE_SETS)[number];
+
 /* -------------------------------- products ------------------------------- */
 
 export const SAMPLE_PRODUCTS: ProductInput[] = [
