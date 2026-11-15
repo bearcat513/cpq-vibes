@@ -47,7 +47,7 @@ const harbour = (): Account => ({
   taxExempt: false,
   taxPercent: 8.5,
   notes: "Renewal in Q3.",
-  ownerId: "u",
+  ownerId: "u", orgId: "",
   createdAt: "",
   updatedAt: "2026-05-01T00:00:00Z",
 });
@@ -73,7 +73,7 @@ const priceBook = (): PriceBook => ({
   validFrom: "",
   validTo: "",
   entries: [],
-  ownerId: "u",
+  ownerId: "u", orgId: "",
   sharedWith: [],
   createdAt: "",
   updatedAt: "",

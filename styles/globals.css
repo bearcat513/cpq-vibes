@@ -572,3 +572,17 @@
     scroll-behavior: auto !important;
   }
 }
+
+/*
+ * The same, asked for on the account (Settings → Appearance → Motion) rather
+ * than on the machine — for a shared or borrowed computer whose settings are
+ * not yours to change. `App.tsx` puts the attribute on <html>.
+ */
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::after,
+:root[data-motion="reduced"] *::before {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior: auto !important;
+}

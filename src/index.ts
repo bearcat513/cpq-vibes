@@ -1,7 +1,24 @@
 import { serve } from "bun";
 import index from "./index.html";
 import docs from "./docs.html";
-import { authRoutes, sessionUser } from "./server/auth";
+import tablePage from "./table.html";
+import { authRoutes } from "./server/auth";
+import { loadContext, requireContext, requirePermission, withContext } from "./server/context";
+import {
+  addMember,
+  changeMemberRole,
+  createOrganization,
+  listMembers,
+  readOrgUpdate,
+  readRole,
+  removeMember,
+  revokeInvitation,
+  supportedTimeZones,
+  switchOrganization,
+  updateOrganization,
+} from "./server/orgs";
+import { withLifecycle } from "./lib/quoteLifecycle";
+import { ROLES, ROLE_DESCRIPTIONS, PERMISSIONS } from "./lib/organization";
 import {
   createAccount,
   createApprovalRule,
@@ -33,6 +50,8 @@ import {
   listProducts,
   listProposalTemplates,
   listQuotes,
+  searchQuotes,
+  countQuotesByStatus,
   listCredits,
   listInvoices,
   listInvoicesForAccount,
@@ -71,7 +90,6 @@ import {
   snapshotCustomer,
   submitQuote,
   transitionQuote,
-  withExpiry,
 } from "./server/quotes";
 import {
   ageReceivables,
@@ -87,6 +105,9 @@ import {
   voidInvoice,
 } from "./server/invoices";
 import { installSample } from "./server/seed";
+import { listTable, readTableRequest } from "./server/table";
+import { createRecordForm, readRecord, readRecordUpdate, updateRecord } from "./server/recordForms";
+import { DEFAULT_TABLE_PAGE_SIZE, readSort } from "./lib/dataTable";
 import { SAMPLE_SETS, type SampleSetName } from "./lib/samples";
 import { API_KEY_HEADER, API_KEY_PREFIX, requireSessionToken, requireToken } from "./server/session";
 import {
@@ -167,14 +188,20 @@ import {
  * A route that needs an account.
  *
  * The token goes on to PocketBase untouched, which is what actually decides
- * whether the caller may see a record — this only refuses the anonymous case
- * up front, where PocketBase would otherwise answer with an empty list rather
- * than an error.
+ * whether the caller may see a record. Before the handler runs, PocketBase is
+ * asked who the caller is — their organization, its time zone, and their role
+ * there (src/server/context.ts) — which refuses a spent credential up front,
+ * where PocketBase would otherwise answer with an empty list, and puts
+ * "today" in the organization's calendar for everything the handler calls.
  */
 function guarded<T extends { params?: Record<string, string> }>(
   fn: (token: string, req: Request & T) => Promise<Response> | Response,
 ) {
-  return handler<T>(req => fn(requireToken(req), req));
+  return handler<T>(async req => {
+    const token = requireToken(req);
+    const context = await loadContext(token);
+    return withContext(context, () => fn(token, req));
+  });
 }
 
 /** Unwraps a validator, turning its one sentence into a 400. */
@@ -400,14 +427,22 @@ const server = serve({
             metrics: APPROVAL_METRIC_LABELS,
             ladder: "Levels are cumulative: a quote needs every level at or below the highest it trips.",
             editing: "Editing a quote voids its approvals — they are recomputed from scratch on each submit.",
-            visibility: "An approver can read and decide the quote they are asked about, and nothing else of yours.",
+            visibility:
+              "An approver can read and decide the quote they are asked about — whatever their role, and even from " +
+              "outside the organization — and nothing else.",
           },
           quotes: {
             statuses: QUOTE_STATUSES,
             transitions: QUOTE_TRANSITIONS,
             editable: "draft and rejected. Anything else is revised, not edited.",
             expiry: "A sent quote past validUntil reads as expired without being rewritten.",
-            numbering: "Q-<year>-<sequence> per account; a revision appends -r<version>.",
+            superseded:
+              "Revising a quote supersedes it: it can no longer be sent, accepted or invoiced. Deleting the revision " +
+              "brings it back. Only the latest version can be revised, and an accepted quote cannot be.",
+            numbering:
+              "Q-<year>-<sequence> per organization, from a counter, in the organization's calendar year; " +
+              "every revision shares its original's number with -r<version> appended.",
+            search: "GET /api/quotes?q=&status=&page=&perPage= — the body is the page; X-Total-Count says how many match.",
           },
           receivables: {
             what: "The server totals every invoice it stores. Totals and balances in a request body are ignored.",
@@ -424,7 +459,9 @@ const server = serve({
               "total − payments − credits, computed on every read rather than cached — a stored balance can " +
               "disagree with the payments behind it. It may go negative: an overpaid invoice owes money back.",
             editing: "draft only. An issued invoice is changed with a credit, never an edit.",
-            numbering: "INV-<year>-<sequence> per account. Nothing ever issued is deleted, so the run stays gapless.",
+            numbering:
+              "INV-<year>-<sequence> per organization, taken when the invoice is issued — a draft reads DRAFT-<id>. " +
+              "Nothing ever issued is deleted, so the run stays gapless.",
             paymentMethods: PAYMENT_METHODS,
             creditReasons: CREDIT_REASONS,
             aging: "Five buckets on the balance, not the total: not yet due, 1–30, 31–60, 61–90, 90+ days past due.",
@@ -472,8 +509,19 @@ const server = serve({
               },
             },
           },
+          organizations: {
+            what:
+              "Records belong to an organization, not to a person. Everyone in it reads everything in it; what they " +
+              "may change is decided by their role. GET /api/org says where you are and as what.",
+            roles: Object.fromEntries(ROLES.map(role => [role, ROLE_DESCRIPTIONS[role]])),
+            permissions: PERMISSIONS,
+            approving: "Not a role: whoever an approval rule names may decide the quote it trips.",
+            timeZone: "Every date the app works out — expiry, due dates, overdue — is a day in the organization's time zone.",
+            keys: "An API key acts in the organization it was issued in, with its owner's role there.",
+            signUp: "Open by default. CPQ_SIGNUP=invite limits registration to addresses an admin has invited.",
+          },
           sharing: {
-            what: `${SHAREABLE_KINDS.join(", ")} can be shared with other accounts, read-only.`,
+            what: `${SHAREABLE_KINDS.join(", ")} can be shared with accounts outside the organization, read-only.`,
             recipientCan: "List, read, export it, and quote from it. The quotes they build are their own.",
             recipientCannot: "Rename, edit, delete, or re-share it.",
             accounts: "Customers and rules are never shared — a quote carries its customer's details itself.",
@@ -555,6 +603,74 @@ const server = serve({
           preferenceDefaults: DEFAULT_PREFERENCES,
         }),
       ),
+    },
+
+    /* --------------------------- organizations ---------------------------- */
+
+    /**
+     * The organization you are working in, your role there, and every one you
+     * belong to. Renaming it or setting its time zone is for its admins.
+     */
+    "/api/org": {
+      GET: guarded(() => {
+        const context = requireContext();
+        return Response.json({
+          org: context.org,
+          role: context.role,
+          memberships: context.memberships,
+          roles: ROLES.map(role => ({ role, description: ROLE_DESCRIPTIONS[role] })),
+          permissions: PERMISSIONS,
+          timeZones: supportedTimeZones(),
+        });
+      }),
+      PUT: guarded(async (token, req) => {
+        const context = requirePermission("org.manage", "change the organization's settings");
+        return Response.json(await updateOrganization(token, context.org!.id, readOrgUpdate(await readJson(req))));
+      }),
+    },
+
+    /** Members and open invitations. Adding, changing and removing take a session, not a key. */
+    "/api/org/members": {
+      GET: guarded(async token => Response.json(await listMembers(token))),
+      POST: guarded(async (_token, req) => {
+        const raw = await body(req);
+        return Response.json(await addMember(requireSessionToken(req), readEmail(raw.email), readRole(raw.role)), {
+          status: 201,
+        });
+      }),
+    },
+
+    "/api/org/members/:id": {
+      PUT: guarded<{ params: { id: string } }>(async (_token, req) =>
+        Response.json(await changeMemberRole(requireSessionToken(req), req.params.id, readRole((await body(req)).role))),
+      ),
+      DELETE: guarded<{ params: { id: string } }>(async (_token, req) =>
+        Response.json(await removeMember(requireSessionToken(req), req.params.id)),
+      ),
+    },
+
+    "/api/org/invitations/:id": {
+      DELETE: guarded<{ params: { id: string } }>(async (_token, req) =>
+        Response.json(await revokeInvitation(requireSessionToken(req), req.params.id)),
+      ),
+    },
+
+    /** Moves your session into another organization you belong to. */
+    "/api/org/switch": {
+      POST: guarded(async (_token, req) => {
+        const orgId = String((await body(req)).orgId ?? "").trim();
+        if (!orgId) throw new ApiError('"orgId" is required.');
+        return Response.json(await switchOrganization(requireSessionToken(req), orgId));
+      }),
+    },
+
+    /** Starts a new organization with you as its admin, and moves you into it. */
+    "/api/orgs": {
+      POST: guarded(async (_token, req) => {
+        const name = String((await body(req)).name ?? "").trim();
+        if (!name) throw new ApiError('"name" is required.');
+        return Response.json(await createOrganization(requireSessionToken(req), name), { status: 201 });
+      }),
     },
 
     /* ---------------------------- preferences ---------------------------- */
@@ -646,7 +762,7 @@ const server = serve({
       GET: guarded<{ params: { id: string } }>(async (token, req) => {
         const account = await getAccount(token, req.params.id);
         if (!account) return fail("Account not found.", 404);
-        return Response.json(await listQuotesForAccount(token, account.id));
+        return Response.json((await listQuotesForAccount(token, account.id)).map(quote => withLifecycle(quote)));
       }),
     },
 
@@ -740,6 +856,9 @@ const server = serve({
      */
     "/api/catalog/import": {
       POST: guarded(async (token, req) => {
+        // Checked up front: the rules would refuse each write anyway, but an
+        // import refused halfway through leaves half a catalogue behind.
+        requirePermission("catalogue.write", "import a catalogue");
         const parsed = parseCatalogFile(await readJson(req));
         if (!parsed.ok) return fail(parsed.error);
 
@@ -797,10 +916,40 @@ const server = serve({
 
     /* -------------------------------- quotes ----------------------------- */
 
+    /**
+     * One page of quotes, newest first — searched and filtered by PocketBase,
+     * so an old quote can be found however many newer ones there are. The body
+     * stays an array, as it always was; the page arithmetic is in headers.
+     */
     "/api/quotes": {
       GET: guarded(async (token, req) => {
-        const all = await listQuotes(token, intParam(query(req), "limit", 50));
-        return Response.json(all.map(quote => withExpiry(quote)));
+        const params = query(req);
+        const status = params.get("status") ?? "";
+        if (status && !QUOTE_STATUSES.includes(status as QuoteStatus)) {
+          throw new ApiError(`"status" must be one of ${QUOTE_STATUSES.join(", ")}.`);
+        }
+        const result = await searchQuotes(
+          token,
+          {
+            q: params.get("q") ?? "",
+            status: status as QuoteStatus | "",
+            page: intParam(params, "page", 1),
+            // `limit` is the name this took before it paged.
+            perPage: intParam(params, "perPage", intParam(params, "limit", 50)),
+          },
+          today(),
+        );
+        return Response.json(
+          result.items.map(quote => withLifecycle(quote)),
+          {
+            headers: {
+              "X-Total-Count": String(result.totalItems),
+              "X-Page": String(result.page),
+              "X-Per-Page": String(result.perPage),
+              "X-Total-Pages": String(result.totalPages),
+            },
+          },
+        );
       }),
       POST: guarded(async (token, req) => {
         const { header, lines } = await readQuoteBody(req);
@@ -810,12 +959,18 @@ const server = serve({
       }),
     },
 
+    /** How many quotes match in each status — the list's filter chips. */
+    "/api/quotes/counts": {
+      GET: guarded(async (token, req) =>
+        Response.json(await countQuotesByStatus(token, QUOTE_STATUSES, today(), query(req).get("q") ?? "")),
+      ),
+    },
+
     /** The approvals queue: quotes submitted to this account by someone else. */
     "/api/quotes/awaiting": {
       GET: guarded(async (token, req) => {
-        const me = await sessionUser(req);
-        if (!me) return fail("Sign in to continue.", 401);
-        return Response.json(await listQuotesAwaiting(token, me.id));
+        const { user } = requireContext();
+        return Response.json((await listQuotesAwaiting(token, user.id)).map(quote => withLifecycle(quote)));
       }),
     },
 
@@ -881,7 +1036,7 @@ const server = serve({
     "/api/quotes/:id": {
       GET: guarded<{ params: { id: string } }>(async (token, req) => {
         const quote = await getQuote(token, req.params.id);
-        return quote ? Response.json(withExpiry(quote)) : fail("Quote not found.", 404);
+        return quote ? Response.json(withLifecycle(quote)) : fail("Quote not found.", 404);
       }),
       PUT: guarded<{ params: { id: string } }>(async (token, req) => {
         const { header, lines } = await readQuoteBody(req);
@@ -917,8 +1072,7 @@ const server = serve({
 
     "/api/quotes/:id/decision": {
       POST: guarded<{ params: { id: string } }>(async (token, req) => {
-        const me = await sessionUser(req);
-        if (!me) return fail("Sign in to continue.", 401);
+        const me = requireContext().user;
 
         const raw = await body(req);
         const decision = String(raw.decision ?? "");
@@ -952,7 +1106,7 @@ const server = serve({
       GET: guarded<{ params: { id: string } }>(async (token, req) => {
         const quote = await getQuote(token, req.params.id);
         if (!quote) return fail("Quote not found.", 404);
-        return exportResponse(quoteRows(quote), formatParam(query(req)) ?? "json", quote.number, withExpiry(quote));
+        return exportResponse(quoteRows(quote), formatParam(query(req)) ?? "json", quote.number, withLifecycle(quote));
       }),
     },
 
@@ -964,8 +1118,7 @@ const server = serve({
      */
     "/api/quotes/:id/document": {
       GET: guarded<{ params: { id: string } }>(async (token, req) => {
-        const me = await sessionUser(req);
-        if (!me) return fail("Sign in to continue.", 401);
+        const me = requireContext().user;
 
         const quote = await getQuote(token, req.params.id);
         if (!quote) return fail("Quote not found.", 404);
@@ -975,7 +1128,7 @@ const server = serve({
         if (template instanceof Response) return template;
 
         const context = {
-          quote: withExpiry(quote),
+          quote: withLifecycle(quote),
           sellerName: me.name || me.email,
           sellerEmail: me.email,
           locale: (await readPreferences(token)).locale || undefined,
@@ -1147,8 +1300,7 @@ const server = serve({
      */
     "/api/invoices/:id/document": {
       GET: guarded<{ params: { id: string } }>(async (token, req) => {
-        const me = await sessionUser(req);
-        if (!me) return fail("Sign in to continue.", 401);
+        const me = requireContext().user;
 
         const invoice = await getInvoice(token, req.params.id);
         if (!invoice) return fail("Invoice not found.", 404);
@@ -1257,8 +1409,7 @@ const server = serve({
      */
     "/api/export": {
       GET: guarded(async (token, req) => {
-        const me = await sessionUser(req);
-        if (!me) return fail("Sign in to continue.", 401);
+        const me = requireContext().user;
 
         const [productList, books, pricing, approvals, accountList, templates, quoteList, invoiceList] =
           await Promise.all([
@@ -1302,8 +1453,8 @@ const server = serve({
 
     "/api/sample": {
       POST: guarded(async (token, req) => {
-        const me = await sessionUser(req);
-        if (!me) return fail("Sign in to continue.", 401);
+        // A sample writes every collection; only an admin may write them all.
+        const me = requirePermission("samples.install", "install a worked example").user;
         const set = new URL(req.url).searchParams.get("set") ?? "nimbus";
         if (!SAMPLE_SETS.includes(set as SampleSetName)) {
           return fail(`No such sample: "${set}". Choose one of ${SAMPLE_SETS.join(", ")}.`, 400);
@@ -1315,6 +1466,49 @@ const server = serve({
       }),
     },
 
+    /* ------------------------------ data table --------------------------- */
+
+    /**
+     * One page of any collection, filtered and sorted by PocketBase, on the
+     * caller's own credential — the collection's rules decide which rows come
+     * back. What `/table` reads. See src/server/table.ts.
+     */
+    "/api/table/:collection": {
+      GET: guarded<{ params: { collection: string } }>(async (token, req) => {
+        const params = query(req);
+        const sort = must(readSort(params.get("sort")));
+        const request = readTableRequest({
+          filter: params.get("filter"),
+          sort,
+          page: intParam(params, "page", 1),
+          perPage: intParam(params, "perPage", DEFAULT_TABLE_PAGE_SIZE),
+        });
+        return Response.json(await listTable(token, req.params.collection, request));
+      }),
+    },
+
+    /**
+     * One record and the form to draw it with, and the write that saves it —
+     * what a click on a row opens. The layout (from `record_forms`, or built
+     * from the record) narrows what is written; the collection's rules decide
+     * whether it may be. See src/server/recordForms.ts.
+     */
+    "/api/table/:collection/:id": {
+      GET: guarded<{ params: { collection: string; id: string } }>(async (token, req) =>
+        Response.json(await readRecord(token, req.params.collection, req.params.id)),
+      ),
+      PATCH: guarded<{ params: { collection: string; id: string } }>(async (token, req) =>
+        Response.json(await updateRecord(token, req.params.collection, req.params.id, readRecordUpdate(await readJson(req)))),
+      ),
+    },
+
+    /** Store a collection's default form layout in `record_forms`, to be edited there. */
+    "/api/record-forms/:collection": {
+      POST: guarded<{ params: { collection: string } }>(async (token, req) =>
+        Response.json(await createRecordForm(token, req.params.collection), { status: 201 }),
+      ),
+    },
+
     // Unknown API paths must not fall through to the SPA's HTML.
     "/api/*": handler(req => fail(`No such endpoint: ${req.method} ${new URL(req.url).pathname}. See GET /api.`, 404)),
 
@@ -1324,6 +1518,13 @@ const server = serve({
      * document it renders needs no credential.
      */
     "/docs": docs,
+
+    /**
+     * A record browser: `/table?table_name=<collection>&query=<filter>`. Its
+     * own entry point for the same reason `/docs` is — none of the app has to
+     * load for it, and the link is the whole of its state.
+     */
+    "/table": tablePage,
 
     // Serve the SPA for everything else.
     "/*": index,
@@ -1339,3 +1540,4 @@ console.log(`📄 CPQ running at ${server.url}`);
 console.log(`   data: ${databaseUrl()} (PocketBase)`);
 console.log(`   API:  ${new URL("/api", server.url).href}`);
 console.log(`   docs: ${new URL("/docs", server.url).href}`);
+console.log(`   table: ${new URL("/table", server.url).href}?table_name=quotes`);

@@ -28,7 +28,7 @@ import {
   type TokenDescription,
 } from "./document";
 import { formatMoney, formatPercent, round } from "./money";
-import { daysOverdue, invoiceStatus, today } from "./receivable";
+import { daysOverdue, invoiceReference, invoiceStatus, today } from "./receivable";
 import {
   INVOICE_STATUS_LABELS,
   type CurrencyCode,
@@ -122,7 +122,8 @@ function resolve(context: InvoiceDocumentContext, format: ProposalFormat): Recor
   const totals = invoice.totals;
 
   return {
-    "invoice.number": invoice.number,
+    // A draft has no number yet; it prints as one.
+    "invoice.number": invoiceReference(invoice) === "Draft" ? "DRAFT" : invoice.number,
     // Derived, never stored — see the note at the top of this file.
     "invoice.status": INVOICE_STATUS_LABELS[invoiceStatus(invoice, asOf)],
     "invoice.state": invoice.state,

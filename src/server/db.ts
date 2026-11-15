@@ -57,6 +57,7 @@ import { asCurrency } from "../lib/money";
 import { ApiError } from "./http";
 import {
   POCKETBASE_URL,
+  callHook,
   clientFor,
   countRecords,
   isNotFound,
@@ -152,7 +153,11 @@ const jsonObject = <T>(value: unknown, fallback: T): T =>
 
 const stamps = (row: Record_) => ({ createdAt: toIso(row.created), updatedAt: toIso(row.updated) });
 
-const ownership = (row: Record_) => ({ ownerId: relationId(row.owner), sharedWith: relationIds(row.sharedWith) });
+const ownership = (row: Record_) => ({
+  ownerId: relationId(row.owner),
+  orgId: relationId(row.org),
+  sharedWith: relationIds(row.sharedWith),
+});
 
 function toProduct(row: Record_): Product {
   const definition = jsonObject<Partial<Product>>(row.definition, {});
@@ -217,6 +222,7 @@ function toPricingRule(row: Record_): PricingRule {
     active: row.active !== false,
     message: definition.message ?? "",
     ownerId: relationId(row.owner),
+    orgId: relationId(row.org),
     ...stamps(row),
   };
 }
@@ -244,6 +250,7 @@ function toApprovalRule(row: Record_): ApprovalRule {
     message: definition.message ?? "",
     active: row.active !== false,
     ownerId: relationId(row.owner),
+    orgId: relationId(row.org),
     ...stamps(row),
   };
 }
@@ -297,6 +304,7 @@ function toAccount(row: Record_): Account {
     taxPercent: Number(details.taxPercent ?? 0),
     notes: details.notes ?? "",
     ownerId: relationId(row.owner),
+    orgId: relationId(row.org),
     ...stamps(row),
   };
 }
@@ -370,6 +378,7 @@ function toQuote(row: Record_): Quote {
     status: (String(row.status ?? "draft") || "draft") as QuoteStatus,
     version: Number(row.version ?? 1),
     supersedesId: relationId(row.supersedes) || null,
+    supersededById: relationId(row.supersededBy) || null,
     // Spread over the empty snapshot rather than trusting what is stored: a
     // quote written before shipping addresses existed has a header with
     // fewer keys, and everything downstream reads the fields unguarded.
@@ -388,6 +397,7 @@ function toQuote(row: Record_): Quote {
     approvals: jsonArray<unknown>(row.approvals).map(toApprovalRequest),
     approverIds: relationIds(row.approvers),
     ownerId: relationId(row.owner),
+    orgId: relationId(row.org),
     sharedWith: relationIds(row.sharedWith),
     sentAt: toIso(row.sentAt),
     decidedAt: toIso(row.decidedAt),
@@ -657,7 +667,7 @@ export const deleteProposalTemplate = (token: string, id: string) => remove(toke
 
 /** Everything but `lines`, `totals` and `approvals` — the bulk of a quote. */
 const QUOTE_SUMMARY_FIELDS =
-  "id,number,name,status,version,supersedes,priceBook,currency,validUntil,header,totals,approvals,approvers,owner,sharedWith,sentAt,decidedAt,created,updated,lineCount";
+  "id,number,name,status,version,supersedes,supersededBy,priceBook,currency,validUntil,header,totals,approvals,approvers,owner,org,sharedWith,sentAt,decidedAt,created,updated,lineCount";
 
 export type QuoteRecordInput = {
   number: string;
@@ -722,8 +732,169 @@ function quoteBody(input: QuoteRecordInput): Record_ {
   };
 }
 
+export type QuoteQuery = {
+  /** Matched against the number, the name and the customer's name. */
+  q?: string;
+  /** An effective status — `expired` and `superseded` included. */
+  status?: QuoteStatus | "";
+  /** 1-based. */
+  page?: number;
+  perPage?: number;
+};
+
+export type QuotePage = {
+  items: QuoteSummary[];
+  page: number;
+  perPage: number;
+  totalItems: number;
+  totalPages: number;
+};
+
+/**
+ * The PocketBase filter for one *effective* status.
+ *
+ * `expired` and `superseded` are never stored (src/lib/quoteLifecycle.ts), so
+ * filtering on the column alone would put an expired quote under "sent" and
+ * find nothing under "expired". Each status here is the same test
+ * `effectiveStatus` applies, written as a filter. `asOf` is the
+ * organization's today.
+ */
+export function quoteStatusFilter(status: QuoteStatus, asOf: string): { filter: string; params: Record_ } {
+  const live = 'supersededBy = ""';
+  switch (status) {
+    case "superseded":
+      return { filter: 'supersededBy != "" && status != "accepted"', params: {} };
+    case "accepted":
+      return { filter: 'status = "accepted"', params: {} };
+    case "expired":
+      return { filter: `${live} && status = "sent" && validUntil != "" && validUntil < {:asOf}`, params: { asOf } };
+    case "sent":
+      return { filter: `${live} && status = "sent" && (validUntil = "" || validUntil >= {:asOf})`, params: { asOf } };
+    default:
+      return { filter: `${live} && status = {:status}`, params: { status } };
+  }
+}
+
+/**
+ * One page of quotes, newest first, searched and filtered in PocketBase.
+ *
+ * The list used to be the caller's most recent fifty, searched in the
+ * browser — so a quote from last year could not be found at all once fifty
+ * newer ones existed. Now the search runs where the quotes are.
+ */
+export async function searchQuotes(token: string, query: QuoteQuery, asOf: string): Promise<QuotePage> {
+  const client = clientFor(token);
+  const parts: string[] = [];
+  const q = String(query.q ?? "").trim();
+  if (q) parts.push(client.filter("(number ~ {:q} || name ~ {:q} || header.customer.name ~ {:q})", { q }));
+  if (query.status) {
+    const { filter, params } = quoteStatusFilter(query.status, asOf);
+    parts.push(client.filter(filter, params));
+  }
+
+  // 0 meant "everything" when this took `limit`; it now means the largest page.
+  const asked = Math.trunc(query.perPage ?? 50);
+  const perPage = asked <= 0 ? MAX_PER_PAGE : Math.min(asked, MAX_PER_PAGE);
+  const page = Math.max(1, Math.trunc(query.page ?? 1));
+  try {
+    const result = await client.collection("quotes").getList(page, perPage, {
+      sort: "-updated",
+      fields: QUOTE_SUMMARY_FIELDS,
+      filter: parts.map(part => `(${part})`).join(" && ") || undefined,
+    });
+    return {
+      items: result.items.map(row => toQuoteSummary(row as Record_)),
+      page: result.page,
+      perPage: result.perPage,
+      totalItems: result.totalItems,
+      totalPages: result.totalPages,
+    };
+  } catch (error) {
+    throw toApiError(error, "Could not list quotes");
+  }
+}
+
+/**
+ * How many quotes the caller can see in each effective status, for the
+ * filter chips — one count per status, each a `getList(1, 1)` that transfers
+ * no records.
+ */
+export async function countQuotesByStatus(
+  token: string,
+  statuses: readonly QuoteStatus[],
+  asOf: string,
+  q = "",
+): Promise<Record<string, number>> {
+  const client = clientFor(token);
+  const search = q.trim()
+    ? client.filter("(number ~ {:q} || name ~ {:q} || header.customer.name ~ {:q})", { q: q.trim() })
+    : "";
+  const count = async (filter: string) =>
+    (await client.collection("quotes").getList(1, 1, { fields: "id", filter: filter || undefined })).totalItems;
+
+  try {
+    const entries = await Promise.all(
+      statuses.map(async status => {
+        const { filter, params } = quoteStatusFilter(status, asOf);
+        const parts = [client.filter(filter, params), search].filter(Boolean).map(part => `(${part})`);
+        return [status, await count(parts.join(" && "))] as const;
+      }),
+    );
+    return { all: await count(search), ...Object.fromEntries(entries) };
+  } catch (error) {
+    throw toApiError(error, "Could not count quotes");
+  }
+}
+
 export const listQuotes = async (token: string, limit = 50): Promise<QuoteSummary[]> =>
   (await readMany(token, "quotes", { limit, sort: "-updated", fields: QUOTE_SUMMARY_FIELDS })).map(toQuoteSummary);
+
+/** Every revision of one quote, the original among them — for "was this already invoiced". */
+export async function listRevisionChain(token: string, quote: Pick<Quote, "id" | "supersedesId">): Promise<QuoteSummary[]> {
+  const seen = new Map<string, QuoteSummary>();
+  // Walk back to the original, then collect everything that revises anything
+  // in the chain. Chains are short; this is a handful of reads.
+  let rootId = quote.id;
+  let parent = quote.supersedesId;
+  for (let hops = 0; parent && hops < 50; hops++) {
+    const row = await readOne(token, "quotes", parent, { fields: QUOTE_SUMMARY_FIELDS });
+    if (!row) break;
+    const summary = toQuoteSummary(row);
+    seen.set(summary.id, summary);
+    rootId = summary.id;
+    parent = summary.supersedesId;
+  }
+
+  let frontier = [rootId];
+  for (let hops = 0; frontier.length && hops < 50; hops++) {
+    const filter = frontier.map(id => `supersedes = "${id.replace(/"/g, "")}"`).join(" || ");
+    const rows = await readMany(token, "quotes", { limit: 0, sort: "created", fields: QUOTE_SUMMARY_FIELDS, filter });
+    frontier = [];
+    for (const row of rows) {
+      const summary = toQuoteSummary(row);
+      if (seen.has(summary.id) || summary.id === quote.id) continue;
+      seen.set(summary.id, summary);
+      frontier.push(summary.id);
+    }
+  }
+  return [...seen.values()];
+}
+
+/**
+ * Marks a quote as superseded by one of its revisions.
+ *
+ * Written on its own, never by an ordinary save — `quoteBody` has no
+ * `supersededBy` in it, so a save cannot unset it by accident. PocketBase
+ * checks that the revision really does revise this quote (pb_hooks/rules/
+ * approvals.js).
+ */
+export async function markSuperseded(token: string, id: string, revisionId: string): Promise<void> {
+  try {
+    await clientFor(token).collection("quotes").update(id, { supersededBy: revisionId });
+  } catch (error) {
+    throw toApiError(error, "Could not mark the quote as superseded");
+  }
+}
 
 /**
  * Every quote written for one customer, newest first.
@@ -777,23 +948,20 @@ export async function updateQuote(token: string, id: string, input: QuoteRecordI
 export const deleteQuote = (token: string, id: string) => remove(token, "quotes", id);
 
 /**
- * The next quote number for this account: `Q-2026-0007`.
+ * The next quote number in the caller's organization: `Q-2026-0007`.
  *
- * Derived from how many quotes the caller already has rather than from a
- * counter, because a counter would need a collection of its own and a lock to
- * go with it. Two quotes created in the same second could collide; the unique
- * index on (owner, number) catches that, and `src/server/quotes.ts` retries.
- * The number is a label, not an identity — `id` is the identity.
+ * Taken from a counter in PocketBase (pb_hooks/lib/orgs.js), per
+ * organization and year, inside a transaction. It used to be a count of the
+ * quotes the caller could see — which counted quotes shared with them and
+ * quotes they were approving, and fell back onto numbers already used when a
+ * share was revoked. `year` is the year in the organization's own calendar.
  */
-export async function nextQuoteNumber(token: string, attempt = 0): Promise<string> {
-  const year = new Date().getFullYear();
-  let count = 0;
-  try {
-    count = await countRecords(token, "quotes");
-  } catch (error) {
-    throw toApiError(error, "Could not work out the next quote number");
-  }
-  return `Q-${year}-${String(count + 1 + attempt).padStart(4, "0")}`;
+export async function nextQuoteNumber(token: string, year: number): Promise<string> {
+  const { number } = await callHook<{ number: string }>(token, "/api/cpq/numbers/quote", {
+    method: "POST",
+    body: JSON.stringify({ year }),
+  });
+  return number;
 }
 
 /* ---------------------------------- meta --------------------------------- */
@@ -860,6 +1028,7 @@ function toPayment(row: Record_): InvoicePayment {
     reference: String(row.reference ?? ""),
     note: String(row.note ?? ""),
     ownerId: relationId(row.owner),
+    orgId: relationId(row.org),
     ...stamps(row),
   };
 }
@@ -873,6 +1042,7 @@ function toCredit(row: Record_): InvoiceCredit {
     reason: (String(row.reason ?? "adjustment") || "adjustment") as InvoiceCredit["reason"],
     note: String(row.note ?? ""),
     ownerId: relationId(row.owner),
+    orgId: relationId(row.org),
     ...stamps(row),
   };
 }
@@ -1176,24 +1346,17 @@ export async function updateInvoice(token: string, id: string, input: InvoiceRec
 export const deleteInvoice = (token: string, id: string) => remove(token, "invoices", id);
 
 /**
- * The next invoice number: `INV-2026-0007`.
+ * Issues a draft: PocketBase takes the next invoice number and sets the state
+ * and the dates, in one transaction (pb_hooks/lib/orgs.js).
  *
- * Counted rather than sequenced, exactly like `nextQuoteNumber`, and with the
- * same escape hatch: the unique index on (owner, number) catches a collision
- * and `src/server/invoices.ts` retries with the next one along.
- *
- * Invoice numbers matter more than quote numbers — in most jurisdictions they
- * are supposed to be sequential and gapless — and a count satisfies that
- * while nothing is ever deleted. Deleting a draft leaves a gap, which is why
- * `src/server/invoices.ts` refuses to delete anything that was ever issued.
+ * An invoice is numbered when it is issued rather than when its draft is
+ * created, so a discarded draft never leaves a hole in the issued run — and
+ * numbering and issuing are one write, so a failed issue cannot either.
  */
-export async function nextInvoiceNumber(token: string, attempt = 0): Promise<string> {
-  const year = new Date().getFullYear();
-  let count = 0;
-  try {
-    count = await countRecords(token, "invoices");
-  } catch (error) {
-    throw toApiError(error, "Could not work out the next invoice number");
-  }
-  return `INV-${year}-${String(count + 1 + attempt).padStart(4, "0")}`;
+export async function issueDraftInvoice(token: string, id: string, issueDate: string, dueDate: string): Promise<string> {
+  const { number } = await callHook<{ number: string }>(token, `/api/cpq/invoices/${encodeURIComponent(id)}/issue`, {
+    method: "POST",
+    body: JSON.stringify({ issueDate, dueDate }),
+  });
+  return number;
 }

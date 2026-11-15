@@ -388,3 +388,158 @@ describe("backfilling the template kind", () => {
     ]);
   });
 });
+
+/* --------------------- organizations and roles (1750000010) ---------------- */
+
+/**
+ * Every account becoming the admin of a one-person organization, and every
+ * record following its owner there.
+ *
+ * The property that matters most is the one the tests below keep checking:
+ * **nothing anyone could see before becomes visible to anyone else.** Two
+ * accounts become two organizations, never one.
+ */
+const ORG_MIGRATION = "docker/pb_migrations/1750000010_organizations.js";
+const orgStatement = (name: string) => statement(name, ORG_MIGRATION);
+const forTable = (sql: string, table: string) => sql.split("{table}").join(table);
+
+function orgTables(): Database {
+  const db = new Database(":memory:");
+  db.run("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT, name TEXT, org TEXT DEFAULT '', role TEXT DEFAULT '')");
+  db.run("CREATE TABLE organizations (id TEXT PRIMARY KEY, name TEXT, settings TEXT, created TEXT, updated TEXT)");
+  db.run("CREATE TABLE memberships (id TEXT PRIMARY KEY, org TEXT, user TEXT, role TEXT, created TEXT, updated TEXT)");
+  db.run("CREATE TABLE counters (id TEXT PRIMARY KEY, org TEXT, kind TEXT, year INTEGER, value INTEGER, created TEXT, updated TEXT)");
+  db.run("CREATE TABLE products (id TEXT PRIMARY KEY, owner TEXT, org TEXT DEFAULT '')");
+  db.run(
+    "CREATE TABLE quotes (id TEXT PRIMARY KEY, owner TEXT, org TEXT DEFAULT '', number TEXT, status TEXT, version INTEGER, supersedes TEXT DEFAULT '', supersededBy TEXT DEFAULT '', created TEXT)",
+  );
+  db.run("CREATE TABLE invoices (id TEXT PRIMARY KEY, owner TEXT, org TEXT DEFAULT '', number TEXT, state TEXT)");
+  db.run("CREATE TABLE payments (id TEXT PRIMARY KEY, invoice TEXT, owner TEXT, org TEXT DEFAULT '')");
+  db.run("CREATE TABLE api_keys (id TEXT PRIMARY KEY, user TEXT, org TEXT DEFAULT '')");
+  return db;
+}
+
+async function migrateOrgs(db: Database) {
+  for (const name of ["CREATE_PERSONAL_ORGS", "CREATE_ADMIN_MEMBERSHIPS", "ASSIGN_PERSONAL_ORGS"]) {
+    db.run(await orgStatement(name));
+  }
+  for (const table of ["products", "quotes", "invoices"]) db.run(forTable(await orgStatement("STAMP_OWNER_ORG"), table));
+  db.run(forTable(await orgStatement("STAMP_LEDGER_ORG"), "payments"));
+  db.run(await orgStatement("STAMP_KEY_ORG"));
+  for (const name of ["RELEASE_DRAFT_NUMBERS", "SEED_QUOTE_COUNTERS", "SEED_INVOICE_COUNTERS", "LINK_SUPERSEDED"]) {
+    db.run(await orgStatement(name));
+  }
+}
+
+const one = <T>(db: Database, sql: string, ...params: string[]) => db.query(sql).get(...params) as T;
+
+describe("giving every account an organization", () => {
+  test("each account becomes the admin of its own, named after it", async () => {
+    const db = orgTables();
+    db.run("INSERT INTO users (id, email, name) VALUES ('AliceID', 'alice@example.com', 'Alice'), ('bob', 'bob@example.com', '')");
+    await migrateOrgs(db);
+
+    const alice = one<{ org: string; role: string }>(db, "SELECT org, role FROM users WHERE id = 'AliceID'");
+    const bob = one<{ org: string; role: string }>(db, "SELECT org, role FROM users WHERE id = 'bob'");
+    expect(alice).toEqual({ org: "org_aliceid", role: "admin" });
+    expect(bob).toEqual({ org: "org_bob", role: "admin" });
+
+    expect(one<{ name: string }>(db, "SELECT name FROM organizations WHERE id = 'org_aliceid'").name).toBe("Alice's workspace");
+    // No display name: the address stands in for it.
+    expect(one<{ name: string }>(db, "SELECT name FROM organizations WHERE id = 'org_bob'").name).toBe("bob@example.com");
+
+    const memberships = db.query("SELECT org, user, role FROM memberships ORDER BY user").all();
+    expect(memberships).toEqual([
+      { org: "org_aliceid", user: "AliceID", role: "admin" },
+      { org: "org_bob", user: "bob", role: "admin" },
+    ]);
+  });
+
+  test("records follow their owner, so two accounts' records stay apart", async () => {
+    const db = orgTables();
+    db.run("INSERT INTO users (id, email, name) VALUES ('alice', 'a@example.com', 'A'), ('bob', 'b@example.com', 'B')");
+    db.run("INSERT INTO products (id, owner) VALUES ('p1', 'alice'), ('p2', 'bob'), ('orphan', '')");
+    db.run("INSERT INTO invoices (id, owner, number, state) VALUES ('i1', 'alice', 'INV-2026-0001', 'issued')");
+    db.run("INSERT INTO payments (id, invoice, owner) VALUES ('pay1', 'i1', 'bob')");
+    db.run("INSERT INTO api_keys (id, user) VALUES ('k1', 'bob')");
+    await migrateOrgs(db);
+
+    expect(one<{ org: string }>(db, "SELECT org FROM products WHERE id = 'p1'").org).toBe("org_alice");
+    expect(one<{ org: string }>(db, "SELECT org FROM products WHERE id = 'p2'").org).toBe("org_bob");
+    // An ownerless leftover stays unreachable, exactly as it was.
+    expect(one<{ org: string }>(db, "SELECT org FROM products WHERE id = 'orphan'").org).toBe("");
+    // A payment belongs to its invoice's organization, whoever keyed it in.
+    expect(one<{ org: string }>(db, "SELECT org FROM payments WHERE id = 'pay1'").org).toBe("org_alice");
+    expect(one<{ org: string }>(db, "SELECT org FROM api_keys WHERE id = 'k1'").org).toBe("org_bob");
+  });
+
+  test("running it twice changes nothing", async () => {
+    const db = orgTables();
+    db.run("INSERT INTO users (id, email, name) VALUES ('alice', 'a@example.com', 'A')");
+    db.run("INSERT INTO quotes (id, owner, number, status, version, created) VALUES ('q1', 'alice', 'Q-2026-0003', 'draft', 1, '1')");
+    await migrateOrgs(db);
+    await migrateOrgs(db);
+
+    expect(one<{ n: number }>(db, "SELECT count(*) AS n FROM organizations").n).toBe(1);
+    expect(one<{ n: number }>(db, "SELECT count(*) AS n FROM memberships").n).toBe(1);
+    expect(one<{ n: number }>(db, "SELECT count(*) AS n FROM counters").n).toBe(1);
+  });
+});
+
+describe("seeding the number counters", () => {
+  test("each organization's counter starts at the highest number it has used that year", async () => {
+    const db = orgTables();
+    db.run("INSERT INTO users (id, email, name) VALUES ('alice', 'a@example.com', 'A'), ('bob', 'b@example.com', 'B')");
+    db.run(`INSERT INTO quotes (id, owner, number, status, version, created) VALUES
+      ('q1', 'alice', 'Q-2026-0003', 'sent', 1, '1'),
+      ('q2', 'alice', 'Q-2026-0011-r2', 'draft', 2, '2'),
+      ('q3', 'alice', 'Q-2025-0040', 'sent', 1, '3'),
+      ('q4', 'bob', 'Q-2026-0002', 'sent', 1, '4'),
+      ('q5', 'bob', 'imported by hand', 'sent', 1, '5')`);
+    await migrateOrgs(db);
+
+    const counter = (org: string, year: number) =>
+      (db.query("SELECT value FROM counters WHERE org = ? AND kind = 'quote' AND year = ?").get(org, year) as { value: number } | null)
+        ?.value;
+    // A revision's "0011-r2" counts as 11: revisions share their original's number.
+    expect(counter("org_alice", 2026)).toBe(11);
+    expect(counter("org_alice", 2025)).toBe(40);
+    expect(counter("org_bob", 2026)).toBe(2);
+  });
+
+  test("drafts give their invoice numbers back, and only issued ones seed the counter", async () => {
+    const db = orgTables();
+    db.run("INSERT INTO users (id, email, name) VALUES ('alice', 'a@example.com', 'A')");
+    db.run(`INSERT INTO invoices (id, owner, number, state) VALUES
+      ('i1', 'alice', 'INV-2026-0001', 'issued'),
+      ('i2', 'alice', 'INV-2026-0002', 'void'),
+      ('i3', 'alice', 'INV-2026-0003', 'draft')`);
+    await migrateOrgs(db);
+
+    expect(one<{ number: string }>(db, "SELECT number FROM invoices WHERE id = 'i3'").number).toBe("DRAFT-i3");
+    expect(one<{ number: string }>(db, "SELECT number FROM invoices WHERE id = 'i1'").number).toBe("INV-2026-0001");
+    // Void counts: its number was issued and is never reused.
+    expect(one<{ value: number }>(db, "SELECT value FROM counters WHERE kind = 'invoice'").value).toBe(2);
+  });
+});
+
+describe("linking superseded quotes", () => {
+  test("a revised quote points at its newest revision", async () => {
+    const db = orgTables();
+    db.run("INSERT INTO users (id, email, name) VALUES ('alice', 'a@example.com', 'A')");
+    db.run(`INSERT INTO quotes (id, owner, number, status, version, supersedes, created) VALUES
+      ('q1', 'alice', 'Q-2026-0001', 'sent', 1, '', '1'),
+      ('q2', 'alice', 'Q-2026-0001-r2', 'sent', 2, 'q1', '2'),
+      ('q3', 'alice', 'Q-2026-0001-r3', 'draft', 3, 'q2', '3'),
+      ('q4', 'alice', 'Q-2026-0002', 'accepted', 1, '', '4'),
+      ('q5', 'alice', 'Q-2026-0002-r2', 'draft', 2, 'q4', '5')`);
+    await migrateOrgs(db);
+
+    const supersededBy = (id: string) => one<{ s: string }>(db, "SELECT supersededBy AS s FROM quotes WHERE id = ?", id).s;
+    expect(supersededBy("q1")).toBe("q2");
+    expect(supersededBy("q2")).toBe("q3");
+    expect(supersededBy("q3")).toBe("");
+    // An accepted quote is a contract; a later revision does not retire it.
+    expect(supersededBy("q4")).toBe("");
+  });
+});

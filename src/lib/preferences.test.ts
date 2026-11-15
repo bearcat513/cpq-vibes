@@ -4,7 +4,14 @@
  * rendering it. It has to always produce a complete, in-range set.
  */
 import { describe, expect, test } from "bun:test";
-import { ACCENTS, DEFAULT_PREFERENCES, FONTS, PREFERENCE_LIMITS, normalizePreferences } from "./preferences";
+import {
+  ACCENTS,
+  DEFAULT_PREFERENCES,
+  FONTS,
+  PREFERENCE_LIMITS,
+  normalizePreferences,
+  paymentTermsLabel,
+} from "./preferences";
 
 describe("normalizePreferences", () => {
   test("anything unusable becomes the defaults", () => {
@@ -36,6 +43,25 @@ describe("normalizePreferences", () => {
     const result = normalizePreferences({ defaultTaxPercent: 8.25, defaultTermMonths: 12.7 });
     expect(result.defaultTaxPercent).toBe(8.25);
     expect(result.defaultTermMonths).toBe(12);
+  });
+
+  test("the start screen, motion, notes and payment term are held to their lists and bounds", () => {
+    const bad = normalizePreferences({ startView: "settings", motion: "wobbly", defaultPaymentTermDays: 900, defaultQuoteNotes: 7 });
+    expect(bad.startView).toBe("home");
+    expect(bad.motion).toBe("system");
+    expect(bad.defaultPaymentTermDays).toBe(PREFERENCE_LIMITS.paymentTermDays.max);
+    expect(bad.defaultQuoteNotes).toBe("");
+
+    const good = normalizePreferences({ startView: "receivables", motion: "reduced", defaultPaymentTermDays: 45 });
+    expect([good.startView, good.motion, good.defaultPaymentTermDays]).toEqual(["receivables", "reduced", 45]);
+    expect(normalizePreferences({ defaultQuoteNotes: "x".repeat(10_000) }).defaultQuoteNotes).toHaveLength(
+      PREFERENCE_LIMITS.quoteNotes.max,
+    );
+  });
+
+  test("a payment term reads the way a customer's terms are written", () => {
+    expect(paymentTermsLabel(30)).toBe("Net 30");
+    expect(paymentTermsLabel(0)).toBe("Due on receipt");
   });
 
   test("unknown keys are dropped", () => {
@@ -77,6 +103,9 @@ describe("normalizePreferences", () => {
     // Confirmations on, margin off — the latter because it is the number
     // nobody wants on screen in front of a customer.
     expect(normalizePreferences({}).confirmDestructive).toBe(true);
+    expect(normalizePreferences({}).keyboardShortcuts).toBe(true);
+    expect(normalizePreferences({ keyboardShortcuts: false }).keyboardShortcuts).toBe(false);
+    expect(normalizePreferences({ keyboardShortcuts: "no" }).keyboardShortcuts).toBe(true);
     expect(normalizePreferences({}).showMargin).toBe(false);
     expect(normalizePreferences({ confirmDestructive: false }).confirmDestructive).toBe(false);
     expect(normalizePreferences({ showMargin: "yes" }).showMargin).toBe(false);

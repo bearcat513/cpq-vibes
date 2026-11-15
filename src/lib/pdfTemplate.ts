@@ -52,6 +52,7 @@ import { measureText, type FontFamily } from "./pdfFonts";
 import { fillTokens } from "./document";
 import { invoiceLineTokenValues, invoiceTokenValues, type InvoiceDocumentContext } from "./invoiceDocument";
 import { lineTokenValues, proposalTokenValues, type ProposalContext } from "./proposal";
+import { invoiceReference } from "./receivable";
 import type { Invoice, Quote, TemplateKind } from "./types";
 
 /* -------------------------------- the page ------------------------------- */
@@ -339,6 +340,7 @@ export type QuoteTotalsField =
   | "oneTimeTotal"
   | "monthlyRecurringTotal"
   | "annualRecurringTotal"
+  | "usageTotal"
   | "totalContractValue"
   | "effectiveDiscountPercent";
 
@@ -374,6 +376,7 @@ export const TOTALS_FIELDS: { field: QuoteTotalsField; label: string }[] = [
   { field: "oneTimeTotal", label: "One-time charges" },
   { field: "monthlyRecurringTotal", label: "Monthly recurring" },
   { field: "annualRecurringTotal", label: "Annual recurring" },
+  { field: "usageTotal", label: "Usage (estimated)" },
   { field: "totalContractValue", label: "Total contract value" },
 ];
 
@@ -588,10 +591,10 @@ export function invoicePdfSource(context: InvoiceDocumentContext): PdfSource {
 
   return {
     kind: "invoice",
-    title: `${invoice.number} — ${invoice.customer.name || "Invoice"}`,
+    title: `${invoiceReference(invoice)} — ${invoice.customer.name || "Invoice"}`,
     author: context.sellerName || context.sellerEmail,
     subject: invoice.customer.name ? `Invoice for ${invoice.customer.name}` : "Invoice",
-    label: invoice.number,
+    label: invoiceReference(invoice),
     values: invoiceTokenValues(context),
     // An invoice line has no options and its note *is* its description, which
     // is a column of its own — so nothing hangs underneath it.

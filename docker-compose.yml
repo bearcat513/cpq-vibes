@@ -38,6 +38,9 @@ services:
       # for the dashboard; the app itself never uses it.
       PB_ADMIN_EMAIL: ${PB_ADMIN_EMAIL:?set PB_ADMIN_EMAIL in .env}
       PB_ADMIN_PASSWORD: ${PB_ADMIN_PASSWORD:?set PB_ADMIN_PASSWORD in .env - min 8 characters}
+      # "open" (the default) or "invite". Read by pb_hooks/setup/members.js on
+      # every sign-up, so changing it needs a restart, not a rebuild.
+      CPQ_SIGNUP: ${CPQ_SIGNUP:-open}
     # No ports and no expose: `app` reaches PocketBase over the compose network
     # regardless. The override file publishes it for local development, where
     # the dashboard is useful; on a deploy target nothing outside the compose

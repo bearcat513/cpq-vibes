@@ -44,7 +44,7 @@ type Shared = { sharedWithMe?: true };
 
 export type WorkspaceTemplateEntry = Pick<ProposalTemplate, "name" | "kind" | "format" | "body"> & Shared;
 
-export type WorkspaceAccountEntry = Omit<Account, "id" | "ownerId" | "createdAt" | "updatedAt">;
+export type WorkspaceAccountEntry = Omit<Account, "id" | "ownerId" | "orgId" | "createdAt" | "updatedAt">;
 
 /**
  * A quote as exported: everything except the ownership plumbing. Lines and
@@ -52,7 +52,7 @@ export type WorkspaceAccountEntry = Omit<Account, "id" | "ownerId" | "createdAt"
  * was offered, and re-deriving it from a catalogue that has since changed
  * would be a different document wearing the same number.
  */
-export type WorkspaceQuoteEntry = Omit<Quote, "ownerId" | "sharedWith" | "approverIds"> & Shared;
+export type WorkspaceQuoteEntry = Omit<Quote, "ownerId" | "orgId" | "sharedWith" | "approverIds"> & Shared;
 
 /**
  * An invoice as exported: the document, its lines and its whole ledger.
@@ -62,7 +62,7 @@ export type WorkspaceQuoteEntry = Omit<Quote, "ownerId" | "sharedWith" | "approv
  * by `src/lib/receivable.ts`, so a file read back in a year ages itself
  * against that day rather than carrying yesterday's answer.
  */
-export type WorkspaceInvoiceEntry = Omit<Invoice, "ownerId" | "sharedWith"> & Shared;
+export type WorkspaceInvoiceEntry = Omit<Invoice, "ownerId" | "orgId" | "sharedWith"> & Shared;
 
 export type WorkspaceFile = {
   kind: typeof WORKSPACE_FILE_KIND;

@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { EmptyState, Section, formatters } from "./common";
+import { useAccess } from "./access";
 import { PriceBookEditor } from "./PriceBookEditor";
 import { ProductEditor } from "./ProductEditor";
 import { api, type Shareable } from "@/lib/api";
@@ -16,12 +17,15 @@ type Props = {
   products: Product[];
   priceBooks: PriceBook[];
   preferences: Preferences;
-  myId: string;
   onChanged: () => Promise<void>;
   onShare: (kind: Shareable, id: string, title: string) => void;
   onError: (error: unknown) => void;
   onNotice: (lines: string[]) => void;
   confirmed: (message: string) => boolean;
+  /** Arrive with this product's editor open — from the launcher. */
+  initialProductId?: string;
+  /** Arrive with the new-product panel open. */
+  initialCreate?: boolean;
 };
 
 /**
@@ -30,10 +34,19 @@ type Props = {
  * Products and price books share a screen because they are edited together —
  * a new product needs a price, and a price book is meaningless without the
  * products it prices.
+ *
+ * Everyone in the organization reads the catalogue; only an admin changes
+ * it, so the buttons that would change it are only offered to one. A record
+ * shared in from another organization is marked, and is never editable here.
  */
 export function CatalogView(props: Props) {
-  const { products, priceBooks, preferences, myId } = props;
-  const [editingProduct, setEditingProduct] = useState<Product | null | undefined>(undefined);
+  const { products, priceBooks, preferences } = props;
+  const access = useAccess();
+  const writer = access.can("catalogue.write");
+  const [editingProduct, setEditingProduct] = useState<Product | null | undefined>(() => {
+    if (props.initialProductId) return products.find(product => product.id === props.initialProductId);
+    return props.initialCreate && writer ? null : undefined;
+  });
   const [editingBook, setEditingBook] = useState<PriceBook | null | undefined>(undefined);
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -109,17 +122,21 @@ export function CatalogView(props: Props) {
                 if (file) void importFile(file);
               }}
             />
-            <Button variant="outline" size="sm" onClick={() => importRef.current?.click()}>
-              <Upload /> Import
-            </Button>
+            {writer && (
+              <Button variant="outline" size="sm" onClick={() => importRef.current?.click()}>
+                <Upload /> Import
+              </Button>
+            )}
             <Button variant="outline" size="sm" asChild>
               <a href={api.catalogExportUrl} title="Products, price books and rules as one file">
                 <Download /> Export
               </a>
             </Button>
-            <Button size="sm" onClick={() => setEditingProduct(null)}>
-              <Plus /> New product
-            </Button>
+            {writer && (
+              <Button size="sm" onClick={() => setEditingProduct(null)}>
+                <Plus /> New product
+              </Button>
+            )}
           </>
         }
       >
@@ -142,7 +159,8 @@ export function CatalogView(props: Props) {
             </Thead>
             <Tbody>
               {products.map(product => {
-                const mine = product.ownerId === myId;
+                const ours = access.isOurs(product);
+                const mine = writer && ours;
                 const margin = product.listPrice ? ((product.listPrice - product.cost) / product.listPrice) * 100 : 0;
                 const availability = availabilityOf(product);
 
@@ -156,7 +174,7 @@ export function CatalogView(props: Props) {
                         {!product.active && <Badge tone="neutral">inactive</Badge>}
                         {availability.state === "early" && <Badge tone="warn">from {product.availableFrom}</Badge>}
                         {availability.state === "withdrawn" && <Badge tone="warn">until {product.availableTo}</Badge>}
-                        {!mine && <Badge tone="info">shared with you</Badge>}
+                        {!ours && <Badge tone="info">shared with you</Badge>}
                       </div>
                       {product.description && (
                         <p className="line-clamp-1 text-xs text-muted-foreground">{product.description}</p>
@@ -188,16 +206,16 @@ export function CatalogView(props: Props) {
                     </Td>
                     <Td>
                       <div className="flex justify-end gap-0.5">
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setEditingProduct(product)}
-                          aria-label={`Edit ${product.name}`}
-                        >
-                          <Pencil />
-                        </Button>
                         {mine && (
                           <>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => setEditingProduct(product)}
+                              aria-label={`Edit ${product.name}`}
+                            >
+                              <Pencil />
+                            </Button>
                             <Button
                               variant="ghost"
                               size="icon-sm"
@@ -230,9 +248,11 @@ export function CatalogView(props: Props) {
         title="Price books"
         description="What a product costs a particular customer, and the floor nothing may go below."
         actions={
-          <Button size="sm" onClick={() => setEditingBook(null)}>
-            <Plus /> New price book
-          </Button>
+          writer && (
+            <Button size="sm" onClick={() => setEditingBook(null)}>
+              <Plus /> New price book
+            </Button>
+          )
         }
       >
         {priceBooks.length === 0 ? (
@@ -259,7 +279,7 @@ export function CatalogView(props: Props) {
                       <span className="font-medium">{book.name}</span>
                       {book.isDefault && <Badge tone="success">default</Badge>}
                       {!book.active && <Badge tone="neutral">inactive</Badge>}
-                      {book.ownerId !== myId && <Badge tone="info">shared with you</Badge>}
+                      {!access.isOurs(book) && <Badge tone="info">shared with you</Badge>}
                     </div>
                     {book.description && <p className="line-clamp-1 text-xs text-muted-foreground">{book.description}</p>}
                   </Td>
@@ -272,11 +292,11 @@ export function CatalogView(props: Props) {
                   </Td>
                   <Td>
                     <div className="flex justify-end gap-0.5">
-                      <Button variant="ghost" size="icon-sm" onClick={() => setEditingBook(book)} aria-label={`Edit ${book.name}`}>
-                        <Pencil />
-                      </Button>
-                      {book.ownerId === myId && (
+                      {writer && access.isOurs(book) && (
                         <>
+                          <Button variant="ghost" size="icon-sm" onClick={() => setEditingBook(book)} aria-label={`Edit ${book.name}`}>
+                            <Pencil />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon-sm"

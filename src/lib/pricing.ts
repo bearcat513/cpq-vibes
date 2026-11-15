@@ -35,6 +35,7 @@
  * could ever save.
  */
 import { availabilityOf, validateConfiguration } from "./configurator";
+import { today as todayIso } from "./clock";
 import { conditionHolds, runFormula } from "./formula";
 import { atLeastZero, clampPercent, percentBetween, percentOf, round, sum, type CurrencyCode } from "./money";
 import {
@@ -215,7 +216,7 @@ function orphanLine(line: PriceableLine, header: QuoteHeader): PricedLine {
     costTotal: 0,
     margin: netTotal,
     marginPercent: netTotal ? 100 : 0,
-    oneTime: netTotal,
+    oneTime: line.chargeType === "usage" ? 0 : netTotal,
     monthlyRecurring: 0,
     annualRecurring: 0,
     appliedRules: [],
@@ -430,7 +431,9 @@ function priceLine(line: PriceableLine, header: QuoteHeader, context: PricingCon
     costTotal,
     margin,
     marginPercent: percentBetween(margin, netTotal),
-    oneTime: recurring ? 0 : netTotal,
+    // A usage line is neither: what it bills depends on what is used, so it
+    // is counted in `usageTotal` and kept out of the contract value.
+    oneTime: recurring || product.chargeType === "usage" ? 0 : netTotal,
     monthlyRecurring,
     annualRecurring: round(monthlyRecurring * 12, currency),
     appliedRules,
@@ -457,6 +460,7 @@ export function priceQuote(lines: PriceableLine[], header: QuoteHeader, context:
   const costTotal = sum(priced.map(line => line.costTotal), currency);
   const oneTimeTotal = sum(priced.map(line => line.oneTime), currency);
   const recurringTotal = sum(priced.filter(line => line.chargeType === "recurring").map(line => line.netTotal), currency);
+  const usageSubtotal = sum(priced.filter(line => line.chargeType === "usage").map(line => line.netTotal), currency);
 
   /* quote-scoped rules */
 
@@ -515,6 +519,10 @@ export function priceQuote(lines: PriceableLine[], header: QuoteHeader, context:
   const grandTotal = round(netTotal + shipping + taxAmount, currency);
 
   const margin = round(netTotal - costTotal, currency);
+  // Usage at its estimate, carrying its share of the quote discount. A
+  // quote-level adjustment is not attributed to it: a surcharge is on the deal,
+  // not on the meter.
+  const usageTotal = round(usageSubtotal - percentOf(usageSubtotal, discountPercent, currency), currency);
   const monthlyRecurringTotal = sum(priced.map(line => line.monthlyRecurring), currency);
 
   /* price book sanity, reported once for the quote rather than per line */
@@ -525,7 +533,7 @@ export function priceQuote(lines: PriceableLine[], header: QuoteHeader, context:
       issues.push(`Price book “${book.name}” is in ${book.currency}, but this quote is in ${currency}.`);
     }
     if (!book.active) warnings.push(`Price book “${book.name}” is no longer active.`);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayIso();
     if (book.validFrom && today < book.validFrom) warnings.push(`Price book “${book.name}” does not start until ${book.validFrom}.`);
     if (book.validTo && today > book.validTo) warnings.push(`Price book “${book.name}” expired on ${book.validTo}.`);
   }
@@ -549,11 +557,12 @@ export function priceQuote(lines: PriceableLine[], header: QuoteHeader, context:
     oneTimeTotal,
     monthlyRecurringTotal,
     annualRecurringTotal: round(monthlyRecurringTotal * 12, currency),
-    // Everything the customer commits to over the term. It equals `netTotal`
-    // by construction — recurring lines are already priced across their whole
-    // term — and is carried separately because "TCV" is the number the
-    // business asks for by name.
-    totalContractValue: netTotal,
+    usageTotal,
+    // Everything the customer commits to over the term: `netTotal` less the
+    // usage estimate — recurring lines are already priced across their whole
+    // term. A usage line is a forecast, not a commitment, and counting it here
+    // made a deal look bigger the more optimistic its rep was.
+    totalContractValue: round(netTotal - usageTotal, currency),
   };
 
   return {

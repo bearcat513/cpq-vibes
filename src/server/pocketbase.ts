@@ -56,6 +56,43 @@ export function clientFor(credential?: string): PocketBase {
   return client;
 }
 
+/** The header that carries `credential` to PocketBase, by its prefix. */
+export function credentialHeaders(credential: string): Record<string, string> {
+  return isApiKey(credential) ? { [API_KEY_HEADER]: credential } : { Authorization: credential };
+}
+
+/**
+ * Calls one of the routes in docker/pb_hooks/ as the caller.
+ *
+ * Those routes do what no user token may do through the collection API —
+ * read `users`, write a membership, take a number — and check the caller
+ * themselves. This only carries the credential and turns PocketBase's error
+ * shape (`{ message }`) into an ApiError with the same status.
+ */
+export async function callHook<T>(credential: string, path: string, init: RequestInit = {}): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`${POCKETBASE_URL}${path}`, {
+      ...init,
+      headers: {
+        ...credentialHeaders(credential),
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...((init.headers as Record<string, string>) ?? {}),
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (error) {
+    throw toApiError(error, "Could not reach PocketBase");
+  }
+
+  const payload = (await response.json().catch(() => null)) as (T & { message?: string }) | null;
+  if (!response.ok) {
+    if (response.status === 401) throw new ApiError("Your session has expired — sign in again.", 401);
+    throw new ApiError(payload?.message || "The request failed.", response.status);
+  }
+  return payload as T;
+}
+
 export const isNotFound = (error: unknown) => error instanceof ClientResponseError && error.status === 404;
 
 export const isAuthFailure = (error: unknown) =>

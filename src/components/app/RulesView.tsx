@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { EmptyState, Field, Notice, Section } from "./common";
+import { useAccess } from "./access";
 import { api, type DirectoryUser } from "@/lib/api";
 import { PRICING_VARIABLES } from "@/lib/pricing";
 import { parseFormula } from "@/lib/formula";
@@ -45,6 +46,9 @@ type Props = {
  * that flags one are the same kind of thinking.
  */
 export function RulesView({ pricingRules, approvalRules, products, directory, onChanged, onError, confirmed }: Props) {
+  // Policy is an admin's to change; everyone else reads it, because knowing
+  // what will trip an approval is half of writing a quote that does not.
+  const writer = useAccess().can("policy.write");
   const [editingPricing, setEditingPricing] = useState<PricingRule | null | undefined>(undefined);
   const [editingApproval, setEditingApproval] = useState<ApprovalRule | null | undefined>(undefined);
 
@@ -65,9 +69,11 @@ export function RulesView({ pricingRules, approvalRules, products, directory, on
         title="Pricing rules"
         description="Applied in priority order, each one seeing what the last one produced."
         actions={
-          <Button size="sm" onClick={() => setEditingPricing(null)}>
-            <Plus /> New pricing rule
-          </Button>
+          writer && (
+            <Button size="sm" onClick={() => setEditingPricing(null)}>
+              <Plus /> New pricing rule
+            </Button>
+          )
         }
       >
         {pricingRules.length === 0 ? (
@@ -116,6 +122,7 @@ export function RulesView({ pricingRules, approvalRules, products, directory, on
                     </code>
                   </Td>
                   <Td>
+                    {writer && (
                     <div className="flex justify-end gap-0.5">
                       <Button variant="ghost" size="icon-sm" onClick={() => setEditingPricing(rule)} aria-label={`Edit ${rule.name}`}>
                         <Pencil />
@@ -129,6 +136,7 @@ export function RulesView({ pricingRules, approvalRules, products, directory, on
                         <Trash2 className="text-muted-foreground hover:text-destructive" />
                       </Button>
                     </div>
+                    )}
                   </Td>
                 </Tr>
               ))}
@@ -141,9 +149,11 @@ export function RulesView({ pricingRules, approvalRules, products, directory, on
         title="Approval rules"
         description="Levels are cumulative — a quote needs every level at or below the highest it trips."
         actions={
-          <Button size="sm" onClick={() => setEditingApproval(null)}>
-            <Plus /> New approval rule
-          </Button>
+          writer && (
+            <Button size="sm" onClick={() => setEditingApproval(null)}>
+              <Plus /> New approval rule
+            </Button>
+          )
         }
       >
         {approvalRules.length === 0 ? (
@@ -202,6 +212,7 @@ export function RulesView({ pricingRules, approvalRules, products, directory, on
                     )}
                   </Td>
                   <Td>
+                    {writer && (
                     <div className="flex justify-end gap-0.5">
                       <Button variant="ghost" size="icon-sm" onClick={() => setEditingApproval(rule)} aria-label={`Edit ${rule.name}`}>
                         <Pencil />
@@ -215,6 +226,7 @@ export function RulesView({ pricingRules, approvalRules, products, directory, on
                         <Trash2 className="text-muted-foreground hover:text-destructive" />
                       </Button>
                     </div>
+                    )}
                   </Td>
                 </Tr>
               ))}

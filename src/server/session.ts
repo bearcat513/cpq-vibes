@@ -17,6 +17,7 @@
  * so the collection rules are the only access model, whichever credential
  * arrived. Nothing here validates a key either; PocketBase does that too.
  */
+import type { Membership, Organization, Role } from "../lib/organization";
 import { normalizePreferences, type Preferences } from "../lib/preferences";
 import { ApiError } from "./http";
 
@@ -49,6 +50,12 @@ export type SessionUser = {
    * than rendering a default theme and then correcting itself.
    */
   preferences: Preferences;
+  /** The organization this account is working in, or null between organizations. */
+  org: Organization | null;
+  /** Its role there. Empty when `org` is null. */
+  role: Role | "";
+  /** Every organization it belongs to, for the switcher. */
+  memberships: Membership[];
 };
 
 export function toSessionUser(record: Record<string, unknown> | undefined | null): SessionUser {
@@ -61,6 +68,10 @@ export function toSessionUser(record: Record<string, unknown> | undefined | null
     // An account made before the preferences field existed has none; the
     // normalizer answers with the defaults rather than with undefined.
     preferences: normalizePreferences(record?.preferences),
+    // Filled in from GET /api/cpq/context — see src/server/context.ts.
+    org: null,
+    role: "",
+    memberships: [],
   };
 }
 

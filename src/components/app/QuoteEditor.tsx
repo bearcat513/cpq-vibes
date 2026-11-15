@@ -15,6 +15,8 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAccess } from "./access";
+import { addDaysTo, today } from "@/lib/clock";
 import { Badge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -64,6 +66,8 @@ type Props = {
   onDeleted: () => void;
   onBack: () => void;
   onShare: (id: string, title: string) => void;
+  /** Opens another quote — the revision that superseded this one. */
+  onOpenQuote: (id: string) => void;
   onError: (error: unknown) => void;
   onNotice: (lines: string[]) => void;
   confirmed: (message: string) => boolean;
@@ -84,11 +88,8 @@ type Draft = {
   lines: QuoteLineInput[];
 };
 
-const validUntilFrom = (days: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
-};
+/** `days` from today in the organization's calendar — the same date the server would pick. */
+const validUntilFrom = (days: number) => addDaysTo(today(), days);
 
 function draftFrom(quote: Quote | null, preferences: Preferences): Draft {
   if (!quote) {
@@ -102,7 +103,7 @@ function draftFrom(quote: Quote | null, preferences: Preferences): Draft {
       taxPercent: preferences.defaultTaxPercent,
       shipping: 0,
       validUntil: validUntilFrom(preferences.quoteValidDays),
-      notes: "",
+      notes: preferences.defaultQuoteNotes,
       internalNotes: "",
       lines: [],
     };
@@ -173,7 +174,13 @@ export function QuoteEditor(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [quote?.id, quote?.updatedAt]);
 
-  const editable = !quote || isEditableStatus(quote.status);
+  // What the role allows (an admin any quote, a sales member their own), and
+  // then what the quote's status allows. PocketBase enforces the first half
+  // whatever this shows; hiding the buttons just saves a refused click.
+  const access = useAccess();
+  const canEdit = quote ? access.canEditQuote(quote) : access.can("quotes.create");
+  const editable = canEdit && (!quote || isEditableStatus(quote.status));
+  const canRevise = canEdit && Boolean(quote) && quote?.status !== "superseded" && quote?.status !== "accepted";
   const currency = asCurrency(draft.currency);
   const format = formatters(currency, preferences.locale);
 
@@ -366,7 +373,7 @@ export function QuoteEditor(props: Props) {
 
   const configuringLine = configuring ? draft.lines.find(line => line.id === configuring) : undefined;
   const configuringProduct = configuringLine ? byId.get(configuringLine.productId) : undefined;
-  const transitions = quote ? (QUOTE_TRANSITIONS[quote.status] ?? []) : [];
+  const transitions = quote && canEdit ? (QUOTE_TRANSITIONS[quote.status] ?? []) : [];
   const blocked = priced.issues.length > 0;
 
   return (
@@ -438,18 +445,22 @@ export function QuoteEditor(props: Props) {
 
           {quote && (
             <>
-              <Button variant="outline" onClick={revise} disabled={Boolean(busy)} title="Create the next revision">
-                New revision
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => props.onShare(quote.id, quote.number)}
-                aria-label="Share this quote"
-                title="Share"
-              >
-                <Share2 />
-              </Button>
+              {canRevise && (
+                <Button variant="outline" onClick={revise} disabled={Boolean(busy)} title="Create the next revision">
+                  New revision
+                </Button>
+              )}
+              {canEdit && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => props.onShare(quote.id, quote.number)}
+                  aria-label="Share this quote"
+                  title="Share"
+                >
+                  <Share2 />
+                </Button>
+              )}
               <Button variant="ghost" size="icon-sm" asChild title="Download as CSV">
                 <a href={api.quoteExportUrl(quote.id, "csv")} aria-label="Download this quote as CSV">
                   <Download />
@@ -459,6 +470,17 @@ export function QuoteEditor(props: Props) {
           )}
         </div>
       </div>
+
+      {quote?.status === "superseded" && quote.supersededById && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+          <span className="text-muted-foreground">
+            This version has been superseded by a newer revision. It can no longer be sent, accepted or invoiced.
+          </span>
+          <Button variant="outline" size="sm" onClick={() => props.onOpenQuote(quote.supersededById!)}>
+            Open the latest revision
+          </Button>
+        </div>
+      )}
 
       <Notice kind="error" lines={priced.issues} />
       <Notice kind="warning" lines={priced.warnings} />
@@ -596,7 +618,15 @@ export function QuoteEditor(props: Props) {
 
           <Section
             title="Lines"
-            description={editable ? undefined : "This quote is no longer editable — create a revision to change it."}
+            description={
+              editable
+                ? undefined
+                : !canEdit
+                  ? "Read only — this quote is another rep's, and your role cannot change it."
+                  : quote?.status === "superseded"
+                    ? "Superseded — edit the latest revision instead."
+                    : "This quote is no longer editable — create a revision to change it."
+            }
             actions={
               editable && (
                 <Button size="sm" onClick={() => setPicking(true)}>

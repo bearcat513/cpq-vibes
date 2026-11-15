@@ -187,6 +187,10 @@ const TRANSLITERATIONS: Record<string, string> = {
   "✔": "x",
   "✗": "x",
   "∞": "inf",
+  // The rupee sign has no WinAnsi code, and formatMoney writes it for every
+  // INR amount — so without this every Indian quote printed "?1,00,000.00".
+  // "Rs" is how the amount is written wherever the glyph is unavailable.
+  "₹": "Rs ",
   " ": " ",
   " ": " ",
   " ": " ",

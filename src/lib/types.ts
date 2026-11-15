@@ -258,6 +258,8 @@ export type Product = {
   /** Arbitrary catalogue metadata, rendered on proposals as a spec table. */
   attributes: Record<string, string>;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   sharedWith: string[];
   createdAt: string;
   updatedAt: string;
@@ -296,6 +298,8 @@ export type PriceBook = {
   validTo: string;
   entries: PriceBookEntry[];
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   sharedWith: string[];
   createdAt: string;
   updatedAt: string;
@@ -348,6 +352,8 @@ export type PricingRule = {
   /** Shown on the line it changed, so a surprising price explains itself. */
   message: string;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -438,6 +444,8 @@ export type ApprovalRule = {
   message: string;
   active: boolean;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -600,6 +608,8 @@ export type Account = {
   taxPercent: number;
   notes: string;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -667,8 +677,15 @@ export const emptyCustomer = (): CustomerSnapshot => ({
  * `draft` → `in_review` (approvals outstanding) → `approved` → `sent` →
  * `accepted` / `declined`. `rejected` comes back from an approver and returns
  * the quote to the rep, and `expired` is what `validUntil` makes of a quote
- * nobody answered. The legal transitions live in `QUOTE_TRANSITIONS` below, so
- * the server and the UI agree on which buttons exist.
+ * nobody answered. `superseded` is what revising makes of the version that
+ * was revised: it can no longer be sent, accepted or invoiced, because a
+ * customer holding two live versions of one offer can accept the wrong one.
+ * The legal transitions live in `QUOTE_TRANSITIONS` below, so the server and
+ * the UI agree on which buttons exist.
+ *
+ * `expired` and `superseded` are never stored — see `withLifecycle` in
+ * ./quoteLifecycle.ts. They are read off the date and off `supersededById`
+ * every time, for the same reason an invoice's "overdue" is.
  */
 export type QuoteStatus =
   | "draft"
@@ -678,7 +695,8 @@ export type QuoteStatus =
   | "sent"
   | "accepted"
   | "declined"
-  | "expired";
+  | "expired"
+  | "superseded";
 
 export const QUOTE_STATUSES: QuoteStatus[] = [
   "draft",
@@ -689,14 +707,16 @@ export const QUOTE_STATUSES: QuoteStatus[] = [
   "accepted",
   "declined",
   "expired",
+  "superseded",
 ];
 
 /**
  * Which statuses each status may move to, by an explicit request.
  *
- * Two of them are not in here because they are not anybody's to request:
- * `in_review` and `approved` are decided by the approval engine when a quote
- * is submitted, and `expired` by the clock.
+ * Some are not anybody's to request: `in_review` and `approved` are decided
+ * by the approval engine when a quote is submitted, `expired` by the clock,
+ * and `superseded` by revising. A superseded quote goes nowhere — revise the
+ * latest version instead.
  */
 export const QUOTE_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
   draft: ["sent"],
@@ -707,6 +727,7 @@ export const QUOTE_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
   accepted: [],
   declined: ["draft"],
   expired: ["draft"],
+  superseded: [],
 };
 
 /** A quote may only be edited while it is still the rep's to edit. */
@@ -827,7 +848,14 @@ export type QuoteTotals = {
   oneTimeTotal: number;
   monthlyRecurringTotal: number;
   annualRecurringTotal: number;
-  /** One-time charges plus the full recurring value of the term. */
+  /**
+   * Usage lines at their estimated quantity, after the quote discount. Not
+   * one-time and not recurring: what the customer is actually billed depends
+   * on what they use, so it is reported beside the contract value rather than
+   * inside it.
+   */
+  usageTotal: number;
+  /** One-time charges plus the full recurring value of the term. Excludes usage. */
   totalContractValue: number;
 };
 
@@ -841,6 +869,11 @@ export type Quote = {
   version: number;
   /** The quote this one revises, if any. */
   supersedesId: string | null;
+  /**
+   * The newest revision of this quote, once it has been revised. Set by
+   * revising and cleared by deleting that revision; never by a save.
+   */
+  supersededById: string | null;
   customer: CustomerSnapshot;
   priceBookId: string;
   currency: CurrencyCode;
@@ -861,6 +894,8 @@ export type Quote = {
   /** Who the quote is waiting on, flattened for PocketBase's access rules. */
   approverIds: string[];
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   sharedWith: string[];
   sentAt: string;
   decidedAt: string;
@@ -925,6 +960,8 @@ export type ProposalTemplate = {
   format: ProposalFormat;
   body: string;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   sharedWith: string[];
   createdAt: string;
   updatedAt: string;
@@ -1004,6 +1041,8 @@ export type InvoicePayment = {
   reference: string;
   note: string;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -1038,6 +1077,8 @@ export type InvoiceCredit = {
   reason: CreditReason;
   note: string;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -1166,6 +1207,8 @@ export type Invoice = {
   credits: InvoiceCredit[];
   totals: InvoiceTotals;
   ownerId: string;
+  /** The organization it belongs to. Empty only on a record from before organizations. */
+  orgId: string;
   sharedWith: string[];
   createdAt: string;
   updatedAt: string;

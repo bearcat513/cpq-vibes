@@ -36,8 +36,13 @@ function stamp(e) {
 
   // Only the owner. An approver deciding a quote does not get to choose who
   // else is asked, and a recipient it was shared with gets nothing at all.
-  if (quote.get("owner") !== e.auth.id) {
-    throw new ForbiddenError("Only the owner of a quote can say who it is waiting on.");
+  //
+  // An admin of the quote's organization may too: they can edit any quote
+  // there, and submitting one is how an edit reaches its approvers.
+  const org = String(e.auth.get("org") || "");
+  const isAdmin = org !== "" && quote.get("org") === org && e.auth.getString("role") === "admin";
+  if (quote.get("owner") !== e.auth.id && !isAdmin) {
+    throw new ForbiddenError("Only the owner of a quote, or an admin, can say who it is waiting on.");
   }
 
   const body = new DynamicModel({ emails: [] });

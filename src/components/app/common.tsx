@@ -36,6 +36,7 @@ const STATUS_TONE: Record<QuoteStatus, "neutral" | "info" | "pending" | "success
   accepted: "success",
   declined: "danger",
   expired: "neutral",
+  superseded: "neutral",
 };
 
 const STATUS_LABEL: Record<QuoteStatus, string> = {
@@ -47,6 +48,7 @@ const STATUS_LABEL: Record<QuoteStatus, string> = {
   accepted: "Accepted",
   declined: "Declined",
   expired: "Expired",
+  superseded: "Superseded",
 };
 
 export const statusLabel = (status: QuoteStatus) => STATUS_LABEL[status] ?? status;

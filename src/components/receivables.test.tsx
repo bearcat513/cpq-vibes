@@ -11,6 +11,9 @@ import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { InvoiceEditor } from "@/components/app/InvoiceEditor";
 import { ReceivablesView } from "@/components/app/ReceivablesView";
+import { AccessProvider } from "@/components/app/access";
+import type { SessionUser } from "@/lib/api";
+import type { Role } from "@/lib/organization";
 import { DEFAULT_PREFERENCES } from "@/lib/preferences";
 import { EMPTY_ADDRESS, type Account } from "@/lib/types";
 
@@ -44,7 +47,7 @@ const account = (): Account => ({
   taxExempt: false,
   taxPercent: 8.5,
   notes: "",
-  ownerId: "u",
+  ownerId: "u", orgId: "",
   createdAt: "",
   updatedAt: "",
 });
@@ -52,17 +55,35 @@ const account = (): Account => ({
 const noop = () => {};
 const asyncNoop = async () => {};
 
-describe("the receivables screen", () => {
-  const html = renderToStaticMarkup(
-    <ReceivablesView
-      accounts={[account()]}
-      templates={[]}
-      preferences={DEFAULT_PREFERENCES}
-      onError={noop}
-      onNotice={noop}
-      confirmed={() => true}
-    />,
+/** Somebody signed in to an organization, as `role`. */
+const member = (role: Role): SessionUser => ({
+  id: "usr_1",
+  email: "fay@example.com",
+  name: "Fay",
+  verified: true,
+  createdAt: "",
+  preferences: DEFAULT_PREFERENCES,
+  org: { id: "org_1", name: "Acme", settings: { timeZone: "" } },
+  role,
+  memberships: [],
+});
+
+const screenFor = (role: Role) =>
+  renderToStaticMarkup(
+    <AccessProvider me={member(role)}>
+      <ReceivablesView
+        accounts={[account()]}
+        templates={[]}
+        preferences={DEFAULT_PREFERENCES}
+        onError={noop}
+        onNotice={noop}
+        confirmed={() => true}
+      />
+    </AccessProvider>,
   );
+
+describe("the receivables screen", () => {
+  const html = screenFor("finance");
 
   test("the aging columns are all five, always, including the empty ones", () => {
     // A report that hid its empty buckets would make a clean ledger and a
@@ -89,6 +110,14 @@ describe("the receivables screen", () => {
     // questions, and now two different sheets.
     expect(html).toContain("/api/invoices/export?format=csv");
     expect(html).toContain("/api/payments?format=csv");
+  });
+
+  test("a role that cannot invoice is not offered the button, but still reads the book", () => {
+    // PocketBase would refuse the write anyway; this saves the refused click.
+    const viewer = screenFor("viewer");
+    expect(viewer).not.toContain("New invoice");
+    expect(viewer).toContain("/api/invoices/export?format=csv");
+    expect(screenFor("sales")).not.toContain("New invoice");
   });
 });
 

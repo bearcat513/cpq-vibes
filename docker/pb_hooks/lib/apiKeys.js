@@ -50,6 +50,7 @@ function describe(record) {
     created: String(record.get("created") || ""),
     expires: String(record.get("expires") || ""),
     lastUsed: String(record.get("lastUsed") || ""),
+    org: String(record.get("org") || ""),
   };
 }
 
@@ -98,6 +99,10 @@ function issue(e) {
   record.set("user", e.auth.id);
   record.set("name", name);
   record.set("key_hash", $security.sha256(raw));
+  // A key works in the organization it was issued in, whatever its owner
+  // switches to afterwards in a browser. A script written against one
+  // company's catalogue must not start writing to another's.
+  record.set("org", String(e.auth.get("org") || ""));
 
   const days = Number(body.expiresInDays || 0);
   if (days > 0) {
@@ -163,6 +168,22 @@ function authenticate(e) {
     // The account is gone but the key outlived it; say the same thing as for
     // a key that never existed.
     throw new UnauthorizedError("Invalid API key.");
+  }
+
+  // A key acts in the organization it was issued in, and only there. The
+  // collection rules read `@request.auth.org` from the stored account — not
+  // from anything this middleware could set — so a key cannot carry an
+  // organization of its own. What it can do is refuse to work while its
+  // owner is working somewhere else: a script written against one company's
+  // catalogue must not start writing to another's because somebody switched
+  // organizations in a browser. Switching back makes the key work again; an
+  // owner who has left the organization has nothing to switch back to.
+  const org = String(record.get("org") || "");
+  if (org && String(owner.get("org") || "") !== org) {
+    throw new ForbiddenError(
+      "This API key was issued in another organization than the one its owner is working in now. " +
+        "Switch back to that organization, or issue a key in this one.",
+    );
   }
 
   e.auth = owner;

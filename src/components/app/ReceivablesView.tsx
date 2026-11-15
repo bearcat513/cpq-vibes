@@ -7,6 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { EmptyState, InvoiceStatusBadge, Notice, Section, formatters } from "./common";
 import { InvoiceEditor } from "./InvoiceEditor";
+import { useAccess } from "./access";
 import { api } from "@/lib/api";
 import {
   AGING_BUCKETS,
@@ -14,6 +15,7 @@ import {
   agingBucketFor,
   agingReport,
   daysOverdue,
+  invoiceReference,
   invoiceStatus,
   today,
   type AgingBucket,
@@ -37,6 +39,10 @@ type Props = {
   onError: (error: unknown) => void;
   onNotice: (lines: string[]) => void;
   confirmed: (message: string) => boolean;
+  /** Arrive with the new-invoice panel open — from the launcher or the dashboard. */
+  initialCreate?: boolean;
+  /** Arrive filtered to one condition: the dashboard's "overdue" goes here. */
+  initialStatus?: InvoiceStatus;
 };
 
 /**
@@ -53,14 +59,24 @@ type Props = {
  * summed them would be a confident wrong number. The selector is how you look
  * at the other one, and the count of what was left out is on the page.
  */
-export function ReceivablesView({ accounts, templates, preferences, onError, onNotice, confirmed }: Props) {
+export function ReceivablesView({
+  accounts,
+  templates,
+  preferences,
+  onError,
+  onNotice,
+  confirmed,
+  initialCreate,
+  initialStatus,
+}: Props) {
+  const canWrite = useAccess().can("invoices.write");
   const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(Boolean(initialCreate) && canWrite);
 
   const [search, setSearch] = useState("");
   const [bucket, setBucket] = useState<AgingBucket | "">("");
-  const [status, setStatus] = useState<InvoiceStatus | "">("");
+  const [status, setStatus] = useState<InvoiceStatus | "">(initialStatus ?? "");
   const [currency, setCurrency] = useState<CurrencyCode>(preferences.defaultCurrency);
 
   const asOf = today();
@@ -190,9 +206,11 @@ export function ReceivablesView({ accounts, templates, preferences, onError, onN
                 <Download /> Receipts CSV
               </a>
             </Button>
-            <Button size="sm" onClick={() => setCreating(true)}>
-              <Plus /> New invoice
-            </Button>
+            {canWrite && (
+              <Button size="sm" onClick={() => setCreating(true)}>
+                <Plus /> New invoice
+              </Button>
+            )}
           </>
         }
       >
@@ -335,7 +353,7 @@ export function ReceivablesView({ accounts, templates, preferences, onError, onN
                     onKeyDown={event => event.key === "Enter" && setOpenId(invoice.id)}
                   >
                     <Td>
-                      <span className="block font-mono text-xs font-medium">{invoice.number}</span>
+                      <span className="block font-mono text-xs font-medium">{invoiceReference(invoice)}</span>
                       {invoice.quoteNumber && (
                         <span className="text-xs text-muted-foreground">from {invoice.quoteNumber}</span>
                       )}

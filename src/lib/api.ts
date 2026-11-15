@@ -5,6 +5,9 @@
  * rides in an httpOnly cookie the page cannot read, which is why there is no
  * token handling anywhere in here.
  */
+import type { MemberListing, Membership, Organization, Role } from "./organization";
+import type { TablePage, TableRecord } from "./dataTable";
+import type { RecordFormConfig, RecordWithForm } from "./recordForm";
 import type { Preferences } from "./preferences";
 import type { AgingReport } from "./receivable";
 import type { SampleSetName } from "./samples";
@@ -93,6 +96,25 @@ export type SessionUser = {
   createdAt: string;
   /** Sent with the session, so the first paint already has the right theme. */
   preferences: Preferences;
+  /** The organization this account is working in; null between organizations. */
+  org: Organization | null;
+  /** Its role there — what the UI hides buttons by. PocketBase enforces it. */
+  role: Role | "";
+  /** Every organization it belongs to, for the switcher. */
+  memberships: Membership[];
+};
+
+/** One page of quotes, and how many matched in all. */
+export type QuotePage = { items: QuoteSummary[]; total: number };
+
+export type QuoteQuery = { q?: string; status?: QuoteStatus | ""; page?: number; perPage?: number };
+
+export type OrgDescription = {
+  org: Organization | null;
+  role: Role | "";
+  memberships: Membership[];
+  roles: { role: Role; description: string }[];
+  timeZones: string[];
 };
 
 /** What the server will say about one record's sharing. */
@@ -250,8 +272,11 @@ export const api = {
     send<{ user: SessionUser }>("/api/auth/register", "POST", payload),
   login: (payload: { email: string; password: string }) =>
     send<{ user: SessionUser }>("/api/auth/login", "POST", payload),
-  logout: () => send<{ ok: true }>("/api/auth/logout", "POST"),
+  /** Ends this session for real; `everywhere` ends every session the account has. */
+  logout: (everywhere = false) =>
+    send<{ ok: true; revoked: boolean }>(`/api/auth/logout${everywhere ? "?everywhere=1" : ""}`, "POST"),
   me: () => request<{ user: SessionUser }>("/api/auth/me"),
+  updateProfile: (payload: { name: string }) => send<{ user: SessionUser }>("/api/auth/profile", "PATCH", payload),
   changePassword: (payload: { currentPassword: string; newPassword: string }) =>
     send<{ user: SessionUser }>("/api/auth/password", "POST", payload),
 
@@ -274,7 +299,49 @@ export const api = {
   openApiFileName: "cpq.openapi.json",
   openApiText: () => fetchText(OPENAPI_URL, "The OpenAPI document"),
 
-  /** Everyone with an account here — what the approver and share pickers offer. */
+  /* ------------------------------ data table ----------------------------- */
+
+  /** One page of a collection, as stored. Aborting `signal` drops a stale page. */
+  tablePage: (
+    collection: string,
+    params: { filter: string; sort: string; page: number; perPage: number },
+    signal?: AbortSignal,
+  ) => {
+    const search = new URLSearchParams({ page: String(params.page), perPage: String(params.perPage) });
+    if (params.filter.trim()) search.set("filter", params.filter);
+    if (params.sort) search.set("sort", params.sort);
+    return request<TablePage>(`/api/table/${encodeURIComponent(collection)}?${search}`, { signal });
+  },
+
+  /** One record and the form to edit it with — what a click on a row opens. */
+  tableRecord: (collection: string, id: string, signal?: AbortSignal) =>
+    request<RecordWithForm>(`/api/table/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`, { signal }),
+
+  updateTableRecord: (collection: string, id: string, values: TableRecord, updated: string | null) =>
+    send<RecordWithForm>(`/api/table/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`, "PATCH", {
+      values,
+      updated,
+    }),
+
+  /** Store a collection's default form layout in `record_forms`, to edit there. */
+  createRecordForm: (collection: string) =>
+    send<RecordFormConfig>(`/api/record-forms/${encodeURIComponent(collection)}`, "POST"),
+
+  /* ----------------------------- organization ---------------------------- */
+
+  org: () => request<OrgDescription>("/api/org"),
+  updateOrg: (payload: { name?: string; timeZone?: string }) => send<Organization>("/api/org", "PUT", payload),
+  members: () => request<MemberListing>("/api/org/members"),
+  addMember: (email: string, role: Role) => send<MemberListing>("/api/org/members", "POST", { email, role }),
+  changeMemberRole: (id: string, role: Role) =>
+    send<MemberListing>(`/api/org/members/${encodeURIComponent(id)}`, "PUT", { role }),
+  removeMember: (id: string) =>
+    send<MemberListing & { left?: boolean }>(`/api/org/members/${encodeURIComponent(id)}`, "DELETE"),
+  revokeInvitation: (id: string) => send<MemberListing>(`/api/org/invitations/${encodeURIComponent(id)}`, "DELETE"),
+  switchOrg: (orgId: string) => send<{ org: Organization; role: Role }>("/api/org/switch", "POST", { orgId }),
+  createOrg: (name: string) => send<{ org: Organization; role: Role }>("/api/orgs", "POST", { name }),
+
+  /** Your organization's members — what the approver and share pickers offer. */
   directory: () => request<{ users: DirectoryUser[]; truncated: boolean }>("/api/directory"),
   getPreferences: () => request<Preferences>("/api/preferences"),
   savePreferences: (preferences: Preferences) => send<Preferences>("/api/preferences", "PUT", preferences),
@@ -319,7 +386,23 @@ export const api = {
 
   /* --------------------------------- quotes ------------------------------ */
 
-  listQuotes: (limit?: number) => request<QuoteSummary[]>(`/api/quotes${limit === undefined ? "" : `?limit=${limit}`}`),
+  /** One page of quotes, searched and filtered by the server. */
+  searchQuotes: async (query: QuoteQuery = {}): Promise<QuotePage> => {
+    const params = new URLSearchParams();
+    if (query.q?.trim()) params.set("q", query.q.trim());
+    if (query.status) params.set("status", query.status);
+    if (query.page) params.set("page", String(query.page));
+    if (query.perPage) params.set("perPage", String(query.perPage));
+    const response = await fetch(`/api/quotes?${params}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new ApiError((payload as { error?: string }).error ?? `Request failed (${response.status})`, response.status);
+    }
+    return { items: payload as QuoteSummary[], total: Number(response.headers.get("X-Total-Count") ?? 0) };
+  },
+  /** How many quotes are in each status, plus `all` — the list's filter chips. */
+  quoteCounts: (q = "") =>
+    request<Record<string, number>>(`/api/quotes/counts${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`),
   quotesAwaitingMe: () => request<QuoteSummary[]>("/api/quotes/awaiting"),
   getQuote: (id: string) => request<Quote>(`/api/quotes/${id}`),
   createQuote: (payload: QuoteBody) => send<SavedQuote>("/api/quotes", "POST", payload),

@@ -11,20 +11,39 @@
  *
  * Read-only sharing: a recipient may list and view the record, and nothing
  * else. That is enforced by the collection rules, not here.
+ *
+ * Inside an organization everyone can already read everything, so a share is
+ * how a record reaches somebody *outside* it — a partner, an auditor, the
+ * customer's own procurement team. Whoever owns the record may share it, and
+ * so may an admin of its organization: records outlive the person who made
+ * them, and a share list nobody can edit once its owner has left would be a
+ * leak nobody can close.
  */
 const SHAREABLE = ["products", "price_books", "quotes", "invoices", "proposal_templates"];
 const MAX_SHARES = 50;
 
 /** Everything a caller may learn about one record's sharing. */
 function describeShares(app, record, viewer) {
-  const isOwner = record.get("owner") === viewer.id;
+  const insider = record.get("owner") === viewer.id || inOrg(record, viewer);
 
   return {
     owner: emailOf(app, record.get("owner")),
-    // Only the owner sees the guest list; a recipient sees who shared it.
-    sharedWith: isOwner ? emailsOf(app, record.get("sharedWith")) : [],
-    canShare: isOwner,
+    // The organization sees the guest list; a recipient sees who shared it.
+    sharedWith: insider ? emailsOf(app, record.get("sharedWith")) : [],
+    canShare: canManage(record, viewer),
   };
+}
+
+/** The record belongs to the organization the caller is working in. */
+function inOrg(record, viewer) {
+  const org = String(viewer.get("org") || "");
+  return org !== "" && String(record.get("org") || "") === org;
+}
+
+/** Its owner, or an admin of its organization. */
+function canManage(record, viewer) {
+  if (record.get("owner") === viewer.id) return true;
+  return inOrg(record, viewer) && viewer.getString("role") === "admin";
 }
 
 function emailOf(app, id) {
@@ -65,14 +84,14 @@ function load(e) {
   const shared = (record.get("sharedWith") || []).indexOf(viewer) !== -1;
   // An approver can read the quote, but the share list is not theirs to see:
   // being asked to approve something is not the same as being given it.
-  if (record.get("owner") !== viewer && !shared) throw new NotFoundError("Not found.");
+  if (record.get("owner") !== viewer && !shared && !inOrg(record, e.auth)) throw new NotFoundError("Not found.");
 
   return record;
 }
 
 function requireOwner(record, viewer) {
-  if (record.get("owner") !== viewer.id) {
-    throw new ForbiddenError("Only the owner of this record can change who it is shared with.");
+  if (!canManage(record, viewer)) {
+    throw new ForbiddenError("Only the owner of this record, or an admin, can change who it is shared with.");
   }
 }
 
@@ -156,7 +175,7 @@ function remove(e) {
 
   // A recipient who just left can no longer read the record, so answer with
   // the empty view rather than re-reading something now forbidden.
-  if (leaving && record.get("owner") !== e.auth.id) return e.json(200, { owner: "", sharedWith: [], canShare: false });
+  if (leaving && !inOrg(record, e.auth) && record.get("owner") !== e.auth.id) return e.json(200, { owner: "", sharedWith: [], canShare: false });
 
   return e.json(200, describeShares(e.app, record, e.auth));
 }

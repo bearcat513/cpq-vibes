@@ -40,13 +40,15 @@ import {
   getPayment,
   getQuote,
   listInvoices,
+  issueDraftInvoice,
   listInvoicesForQuote,
-  nextInvoiceNumber,
+  listRevisionChain,
   updateInvoice,
   type InvoiceRecordInput,
 } from "./db";
 import { ApiError } from "./http";
 import { snapshotCustomer } from "./quotes";
+import { effectiveStatus } from "../lib/quoteLifecycle";
 
 /* -------------------------------- assembling ------------------------------ */
 
@@ -152,17 +154,12 @@ export async function createBlankInvoice(
   };
 }
 
-/** Inserts, retrying once or twice if two invoices raced for the same number. */
+/**
+ * Inserts a draft. It has no number yet — PocketBase gives it a `DRAFT-`
+ * placeholder, and the real one is taken when it is issued.
+ */
 async function insert(token: string, draft: Omit<InvoiceRecordInput, "totals" | "number">): Promise<Invoice> {
-  for (let attempt = 0; ; attempt++) {
-    const number = await nextInvoiceNumber(token, attempt);
-    try {
-      return await insertInvoice(token, recompute({ ...draft, number }));
-    } catch (error) {
-      if (attempt < 4 && error instanceof ApiError && /number/i.test(error.message)) continue;
-      throw error;
-    }
-  }
+  return insertInvoice(token, recompute({ ...draft, number: "" }));
 }
 
 /** Quote statuses it makes sense to bill: one the customer has actually seen. */
@@ -200,9 +197,16 @@ export async function invoiceQuote(token: string, quoteId: string): Promise<Invo
   const quote = await getQuote(token, quoteId);
   if (!quote) throw new ApiError("Quote not found.", 404);
 
-  if (!BILLABLE.includes(quote.status)) {
+  const status = effectiveStatus(quote);
+  if (status === "superseded") {
     throw new ApiError(
-      `A quote that is ${quote.status.replace("_", " ")} cannot be invoiced — it has to be sent or accepted first.`,
+      `${quote.number} has been superseded by a newer revision. Invoice the latest revision instead.`,
+      409,
+    );
+  }
+  if (!BILLABLE.includes(status)) {
+    throw new ApiError(
+      `A quote that is ${status.replace("_", " ")} cannot be invoiced — it has to be sent or accepted first.`,
       409,
     );
   }
@@ -218,6 +222,31 @@ export async function invoiceQuote(token: string, quoteId: string): Promise<Invo
     warnings.push(
       `${quote.number} has already been invoiced as ${live.map(invoice => invoice.number).join(", ")}. ` +
         `This is an additional invoice, not a replacement.`,
+    );
+  }
+
+  // …and billing a revision of a deal already billed under an earlier number
+  // is the same mistake with a different number on it.
+  if (quote.supersedesId) {
+    const chain = await listRevisionChain(token, quote).catch(() => []);
+    const earlier: string[] = [];
+    for (const revision of chain) {
+      const invoices = await listInvoicesForQuote(token, revision.id).catch(() => []);
+      for (const invoice of invoices) if (invoice.state !== "void") earlier.push(`${invoice.number} (${revision.number})`);
+    }
+    if (earlier.length) {
+      warnings.push(
+        `An earlier revision of this deal has already been invoiced: ${earlier.join(", ")}. ` +
+          `Make sure this is not billing the same work twice.`,
+      );
+    }
+  }
+
+  const usage = quote.lines.filter(line => line.chargeType === "usage");
+  if (usage.length) {
+    warnings.push(
+      `${usage.length === 1 ? "A usage line was" : `${usage.length} usage lines were`} invoiced at the quote's ` +
+        `estimated quantity. Adjust ${usage.length === 1 ? "it" : "them"} to what was actually used before issuing.`,
     );
   }
 
@@ -380,13 +409,11 @@ export async function issueInvoice(token: string, id: string, on?: string): Prom
     throw new ApiError("This invoice comes to nothing. Add a line, or delete it.", 400);
   }
 
+  // The organization's today, unless a date was given. PocketBase takes the
+  // number for the issue date's year, in the same transaction as the state.
   const issueDate = on || today();
-  return save(token, id, {
-    ...recordOf(invoice),
-    state: "issued",
-    issueDate,
-    dueDate: dueDateFor(issueDate, invoice.paymentTermDays),
-  });
+  await issueDraftInvoice(token, id, issueDate, dueDateFor(issueDate, invoice.paymentTermDays));
+  return load(token, id);
 }
 
 /**

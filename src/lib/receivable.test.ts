@@ -55,7 +55,7 @@ const payment = (amount: number, receivedOn = "2026-02-01"): InvoicePayment => (
   method: "bank_transfer",
   reference: "",
   note: "",
-  ownerId: "u",
+  ownerId: "u", orgId: "",
   createdAt: "2026-02-01T00:00:00Z",
   updatedAt: "2026-02-01T00:00:00Z",
 });
@@ -67,7 +67,7 @@ const credit = (amount: number): InvoiceCredit => ({
   amount,
   reason: "adjustment",
   note: "",
-  ownerId: "u",
+  ownerId: "u", orgId: "",
   createdAt: "2026-02-01T00:00:00Z",
   updatedAt: "2026-02-01T00:00:00Z",
 });
@@ -105,7 +105,7 @@ const invoice = (
       creditedAmount: credited,
       balance: total - paid - credited,
     },
-    ownerId: "u",
+    ownerId: "u", orgId: "",
     sharedWith: [],
     createdAt: "",
     updatedAt: "",

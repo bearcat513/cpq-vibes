@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BrandLockup } from "@/components/app/Brand";
+import { useAccountTheme } from "@/components/app/useAccountTheme";
 import { CodeBlock } from "@/components/docs/CodeBlock";
 import { Markdown } from "@/components/docs/Markdown";
 import { MethodBadge } from "@/components/docs/MethodBadge";
@@ -39,36 +40,6 @@ const CREDENTIAL_KINDS: { kind: Credential["kind"]; label: string; hint: string 
   { kind: "apiKey", label: "API key", hint: `Sent as \`${API_KEY_HEADER}\`. Issue one under Settings → API keys.` },
   { kind: "token", label: "User token", hint: "A PocketBase user token, sent raw as `Authorization` — no `Bearer`." },
 ];
-
-/**
- * The signed-in account's look, applied to this page as it is to the app.
- *
- * The same three attributes `App.tsx` puts on `<html>`, for the same reason:
- * a reference page that flashed white against a dark app would announce that
- * it is a different page, which it is not.
- */
-function useAccountTheme(user: SessionUser | null) {
-  const theme = user?.preferences.theme ?? "system";
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => {
-      const dark = theme === "dark" || (theme === "system" && media.matches);
-      document.documentElement.classList.toggle("dark", dark);
-      document.documentElement.style.colorScheme = dark ? "dark" : "light";
-    };
-
-    apply();
-    media.addEventListener("change", apply);
-    return () => media.removeEventListener("change", apply);
-  }, [theme]);
-
-  useEffect(() => {
-    if (!user) return;
-    document.documentElement.dataset.accent = user.preferences.accent;
-    document.documentElement.dataset.font = user.preferences.font;
-  }, [user?.preferences.accent, user?.preferences.font]);
-}
 
 /** The credential box: what to send, and the standing note that nothing is stored. */
 function Authorize({

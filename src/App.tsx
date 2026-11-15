@@ -1,49 +1,70 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BookOpen,
   Building2,
-  FileText,
-  LayoutList,
+  Eye,
+  EyeOff,
+  Keyboard,
   LogOut,
-  Package,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Receipt,
-  ScrollText,
-  Settings,
-  ShieldCheck,
+  Monitor,
+  Moon,
+  PanelLeft,
+  Sun,
+  Wind,
   X,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { AccountsView } from "@/components/app/AccountsView";
-import { BrandLockup, BrandMark } from "@/components/app/Brand";
 import { ApprovalsQueue } from "@/components/app/ApprovalsQueue";
 import { AuthPanel } from "@/components/app/AuthPanel";
 import { CatalogView } from "@/components/app/CatalogView";
+import { MobileTabBar, MobileTopBar, MoreSheet, Sidebar, StatusBar, TitleBar } from "@/components/app/Chrome";
 import { Notice, type NoticeKind } from "@/components/app/common";
+import { Dashboard } from "@/components/app/Dashboard";
+import { Launcher, type LauncherCommand } from "@/components/app/Launcher";
+import {
+  CREATE_ORDER,
+  CREATES,
+  DATA_TABLE,
+  NAV_ORDER,
+  SHORTCUTS,
+  VIEWS,
+  hasModifier,
+  keysFor,
+  type CreateKind,
+  type ShortcutId,
+  type View,
+  type ViewIntent,
+} from "@/components/app/navigation";
 import { QuoteEditor } from "@/components/app/QuoteEditor";
 import { QuoteList } from "@/components/app/QuoteList";
 import { ReceivablesView } from "@/components/app/ReceivablesView";
 import { RulesView } from "@/components/app/RulesView";
-import { SettingsPanel, type SaveState } from "@/components/app/SettingsPanel";
+import { SETTINGS_TABS, SettingsPanel, type SaveState, type SettingsTab } from "@/components/app/SettingsPanel";
 import { ShareDialog } from "@/components/app/ShareDialog";
+import { ShortcutsDialog } from "@/components/app/ShortcutsDialog";
 import { TemplatesView } from "@/components/app/TemplatesView";
+import { AccessProvider } from "@/components/app/access";
+import { NoOrganization } from "@/components/app/NoOrganization";
 import { api, isUnauthorized, type DirectoryUser, type Meta, type Shareable, type SessionUser } from "@/lib/api";
+import { setTimeZoneProvider, today } from "@/lib/clock";
+import { SequenceMatcher, isTypingTarget, keyToken, SEQUENCE_TIMEOUT_MS } from "@/lib/commands";
+import { BROWSABLE_COLLECTIONS, tablePageUrl } from "@/lib/dataTable";
+import { can, ROLE_LABELS } from "@/lib/organization";
 import { DEFAULT_PREFERENCES, normalizePreferences, type Preferences } from "@/lib/preferences";
 import type {
   Account,
   ApprovalRule,
+  InvoiceStatus,
   PriceBook,
   PricingRule,
   Product,
   ProposalTemplate,
   Quote,
+  QuoteStatus,
   QuoteSummary,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import "./index.css";
-
-type View = "quotes" | "approvals" | "receivables" | "catalog" | "rules" | "customers" | "templates" | "settings";
 
 type Banner = { kind: NoticeKind; lines: string[] } | null;
 
@@ -53,26 +74,37 @@ type Sharing = { kind: Shareable; id: string; title: string } | null;
 /** How long the app sits on a preference change before writing it. */
 const PREFERENCE_SAVE_DELAY_MS = 500;
 
-const NAV: { id: View; label: string; Icon: typeof LayoutList }[] = [
-  { id: "quotes", label: "Quotes", Icon: ScrollText },
-  { id: "approvals", label: "Approvals", Icon: ShieldCheck },
-  { id: "receivables", label: "Receivables", Icon: Receipt },
-  { id: "catalog", label: "Catalogue", Icon: Package },
-  { id: "rules", label: "Rules", Icon: LayoutList },
-  { id: "customers", label: "Customers", Icon: Building2 },
-  { id: "templates", label: "Templates", Icon: FileText },
-];
+/**
+ * Whether a keystroke landed somewhere that owns its own keys: a field, an
+ * open menu, a listbox. A bare letter there is typing, not a shortcut.
+ */
+const keysBelongElsewhere = (element: Element | null) =>
+  isTypingTarget(element) || Boolean(element?.closest('[role="listbox"],[role="menu"],[role="combobox"]'));
 
 export function App() {
   // undefined while the session is still being checked, null when signed out.
   const [me, setMe] = useState<SessionUser | null | undefined>(undefined);
 
-  const [view, setView] = useState<View>("quotes");
+  const [view, setView] = useState<View>("home");
+  /** Which settings tab is open — kept here so the nav can open a particular one. */
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
+  /**
+   * What the screen should show on arrival — a record open, a form started,
+   * a filter on. The nonce is in the screen's key, so arriving with a new
+   * intent remounts it even when it is the screen already on show.
+   */
+  const [intent, setIntent] = useState<ViewIntent & { nonce: number }>({ nonce: 0 });
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  /** The first key of a shortcut sequence, while it waits for the second. */
+  const [pendingKeys, setPendingKeys] = useState<string[]>([]);
   const [banner, setBanner] = useState<Banner>(null);
   const [sharing, setSharing] = useState<Sharing>(null);
 
   /* Everything this account can see. */
-  const [quotes, setQuotes] = useState<QuoteSummary[]>([]);
+  /** Bumped by every refresh, so the quote list — which pages itself — reads again. */
+  const [listVersion, setListVersion] = useState(0);
   const [awaiting, setAwaiting] = useState<QuoteSummary[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [priceBooks, setPriceBooks] = useState<PriceBook[]>([]);
@@ -113,9 +145,8 @@ export function App() {
   /* ------------------------------ loading ------------------------------- */
 
   const refresh = useCallback(async () => {
-    const [nextQuotes, nextAwaiting, nextProducts, nextBooks, nextPricing, nextApproval, nextAccounts, nextTemplates] =
+    const [nextAwaiting, nextProducts, nextBooks, nextPricing, nextApproval, nextAccounts, nextTemplates] =
       await Promise.all([
-        api.listQuotes(preferencesRef.current.quoteListLimit),
         api.quotesAwaitingMe(),
         api.listProducts(),
         api.listPriceBooks(),
@@ -125,7 +156,7 @@ export function App() {
         api.listProposalTemplates(),
       ]);
 
-    setQuotes(nextQuotes);
+    setListVersion(version => version + 1);
     setAwaiting(nextAwaiting);
     setProducts(nextProducts);
     setPriceBooks(nextBooks);
@@ -162,9 +193,23 @@ export function App() {
       .catch(() => setMe(null));
   }, []);
 
+  /**
+   * "Today" in this browser is the organization's today — the same day the
+   * server prices, dates and ages against — so a due date reads the same at
+   * the desk as it does on the record. See src/lib/clock.ts.
+   */
+  const timeZone = me?.org?.settings.timeZone ?? "";
   useEffect(() => {
-    if (me) void loadWorkspace().catch(fail);
-  }, [me, loadWorkspace, fail]);
+    setTimeZoneProvider(() => timeZone || undefined);
+  }, [timeZone]);
+
+  // Keyed on the organization, not the whole session: switching reloads
+  // everything, while a preference saved on `me` does not.
+  const orgId = me?.org?.id ?? "";
+  const signedIn = Boolean(me);
+  useEffect(() => {
+    if (signedIn && orgId) void loadWorkspace().catch(fail);
+  }, [signedIn, orgId, loadWorkspace, fail]);
 
   /**
    * Preferences ride along on the session, so they are here before the first
@@ -173,6 +218,18 @@ export function App() {
   useEffect(() => {
     if (me) setPreferences(me.preferences);
   }, [me]);
+
+  /**
+   * The screen the account opens on. Keyed on who is signed in, not on the
+   * session object, so re-reading the session (a rename, a switch) leaves you
+   * where you were — and changing the preference takes effect next sign-in
+   * rather than yanking you off the settings page.
+   */
+  const myId = me?.id ?? "";
+  useEffect(() => {
+    if (myId && me) setView(me.preferences.startView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myId]);
 
   /** The theme is a class on <html>; "system" follows the OS, live. */
   useEffect(() => {
@@ -196,7 +253,8 @@ export function App() {
   useEffect(() => {
     document.documentElement.dataset.accent = preferences.accent;
     document.documentElement.dataset.font = preferences.font;
-  }, [preferences.accent, preferences.font]);
+    document.documentElement.dataset.motion = preferences.motion;
+  }, [preferences.accent, preferences.font, preferences.motion]);
 
   // A pending save would otherwise fire into a page that is going away.
   useEffect(() => () => clearTimeout(preferenceTimer.current ?? undefined), []);
@@ -237,6 +295,7 @@ export function App() {
     try {
       setOpenQuote(await api.getQuote(id));
       setView("quotes");
+      setMoreOpen(false);
     } catch (error) {
       fail(error);
     }
@@ -247,15 +306,158 @@ export function App() {
     void refresh().catch(fail);
   };
 
-  async function signOut() {
+  async function signOut(everywhere = false) {
     try {
-      await api.logout();
+      await api.logout(everywhere);
     } catch {
       // The cookie is being dropped either way.
     }
     setMe(null);
     setOpenQuote(undefined);
   }
+
+  /**
+   * Re-reads the session after the organization changed under it — a switch,
+   * a new organization, a role change, leaving — and starts the screen over,
+   * since everything on it belonged to the organization before.
+   */
+  const reloadSession = useCallback(async () => {
+    try {
+      const { user } = await api.me();
+      setOpenQuote(undefined);
+      setBanner(null);
+      setMe(user);
+    } catch (error) {
+      fail(error);
+    }
+  }, [fail]);
+
+  /* ----------------------------- navigation ------------------------------ */
+
+  /** Goes to a screen, closing whatever quote was open over the last one. */
+  const go = (next: View, withIntent?: ViewIntent) => {
+    setOpenQuote(undefined);
+    setBanner(null);
+    setMoreOpen(false);
+    setView(next);
+    setIntent(previous => (withIntent ? { ...withIntent, nonce: previous.nonce + 1 } : { nonce: previous.nonce }));
+  };
+
+  const openSettings = (tab: SettingsTab) => {
+    setSettingsTab(tab);
+    go("settings");
+  };
+
+  /** Starts a new record of a kind, on the screen it belongs to. */
+  const create = (kind: CreateKind) => {
+    if (!me || !can(me.role, CREATES[kind].permission)) return;
+    if (kind === "quote") {
+      setBanner(null);
+      setMoreOpen(false);
+      setView("quotes");
+      setOpenQuote(null);
+      return;
+    }
+    go(CREATES[kind].view, { create: true });
+  };
+
+  const toggleNav = () => updatePreferences({ navCollapsed: !preferences.navCollapsed });
+
+  /* ------------------------------ shortcuts ------------------------------- */
+
+  const runShortcut = (id: ShortcutId) => {
+    if (id === "launcher") setLauncherOpen(open => !open);
+    else if (id === "search") setLauncherOpen(true);
+    else if (id === "help") setHelpOpen(true);
+    else if (id === "toggleNav") toggleNav();
+    else if (id.startsWith("go:")) go(id.slice(3) as View);
+    else if (id.startsWith("new:")) create(id.slice(4) as CreateKind);
+  };
+
+  // The handler is registered once; it reads the latest of everything through refs.
+  const shortcutRef = useRef(runShortcut);
+  shortcutRef.current = runShortcut;
+  const launcherOpenRef = useRef(launcherOpen);
+  launcherOpenRef.current = launcherOpen;
+  const matcher = useMemo(() => new SequenceMatcher(SHORTCUTS), []);
+  const pendingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * One listener for every shortcut in the app.
+   *
+   * It stands down whenever the keys are somebody else's: in a field, in an
+   * open menu, and under any modal — a half-filled form in a panel must not
+   * be thrown away by a `g` meant as a letter. The launcher's Ctrl/⌘ K is the
+   * exception that proves it: it toggles the launcher from anywhere except
+   * over another modal, and it is the only shortcut that survives switching
+   * the single-key ones off.
+   */
+  const workspaceReady = Boolean(me?.org);
+  useEffect(() => {
+    if (!workspaceReady) return;
+
+    const clearPending = () => {
+      clearTimeout(pendingTimer.current ?? undefined);
+      setPendingKeys([]);
+    };
+
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
+      const token = keyToken(event);
+      if (!token) return;
+
+      const modal = document.querySelector('[aria-modal="true"]');
+      const launcherIsTheModal = launcherOpenRef.current;
+
+      if (token === "mod+k") {
+        if (modal && !launcherIsTheModal) return;
+        event.preventDefault();
+        matcher.reset();
+        clearPending();
+        shortcutRef.current("launcher");
+        return;
+      }
+
+      if (modal || event.metaKey || event.ctrlKey || !preferencesRef.current.keyboardShortcuts) return;
+      if (keysBelongElsewhere(document.activeElement)) {
+        matcher.reset();
+        clearPending();
+        return;
+      }
+
+      const result = matcher.feed(token, event.timeStamp || performance.now());
+      if (result.kind === "pending") {
+        event.preventDefault();
+        setPendingKeys(result.prefix);
+        clearTimeout(pendingTimer.current ?? undefined);
+        pendingTimer.current = setTimeout(() => {
+          matcher.reset();
+          setPendingKeys([]);
+        }, SEQUENCE_TIMEOUT_MS);
+        return;
+      }
+      clearPending();
+      if (result.kind === "match" && !hasModifier(result.id)) {
+        event.preventDefault();
+        shortcutRef.current(result.id);
+      }
+    };
+
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      clearTimeout(pendingTimer.current ?? undefined);
+    };
+  }, [workspaceReady, matcher]);
+
+  // A phone rotated to a desk-sized window should not keep a phone's sheet open.
+  useEffect(() => {
+    if (!moreOpen) return;
+    const desk = window.matchMedia("(min-width: 64rem)");
+    const close = () => desk.matches && setMoreOpen(false);
+    desk.addEventListener("change", close);
+    return () => desk.removeEventListener("change", close);
+  }, [moreOpen]);
 
   /* -------------------------------- render ------------------------------- */
 
@@ -265,288 +467,403 @@ export function App() {
 
   if (me === null) return <AuthPanel onSignedIn={setMe} />;
 
+  // Between organizations — removed from the last one, say — there is nothing
+  // to show and nothing to write to, so the one thing on offer is somewhere to work.
+  if (!me.org) {
+    return <NoOrganization me={me} onReady={reloadSession} onSignOut={() => void signOut()} onError={fail} />;
+  }
+
   const editingQuote = openQuote !== undefined;
   const navCollapsed = preferences.navCollapsed;
+  /** The screen the chrome marks as current; none while a quote is open over it. */
+  const active: View | null = editingQuote ? null : view;
+  const quoteCrumb = openQuote ? openQuote.number || openQuote.name : "New quote";
+  const crumbs = editingQuote ? [VIEWS.quotes.label, quoteCrumb] : [VIEWS[view].label];
+  const todayLabel = new Date(`${today()}T00:00:00`).toLocaleDateString(preferences.locale || undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+
+  /* ------------------------------- commands ------------------------------ */
+
+  const commands: LauncherCommand[] = [
+    ...CREATE_ORDER.filter(kind => can(me.role, CREATES[kind].permission)).map(kind => ({
+      id: `new:${kind}`,
+      label: CREATES[kind].label,
+      group: "Start",
+      Icon: CREATES[kind].Icon,
+      keywords: `create add ${kind}`,
+      keys: keysFor(`new:${kind}`),
+      run: () => create(kind),
+    })),
+    ...[...NAV_ORDER, "settings" as const].map(id => ({
+      id: `go:${id}`,
+      label: `Go to ${VIEWS[id].label}`,
+      group: "Go to",
+      Icon: VIEWS[id].Icon,
+      keywords: `${VIEWS[id].description} open view screen`,
+      keys: keysFor(`go:${id}`),
+      run: () => go(id),
+    })),
+    ...SETTINGS_TABS.map(tab => ({
+      id: `settings:${tab.id}`,
+      label: `Settings: ${tab.label}`,
+      group: "Settings",
+      Icon: VIEWS.settings.Icon,
+      keywords: "preferences options configure",
+      run: () => openSettings(tab.id),
+    })),
+    ...(["light", "dark", "system"] as const)
+      .filter(theme => theme !== preferences.theme)
+      .map(theme => ({
+        id: `theme:${theme}`,
+        label: theme === "system" ? "Follow the system theme" : `Use the ${theme} theme`,
+        group: "Preferences",
+        Icon: theme === "light" ? Sun : theme === "dark" ? Moon : Monitor,
+        keywords: "appearance theme mode colour color",
+        run: () => updatePreferences({ theme }),
+      })),
+    {
+      id: "margin",
+      label: preferences.showMargin ? "Hide cost and margin" : "Show cost and margin",
+      group: "Preferences",
+      Icon: preferences.showMargin ? EyeOff : Eye,
+      keywords: "margin cost profit screen share",
+      run: () => updatePreferences({ showMargin: !preferences.showMargin }),
+    },
+    {
+      id: "nav",
+      label: navCollapsed ? "Expand the navigation" : "Collapse the navigation",
+      group: "Preferences",
+      Icon: PanelLeft,
+      keywords: "sidebar menu",
+      keys: keysFor("toggleNav"),
+      run: toggleNav,
+    },
+    {
+      id: "motion",
+      label: preferences.motion === "reduced" ? "Allow motion" : "Reduce motion",
+      group: "Preferences",
+      Icon: Wind,
+      keywords: "animation accessibility",
+      run: () => updatePreferences({ motion: preferences.motion === "reduced" ? "system" : "reduced" }),
+    },
+    ...me.memberships
+      .filter(membership => membership.org.id !== me.org?.id)
+      .map(membership => ({
+        id: `switch:${membership.org.id}`,
+        label: `Switch to ${membership.org.name}`,
+        group: "Organization",
+        Icon: Building2,
+        keywords: `organization workspace ${ROLE_LABELS[membership.role]}`,
+        run: () =>
+          void api
+            .switchOrg(membership.org.id)
+            .then(reloadSession)
+            .catch(fail),
+      })),
+    // The record browser is its own page, so these open a tab rather than
+    // leaving this one — a quote half-edited here would not survive the trip.
+    {
+      id: "table",
+      label: `Open the ${DATA_TABLE.label.toLowerCase()}`,
+      group: "Data",
+      Icon: DATA_TABLE.Icon,
+      keywords: "table records collection filter query browse database pocketbase",
+      run: () => window.open(DATA_TABLE.href, "_blank", "noopener"),
+    },
+    ...BROWSABLE_COLLECTIONS.map(collection => ({
+      id: `table:${collection}`,
+      label: `Browse ${collection.replace(/_/g, " ")}`,
+      group: "Data",
+      Icon: DATA_TABLE.Icon,
+      keywords: `table records ${collection} filter query`,
+      searchOnly: true,
+      run: () => window.open(tablePageUrl(collection), "_blank", "noopener"),
+    })),
+    {
+      id: "help",
+      label: "Keyboard shortcuts",
+      group: "Help",
+      Icon: Keyboard,
+      keywords: "keys hotkeys bindings",
+      keys: keysFor("help"),
+      run: () => setHelpOpen(true),
+    },
+    {
+      id: "docs",
+      label: "Open the API reference",
+      group: "Help",
+      Icon: BookOpen,
+      keywords: "docs openapi rest developer",
+      run: () => window.open("/docs", "_blank", "noopener"),
+    },
+    {
+      id: "signout",
+      label: "Sign out",
+      group: "Help",
+      Icon: LogOut,
+      keywords: "log out logout leave",
+      run: () => void signOut(),
+    },
+  ];
+
+  /* -------------------------------- screen ------------------------------- */
+
+  const screen = editingQuote ? (
+    <QuoteEditor
+      quote={openQuote}
+      me={me}
+      preferences={preferences}
+      products={products}
+      priceBooks={priceBooks}
+      accounts={accounts}
+      pricingRules={pricingRules}
+      approvalRules={approvalRules}
+      templates={templates}
+      onSaved={onQuoteSaved}
+      onDeleted={() => {
+        setOpenQuote(undefined);
+        void refresh().catch(fail);
+      }}
+      onBack={() => setOpenQuote(undefined)}
+      onShare={(id, title) => setSharing({ kind: "quotes", id, title })}
+      onOpenQuote={id => void openQuoteById(id)}
+      onError={fail}
+      onNotice={notice}
+      confirmed={confirmed}
+    />
+  ) : view === "home" ? (
+    <Dashboard
+      me={me}
+      preferences={preferences}
+      version={listVersion}
+      awaiting={awaiting}
+      accounts={accounts}
+      products={products}
+      templates={templates}
+      onOpenQuote={id => void openQuoteById(id)}
+      onGo={go}
+      onCreate={create}
+      onOpenSettings={openSettings}
+      onError={fail}
+    />
+  ) : view === "quotes" ? (
+    <QuoteList
+      version={listVersion}
+      preferences={preferences}
+      initialStatus={intent.status as QuoteStatus | undefined}
+      onOpen={id => void openQuoteById(id)}
+      onNew={() => create("quote")}
+      onError={fail}
+    />
+  ) : view === "approvals" ? (
+    <ApprovalsQueue quotes={awaiting} preferences={preferences} onOpen={id => void openQuoteById(id)} />
+  ) : view === "receivables" ? (
+    <ReceivablesView
+      accounts={accounts}
+      templates={templates}
+      preferences={preferences}
+      initialCreate={intent.create}
+      initialStatus={intent.status as InvoiceStatus | undefined}
+      onError={fail}
+      onNotice={notice}
+      confirmed={confirmed}
+    />
+  ) : view === "catalog" ? (
+    <CatalogView
+      products={products}
+      priceBooks={priceBooks}
+      preferences={preferences}
+      initialCreate={intent.create}
+      initialProductId={intent.openId}
+      onChanged={refresh}
+      onShare={(kind, id, title) => setSharing({ kind, id, title })}
+      onError={fail}
+      onNotice={notice}
+      confirmed={confirmed}
+    />
+  ) : view === "rules" ? (
+    <RulesView
+      pricingRules={pricingRules}
+      approvalRules={approvalRules}
+      products={products}
+      directory={directory}
+      onChanged={refresh}
+      onError={fail}
+      confirmed={confirmed}
+    />
+  ) : view === "customers" ? (
+    <AccountsView
+      accounts={accounts}
+      priceBooks={priceBooks}
+      preferences={preferences}
+      initialCreate={intent.create}
+      initialOpenId={intent.openId}
+      onChanged={refresh}
+      onError={fail}
+      onOpenQuote={id => void openQuoteById(id)}
+      onOpenReceivables={() => go("receivables")}
+      confirmed={confirmed}
+    />
+  ) : view === "templates" ? (
+    <TemplatesView
+      templates={templates}
+      sellerName={me.name}
+      sellerEmail={me.email}
+      locale={preferences.locale}
+      initialId={intent.openId}
+      onChanged={refresh}
+      onShare={(kind, id, title) => setSharing({ kind, id, title })}
+      onError={fail}
+      confirmed={confirmed}
+    />
+  ) : (
+    <SettingsPanel
+      me={me}
+      tab={settingsTab}
+      onTabChange={setSettingsTab}
+      preferences={preferences}
+      saveState={preferenceSave}
+      priceBooks={priceBooks}
+      templates={templates}
+      meta={meta}
+      hasCatalogue={products.length > 0}
+      onChange={updatePreferences}
+      onReset={() => applyPreferences({ ...DEFAULT_PREFERENCES })}
+      onSampleInstalled={refresh}
+      onSessionChanged={reloadSession}
+      onSignOutEverywhere={() => void signOut(true)}
+      confirmed={confirmed}
+      onError={fail}
+      onNotice={notice}
+    />
+  );
 
   return (
-    <div className="slab min-h-screen text-foreground">
-      <div className="mx-auto flex max-w-[110rem] flex-col gap-0 lg:flex-row">
-        {/* ------------------------------ nav ------------------------------ */}
+    <AccessProvider me={me}>
+      {/*
+       * A phone scrolls the page, so its browser can fold the address bar
+       * away; a desk holds the window still and scrolls only the screen, the
+       * way a desktop application does.
+       */}
+      <div className="slab min-h-dvh text-foreground lg:flex lg:h-dvh lg:overflow-hidden">
+        <Sidebar
+          me={me}
+          active={active}
+          collapsed={navCollapsed}
+          awaitingCount={awaiting.length}
+          onGo={id => go(id)}
+          onOpenOrganization={() => openSettings("organization")}
+          onSignOut={() => void signOut()}
+          onToggle={toggleNav}
+        />
 
-        <aside
-          className={cn(
-            "bg-sidebar/70 text-sidebar-foreground shrink-0 border-b backdrop-blur-[2px]",
-            "transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-            "lg:rail lg:flex lg:h-screen lg:flex-col lg:border-r lg:border-b-0",
-            // Collapsing is a desktop affordance: on a phone the nav is
-            // already a horizontal strip, and there is nothing to reclaim.
-            navCollapsed ? "lg:w-16" : "lg:w-56",
-          )}
-        >
-          <div className={cn("flex items-center px-4 py-3.5", navCollapsed && "lg:justify-center lg:px-0")}>
-            {navCollapsed ? (
-              <span className="group hidden lg:block">
-                <BrandMark />
-              </span>
-            ) : (
-              <BrandLockup />
-            )}
-            {/* Collapsed on a desktop, the lockup still belongs on a phone,
-                where the nav is a strip across the top and has the room. */}
-            {navCollapsed && <BrandLockup className="lg:hidden" />}
-          </div>
+        <div className="flex min-w-0 flex-1 flex-col lg:h-full">
+          <MobileTopBar
+            me={me}
+            title={editingQuote ? quoteCrumb : VIEWS[view].label}
+            onOpenLauncher={() => setLauncherOpen(true)}
+            onOpenSettings={() => go("settings")}
+          />
+          <TitleBar
+            me={me}
+            crumbs={crumbs}
+            onOpenLauncher={() => setLauncherOpen(true)}
+            onOpenHelp={() => setHelpOpen(true)}
+          />
 
-          <nav className="flex gap-1 overflow-x-auto px-2 pb-2 lg:flex-col lg:overflow-visible">
-            {NAV.map(({ id, label, Icon }) => {
-              const active = view === id && !editingQuote;
-              const badge = id === "approvals" && awaiting.length > 0 ? awaiting.length : 0;
-
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => {
-                    setView(id);
-                    setOpenQuote(undefined);
-                    setBanner(null);
-                  }}
-                  // The label is gone when collapsed, so the tooltip and the
-                  // accessible name have to carry it instead.
-                  title={navCollapsed ? label : undefined}
-                  aria-label={label}
-                  className={cn(
-                    "group relative flex items-center gap-2 rounded-md px-3 py-2 text-sm whitespace-nowrap",
-                    "transition-[color,background-color,transform] duration-200",
-                    navCollapsed && "lg:justify-center lg:px-0",
-                    active
-                      ? "bg-accent text-accent-foreground font-medium"
-                      : "text-muted-foreground hover:bg-accent/50 hover:text-foreground motion-safe:hover:translate-x-0.5",
-                  )}
+          <main
+            id="main"
+            className="min-w-0 flex-1 space-y-4 p-3 pb-[calc(env(safe-area-inset-bottom)+5rem)] sm:p-4 sm:pb-[calc(env(safe-area-inset-bottom)+5rem)] lg:overflow-y-auto lg:overscroll-contain lg:p-5"
+          >
+            {banner && (
+              <div className="relative">
+                <Notice kind={banner.kind} lines={banner.lines} className="pr-8" />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="absolute top-1 right-1"
+                  onClick={() => setBanner(null)}
+                  aria-label="Dismiss"
                 >
-                  {/* The page you are on is marked the way a seam is welded:
-                      a bead run down its length, not a filled block. */}
-                  {active && (
-                    <span
-                      aria-hidden="true"
-                      className="bg-primary motion-safe:animate-weld absolute top-1.5 bottom-1.5 left-0 w-[3px] origin-top rounded-full"
-                    />
-                  )}
-                  <Icon
-                    className={cn(
-                      "size-4 shrink-0 transition-transform duration-200",
-                      active ? "text-primary" : "motion-safe:group-hover:scale-110",
-                    )}
-                  />
-                  <span className={cn(navCollapsed && "lg:hidden")}>{label}</span>
-
-                  {badge > 0 &&
-                    (navCollapsed ? (
-                      // Collapsed, the count has nowhere to sit beside the
-                      // label, so it becomes a corner dot with the number.
-                      <span className="bg-alert motion-safe:animate-throb absolute top-1 right-1 hidden size-4 items-center justify-center rounded-full text-[10px] font-medium text-white lg:flex">
-                        {badge > 9 ? "9+" : badge}
-                      </span>
-                    ) : (
-                      <Badge tone="pending">{badge}</Badge>
-                    ))}
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="mt-auto hidden border-t px-2 py-2 lg:block">
-            <button
-              type="button"
-              onClick={() => {
-                setView("settings");
-                setOpenQuote(undefined);
-              }}
-              title={navCollapsed ? (me.name || me.email) : undefined}
-              aria-label="Settings"
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-                navCollapsed && "justify-center px-0",
-                view === "settings" ? "bg-accent font-medium" : "text-muted-foreground hover:bg-accent/60",
-              )}
-            >
-              <Settings className="size-4 shrink-0" />
-              {!navCollapsed && <span className="min-w-0 flex-1 truncate text-left">{me.name || me.email}</span>}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => void signOut()}
-              title={navCollapsed ? "Sign out" : undefined}
-              aria-label="Sign out"
-              className={cn(
-                "flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/60",
-                navCollapsed && "justify-center px-0",
-              )}
-            >
-              <LogOut className="size-4 shrink-0" />
-              {!navCollapsed && "Sign out"}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => updatePreferences({ navCollapsed: !navCollapsed })}
-              title={navCollapsed ? "Expand the navigation" : "Collapse the navigation"}
-              aria-label={navCollapsed ? "Expand the navigation" : "Collapse the navigation"}
-              aria-expanded={!navCollapsed}
-              className={cn(
-                "mt-1 flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/60",
-                navCollapsed && "justify-center px-0",
-              )}
-            >
-              {navCollapsed ? (
-                <PanelLeftOpen className="size-4 shrink-0" />
-              ) : (
-                <>
-                  <PanelLeftClose className="size-4 shrink-0" /> Collapse
-                </>
-              )}
-            </button>
-          </div>
-        </aside>
-
-        {/* ----------------------------- content --------------------------- */}
-
-        <main className="min-w-0 flex-1 space-y-4 p-4 lg:h-screen lg:overflow-y-auto">
-          <div className="flex items-center justify-end gap-2 lg:hidden">
-            <Button variant="ghost" size="sm" onClick={() => setView("settings")}>
-              <Settings /> {me.email}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => void signOut()}>
-              <LogOut />
-            </Button>
-          </div>
-
-          {banner && (
-            <div className="relative">
-              <Notice kind={banner.kind} lines={banner.lines} className="pr-8" />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="absolute top-1 right-1"
-                onClick={() => setBanner(null)}
-                aria-label="Dismiss"
-              >
-                <X />
-              </Button>
-            </div>
-          )}
-
-          {/*
-           * Keyed on what is being shown, so React remounts the whole screen
-           * when you move between them and the entrance animation runs again.
-           * Without the key the class is applied once, at first paint, and
-           * every view after that arrives without ceremony.
-           */}
-          <div key={editingQuote ? `quote:${openQuote?.id ?? "new"}` : view} className="motion-safe:animate-extend">
-            {editingQuote ? (
-              <QuoteEditor
-                quote={openQuote}
-                me={me}
-                preferences={preferences}
-                products={products}
-                priceBooks={priceBooks}
-                accounts={accounts}
-                pricingRules={pricingRules}
-                approvalRules={approvalRules}
-                templates={templates}
-                onSaved={onQuoteSaved}
-                onDeleted={() => {
-                  setOpenQuote(undefined);
-                  void refresh().catch(fail);
-                }}
-                onBack={() => setOpenQuote(undefined)}
-                onShare={(id, title) => setSharing({ kind: "quotes", id, title })}
-                onError={fail}
-                onNotice={notice}
-                confirmed={confirmed}
-              />
-            ) : view === "quotes" ? (
-              <QuoteList
-                quotes={quotes}
-                preferences={preferences}
-                onOpen={id => void openQuoteById(id)}
-                onNew={() => setOpenQuote(null)}
-              />
-            ) : view === "approvals" ? (
-              <ApprovalsQueue quotes={awaiting} preferences={preferences} onOpen={id => void openQuoteById(id)} />
-            ) : view === "receivables" ? (
-              <ReceivablesView
-                accounts={accounts}
-                templates={templates}
-                preferences={preferences}
-                onError={fail}
-                onNotice={notice}
-                confirmed={confirmed}
-              />
-            ) : view === "catalog" ? (
-              <CatalogView
-                products={products}
-                priceBooks={priceBooks}
-                preferences={preferences}
-                myId={me.id}
-                onChanged={refresh}
-                onShare={(kind, id, title) => setSharing({ kind, id, title })}
-                onError={fail}
-                onNotice={notice}
-                confirmed={confirmed}
-              />
-            ) : view === "rules" ? (
-              <RulesView
-                pricingRules={pricingRules}
-                approvalRules={approvalRules}
-                products={products}
-                directory={directory}
-                onChanged={refresh}
-                onError={fail}
-                confirmed={confirmed}
-              />
-            ) : view === "customers" ? (
-              <AccountsView
-                accounts={accounts}
-                priceBooks={priceBooks}
-                preferences={preferences}
-                onChanged={refresh}
-                onError={fail}
-                onOpenQuote={id => void openQuoteById(id)}
-                onOpenReceivables={() => setView("receivables")}
-                confirmed={confirmed}
-              />
-            ) : view === "templates" ? (
-              <TemplatesView
-                templates={templates}
-                sellerName={me.name}
-                sellerEmail={me.email}
-                locale={preferences.locale}
-                myId={me.id}
-                onChanged={refresh}
-                onShare={(kind, id, title) => setSharing({ kind, id, title })}
-                onError={fail}
-                confirmed={confirmed}
-              />
-            ) : (
-              <SettingsPanel
-                me={me}
-                preferences={preferences}
-                saveState={preferenceSave}
-                priceBooks={priceBooks}
-                templates={templates}
-                meta={meta}
-                hasCatalogue={products.length > 0}
-                onChange={updatePreferences}
-                onReset={() => applyPreferences({ ...DEFAULT_PREFERENCES })}
-                onSampleInstalled={refresh}
-                onError={fail}
-                onNotice={notice}
-              />
+                  <X />
+                </Button>
+              </div>
             )}
-          </div>
-        </main>
+
+            {/*
+             * Keyed on what is being shown, so React remounts the whole screen
+             * when you move between them and the entrance animation runs again —
+             * and keyed on the intent too, so arriving with one ("open this
+             * customer") starts the screen over even if it was already on show.
+             */}
+            <div
+              key={editingQuote ? `quote:${openQuote?.id ?? "new"}` : `${view}:${intent.nonce}`}
+              className="motion-safe:animate-extend"
+            >
+              {screen}
+            </div>
+          </main>
+
+          <StatusBar
+            me={me}
+            meta={meta}
+            saveState={preferenceSave}
+            pendingKeys={pendingKeys}
+            todayLabel={todayLabel}
+            onOpenLauncher={() => setLauncherOpen(true)}
+            onOpenHelp={() => setHelpOpen(true)}
+          />
+        </div>
+
+        <MobileTabBar
+          active={active}
+          awaitingCount={awaiting.length}
+          moreOpen={moreOpen}
+          onGo={id => go(id)}
+          onMore={() => setMoreOpen(open => !open)}
+        />
       </div>
+
+      {moreOpen && (
+        <MoreSheet
+          me={me}
+          active={active}
+          onGo={id => go(id)}
+          onOpenOrganization={() => openSettings("organization")}
+          onOpenLauncher={() => {
+            setMoreOpen(false);
+            setLauncherOpen(true);
+          }}
+          onSignOut={() => void signOut()}
+          onClose={() => setMoreOpen(false)}
+        />
+      )}
+
+      {launcherOpen && (
+        <Launcher
+          commands={commands}
+          accounts={accounts}
+          products={products}
+          templates={templates}
+          locale={preferences.locale}
+          onOpenQuote={id => void openQuoteById(id)}
+          onOpenCustomer={id => go("customers", { openId: id })}
+          onOpenProduct={id => go("catalog", { openId: id })}
+          onOpenTemplate={id => go("templates", { openId: id })}
+          onClose={() => setLauncherOpen(false)}
+        />
+      )}
+
+      {helpOpen && (
+        <ShortcutsDialog
+          enabled={preferences.keyboardShortcuts}
+          onEnable={() => updatePreferences({ keyboardShortcuts: true })}
+          onClose={() => setHelpOpen(false)}
+        />
+      )}
 
       {sharing && (
         <ShareDialog
@@ -559,6 +876,6 @@ export function App() {
           onChanged={() => void refresh().catch(fail)}
         />
       )}
-    </div>
+    </AccessProvider>
   );
 }

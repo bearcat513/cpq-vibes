@@ -25,6 +25,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, Field, InvoiceStatusBadge, Notice, Section, formatters } from "./common";
+import { useAccess } from "./access";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { daysOverdue, dueDateFor, invoiceStatus, invoiceTotals, pricedLines, today } from "@/lib/receivable";
@@ -135,6 +136,13 @@ export function InvoiceEditor({
   const format = formatters(currency, preferences.locale);
   const draft = !invoice || invoice.state === "draft";
   const issued = invoice?.state === "issued";
+  // Receivables are finance's and the admins' to write; everyone else reads
+  // them. PocketBase enforces that — this only stops offering the controls.
+  const access = useAccess();
+  const canWrite = access.can("invoices.write") && (!invoice || access.isOurs(invoice));
+  /** A draft this account may change — the fields are inputs only then. */
+  // A new invoice is only reachable by somebody who may write one.
+  const editing = draft && (canWrite || !invoice);
 
   /**
    * The totals as they stand in the browser, from the same function the
@@ -191,8 +199,8 @@ export function InvoiceEditor({
   const issue = () => {
     if (!invoice) return;
     const due = dueDateFor(today(), invoice.paymentTermDays);
-    if (!confirmed(`Issue ${invoice.number}? It becomes a receivable due ${due}, and its lines are then fixed.`)) return;
-    void run(() => api.issueInvoice(invoice.id), `${invoice.number} issued.`);
+    if (!confirmed(`Issue this invoice? It takes the next invoice number, becomes a receivable due ${due}, and its lines are then fixed.`)) return;
+    void run(() => api.issueInvoice(invoice.id), "Invoice issued.");
   };
 
   const voidIt = () => {
@@ -250,7 +258,7 @@ export function InvoiceEditor({
 
   const status = invoice ? invoiceStatus(invoice, today()) : "draft";
   const late = invoice ? daysOverdue(invoice, today()) : 0;
-  const shown = draft ? pricedLines(lines, currency) : invoice!.lines;
+  const shown = editing ? pricedLines(lines, currency) : invoice!.lines;
 
   /* ------------------------------ documents ------------------------------ */
 
@@ -289,7 +297,7 @@ export function InvoiceEditor({
   return (
     <div className="space-y-4">
       <Section
-        title={invoice ? invoice.number : "New invoice"}
+        title={invoice ? (invoice.state === "draft" ? "Draft invoice" : invoice.number) : "New invoice"}
         description={
           invoice
             ? [invoice.customer.name, invoice.quoteNumber ? `from ${invoice.quoteNumber}` : ""]
@@ -319,12 +327,12 @@ export function InvoiceEditor({
               </Button>
             )}
 
-            {draft && (
+            {editing && (
               <Button size="sm" onClick={() => void save()} disabled={busy}>
                 {busy ? <Loader2 className="animate-spin" /> : <Check />} Save
               </Button>
             )}
-            {draft && invoice && (
+            {editing && invoice && (
               <>
                 <Button variant="outline" size="sm" onClick={issue} disabled={busy}>
                   <Send /> Issue
@@ -334,7 +342,7 @@ export function InvoiceEditor({
                 </Button>
               </>
             )}
-            {issued && (
+            {issued && canWrite && (
               <>
                 <Button size="sm" onClick={() => setLedgerForm("payment")} disabled={busy}>
                   <CircleDollarSign /> Record payment
@@ -375,7 +383,7 @@ export function InvoiceEditor({
 
         <div className="grid gap-3 border-b px-4 py-3 md:grid-cols-2 xl:grid-cols-4">
           <Field label="Customer">
-            {draft ? (
+            {editing ? (
               <Combobox
                 value={accountId}
                 onChange={setAccountId}
@@ -387,8 +395,8 @@ export function InvoiceEditor({
               <p className="flex h-9 items-center text-sm">{invoice!.customer.name || "—"}</p>
             )}
           </Field>
-          <Field label="Their PO number" hint={draft ? "Many will not pay an invoice without one." : undefined}>
-            {draft ? (
+          <Field label="Their PO number" hint={editing ? "Many will not pay an invoice without one." : undefined}>
+            {editing ? (
               <Input value={poNumber} onChange={event => setPoNumber(event.target.value)} />
             ) : (
               <p className="flex h-9 items-center text-sm">{invoice!.poNumber || "—"}</p>
@@ -410,7 +418,7 @@ export function InvoiceEditor({
                 status === "paid" && "text-primary",
               )}
             >
-              {format.money(draft ? live.total : invoice!.totals.balance)}
+              {format.money(editing ? live.total : invoice!.totals.balance)}
             </p>
           </Field>
         </div>
@@ -431,14 +439,14 @@ export function InvoiceEditor({
                 <Th numeric>Unit price</Th>
                 <Th numeric>Tax %</Th>
                 <Th numeric>Amount</Th>
-                {draft && <Th className="w-10" aria-label="Actions" />}
+                {editing && <Th className="w-10" aria-label="Actions" />}
               </Tr>
             </Thead>
             <Tbody>
               {shown.map(line => (
                 <Tr key={line.id}>
                   <Td>
-                    {draft ? (
+                    {editing ? (
                       <Input
                         value={line.description}
                         onChange={event => patchLine(line.id, { description: event.target.value })}
@@ -451,7 +459,7 @@ export function InvoiceEditor({
                     )}
                   </Td>
                   <Td className="text-muted-foreground">
-                    {draft ? (
+                    {editing ? (
                       <Input
                         value={line.sku}
                         onChange={event => patchLine(line.id, { sku: event.target.value })}
@@ -463,7 +471,7 @@ export function InvoiceEditor({
                     )}
                   </Td>
                   <Td numeric>
-                    {draft ? (
+                    {editing ? (
                       <Input
                         type="number"
                         min={0}
@@ -477,7 +485,7 @@ export function InvoiceEditor({
                     )}
                   </Td>
                   <Td numeric>
-                    {draft ? (
+                    {editing ? (
                       <Input
                         type="number"
                         step="0.01"
@@ -491,7 +499,7 @@ export function InvoiceEditor({
                     )}
                   </Td>
                   <Td numeric>
-                    {draft ? (
+                    {editing ? (
                       <Input
                         type="number"
                         min={0}
@@ -509,7 +517,7 @@ export function InvoiceEditor({
                   <Td numeric className="font-medium">
                     {format.money(line.amount)}
                   </Td>
-                  {draft && (
+                  {editing && (
                     <Td>
                       <Button
                         variant="ghost"
@@ -527,7 +535,7 @@ export function InvoiceEditor({
           </Table>
         )}
 
-        {draft && (
+        {editing && (
           <div className="border-t px-4 py-2">
             <Button variant="outline" size="sm" onClick={addLine}>
               <Plus /> Add a line
@@ -538,9 +546,9 @@ export function InvoiceEditor({
         {/* ------------------------------ totals --------------------------- */}
 
         <dl className="flex flex-wrap justify-end gap-x-8 gap-y-2 border-t px-4 py-3 text-sm">
-          <Total label="Subtotal" value={format.money(draft ? live.subtotal : invoice!.totals.subtotal)} />
-          <Total label="Tax" value={format.money(draft ? live.taxAmount : invoice!.totals.taxAmount)} />
-          <Total label="Total" value={format.money(draft ? live.total : invoice!.totals.total)} strong />
+          <Total label="Subtotal" value={format.money(editing ? live.subtotal : invoice!.totals.subtotal)} />
+          <Total label="Tax" value={format.money(editing ? live.taxAmount : invoice!.totals.taxAmount)} />
+          <Total label="Total" value={format.money(editing ? live.total : invoice!.totals.total)} strong />
           {!draft && invoice!.totals.paidAmount > 0 && (
             <Total label="Paid" value={format.money(invoice!.totals.paidAmount)} />
           )}
@@ -552,14 +560,14 @@ export function InvoiceEditor({
 
         <div className="grid gap-3 border-t px-4 py-3 md:grid-cols-2">
           <Field label="Notes" hint="Printed on the invoice.">
-            {draft ? (
+            {editing ? (
               <Textarea value={notes} onChange={event => setNotes(event.target.value)} rows={2} />
             ) : (
               <p className="text-sm whitespace-pre-wrap">{invoice!.notes || "—"}</p>
             )}
           </Field>
           <Field label="Internal notes" hint="Never shown to the customer.">
-            {draft ? (
+            {editing ? (
               <Textarea value={internalNotes} onChange={event => setInternalNotes(event.target.value)} rows={2} />
             ) : (
               <p className="text-sm whitespace-pre-wrap">{invoice!.internalNotes || "—"}</p>
@@ -608,6 +616,7 @@ export function InvoiceEditor({
                       {format.money(payment.amount)}
                     </Td>
                     <Td>
+                      {canWrite && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -619,6 +628,7 @@ export function InvoiceEditor({
                       >
                         <Trash2 className="text-muted-foreground hover:text-destructive" />
                       </Button>
+                      )}
                     </Td>
                   </Tr>
                 ))}
@@ -636,6 +646,7 @@ export function InvoiceEditor({
                       −{format.money(credit.amount)}
                     </Td>
                     <Td>
+                      {canWrite && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -647,6 +658,7 @@ export function InvoiceEditor({
                       >
                         <Trash2 className="text-muted-foreground hover:text-destructive" />
                       </Button>
+                      )}
                     </Td>
                   </Tr>
                 ))}

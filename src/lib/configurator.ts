@@ -12,6 +12,7 @@
  * is the copy that decides what gets stored. A client that skips the check, or
  * lies about the result, changes nothing.
  */
+import { today as todayIso } from "./clock";
 import { conditionHolds, runFormula } from "./formula";
 import { clampPercent, round, type CurrencyCode } from "./money";
 import type { OptionGroup, Product, ProductOption, ProductRule } from "./types";
@@ -471,7 +472,7 @@ export type Availability = {
  */
 export function availabilityOf(
   product: Pick<Product, "name" | "availableFrom" | "availableTo">,
-  today: string = new Date().toISOString().slice(0, 10),
+  today: string = todayIso(),
 ): Availability {
   const from = product.availableFrom?.trim();
   const to = product.availableTo?.trim();

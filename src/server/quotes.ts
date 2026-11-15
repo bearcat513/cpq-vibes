@@ -35,6 +35,7 @@ import type { QuoteHeaderInput } from "../lib/validate";
 import { asCurrency } from "../lib/money";
 import {
   createQuote,
+  deleteQuote,
   getAccount,
   getPriceBook,
   getQuote,
@@ -42,12 +43,17 @@ import {
   listPriceBooks,
   listPricingRules,
   listProducts,
+  markSuperseded,
   nextQuoteNumber,
   updateQuote,
   type QuoteRecordInput,
 } from "./db";
 import { ApiError } from "./http";
 import { stampApprovers } from "./share";
+import { addDaysTo, currentYear, today } from "../lib/clock";
+import { canEditQuote } from "../lib/organization";
+import { effectiveStatus } from "../lib/quoteLifecycle";
+import { currentContext } from "./context";
 
 /* ------------------------------ the catalogue ---------------------------- */
 
@@ -189,25 +195,13 @@ export function repriceQuote(input: RepriceInput, catalogue: Catalogue, rules: A
   };
 }
 
-/** `validUntil` + N days from today, as an ISO date. */
+/** `validUntil` + N days from today — the organization's today — as an ISO date. */
 export function defaultValidUntil(days: number): string {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() + Math.max(1, days));
-  return date.toISOString().slice(0, 10);
+  return addDaysTo(today(), Math.max(1, days));
 }
 
-/**
- * A quote past its own expiry date reads as expired.
- *
- * Computed on read rather than written by a job: "expired" is a fact about the
- * calendar, and a status that only becomes true when something happens to
- * sweep it is a status that lies between sweeps. The stored value is left
- * alone, so reopening the quote (`draft`) restores it exactly.
- */
-export function withExpiry<T extends { status: QuoteStatus; validUntil: string }>(quote: T, today = new Date()): T {
-  if (quote.status !== "sent" || !quote.validUntil) return quote;
-  return quote.validUntil < today.toISOString().slice(0, 10) ? { ...quote, status: "expired" as QuoteStatus } : quote;
-}
+/** How a status reads in a sentence: "in review", not "in_review". */
+const spoken = (status: QuoteStatus) => status.replace("_", " ");
 
 /* ------------------------------- creating -------------------------------- */
 
@@ -245,7 +239,7 @@ export async function createPricedQuote(
   };
 
   for (let attempt = 0; attempt < 5; attempt++) {
-    const number = await nextQuoteNumber(token, attempt);
+    const number = await nextQuoteNumber(token, currentYear());
     const priced = repriceQuote(
       {
         header: resolved,
@@ -296,10 +290,13 @@ export async function saveQuote(
   const existing = await getQuote(token, id);
   if (!existing) throw new ApiError("Quote not found, or not yours to change.", 404);
 
-  if (!isEditableStatus(existing.status)) {
+  const status = effectiveStatus(existing);
+  if (status === "superseded") {
+    throw new ApiError("This quote has been superseded by a newer revision. Edit that one instead.", 409);
+  }
+  if (!isEditableStatus(status)) {
     throw new ApiError(
-      `This quote is ${existing.status.replace("_", " ")}, so it cannot be edited. ` +
-        "Reopen it as a draft, or create a new revision.",
+      `This quote is ${spoken(status)}, so it cannot be edited. Reopen it as a draft, or create a new revision.`,
       409,
     );
   }
@@ -373,8 +370,9 @@ export type SubmitResult = {
 export async function submitQuote(token: string, id: string): Promise<SubmitResult> {
   const existing = await getQuote(token, id);
   if (!existing) throw new ApiError("Quote not found.", 404);
-  if (!isEditableStatus(existing.status)) {
-    throw new ApiError(`A quote that is ${existing.status.replace("_", " ")} cannot be submitted again.`, 409);
+  const status = effectiveStatus(existing);
+  if (!isEditableStatus(status)) {
+    throw new ApiError(`A quote that is ${spoken(status)} cannot be submitted.`, 409);
   }
   if (!existing.lines.length) throw new ApiError("Add at least one line before submitting this quote.", 400);
 
@@ -457,8 +455,9 @@ export async function decideQuote(
 ): Promise<{ quote: Quote; changed: number }> {
   const existing = await getQuote(token, id);
   if (!existing) throw new ApiError("Quote not found.", 404);
-  if (existing.status !== "in_review") {
-    throw new ApiError(`This quote is ${existing.status.replace("_", " ")}, so there is nothing to decide.`, 409);
+  const current = effectiveStatus(existing);
+  if (current !== "in_review") {
+    throw new ApiError(`This quote is ${spoken(current)}, so there is nothing to decide.`, 409);
   }
 
   const { approvals, changed } = applyDecision(existing.approvals, approverEmail, decision, comment);
@@ -541,13 +540,15 @@ export async function transitionQuote(token: string, id: string, to: QuoteStatus
   const existing = await getQuote(token, id);
   if (!existing) throw new ApiError("Quote not found.", 404);
 
-  const from = withExpiry(existing).status;
+  const from = effectiveStatus(existing);
   if (!QUOTE_TRANSITIONS[from]?.includes(to)) {
     const allowed = QUOTE_TRANSITIONS[from] ?? [];
     throw new ApiError(
       allowed.length
-        ? `A quote that is ${from.replace("_", " ")} can only become ${allowed.join(" or ")}.`
-        : `A quote that is ${from.replace("_", " ")} cannot be changed.`,
+        ? `A quote that is ${spoken(from)} can only become ${allowed.join(" or ")}.`
+        : from === "superseded"
+          ? "This quote has been superseded by a newer revision, so it cannot be sent or accepted. Use the latest revision."
+          : `A quote that is ${spoken(from)} cannot be changed.`,
       409,
     );
   }
@@ -593,29 +594,56 @@ export async function transitionQuote(token: string, id: string, to: QuoteStatus
   return saved;
 }
 
+/** "Q-2026-0007-r3" → "Q-2026-0007": the number every revision of a deal shares. */
+export const baseQuoteNumber = (number: string) => number.replace(/-r\d+$/, "");
+
 /**
- * Creates the next revision of a quote.
+ * Creates the next revision of a quote, and retires the one it revises.
  *
  * A new record rather than an edit: the quote that was sent stays exactly as
  * it was sent, with its own number and its own approvals, and the new one says
  * what it supersedes. That is what makes "which version did they sign" a
- * question with an answer.
+ * question with an answer. The old one becomes `superseded` — it can no longer
+ * be sent, accepted or invoiced — because a customer holding two live versions
+ * of one offer can accept the wrong one. Deleting the revision brings it back.
+ *
+ * Only the latest version is revised, and never an accepted one: an accepted
+ * quote is a contract, and changing a contract is an amendment, which is a
+ * different thing from a revision and not one this app models yet.
  */
 export async function reviseQuote(token: string, id: string): Promise<CreateQuoteResult> {
   const existing = await getQuote(token, id);
   if (!existing) throw new ApiError("Quote not found.", 404);
 
+  const status = effectiveStatus(existing);
+  if (status === "superseded") {
+    throw new ApiError("This quote has already been revised. Revise the latest version instead.", 409);
+  }
+  if (status === "accepted") {
+    throw new ApiError(
+      "An accepted quote is a contract and cannot be revised. Create a new quote for the change.",
+      409,
+    );
+  }
+
+  const context = currentContext();
+  if (context && !canEditQuote(context.role, existing, { id: context.user.id, orgId: context.org?.id })) {
+    throw new ApiError("Only the quote's owner, or an admin, can revise it.", 403);
+  }
+
   const [catalogue, rules] = await Promise.all([loadCatalogue(token), listPricingRules(token)]);
 
+  const version = existing.version + 1;
   const priced = repriceQuote(
     {
       header: headerOf(existing),
       lines: existing.lines,
-      // The number carries the revision, so the two documents are obviously
-      // the same deal and obviously not the same document.
-      number: `${existing.number}-r${existing.version + 1}`,
+      // The number carries the revision, so the documents are obviously the
+      // same deal and obviously not the same document — and a revision of a
+      // revision is "-r3", not "-r2-r3".
+      number: `${baseQuoteNumber(existing.number)}-r${version}`,
       status: "draft",
-      version: existing.version + 1,
+      version,
       supersedesId: existing.id,
       customer: existing.customer,
       approvals: [],
@@ -628,6 +656,14 @@ export async function reviseQuote(token: string, id: string): Promise<CreateQuot
   );
 
   const quote = await createQuote(token, priced.record);
+  try {
+    await markSuperseded(token, existing.id, quote.id);
+  } catch (error) {
+    // Two live versions is the state this exists to prevent; take the new one
+    // back rather than leave it beside an original nobody retired.
+    await deleteQuote(token, quote.id).catch(() => undefined);
+    throw error;
+  }
   return { quote, issues: priced.issues, warnings: priced.warnings };
 }
 

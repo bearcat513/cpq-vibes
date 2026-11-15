@@ -9,3 +9,14 @@
     @apply m-0 min-w-[320px] bg-background text-foreground antialiased;
   }
 }
+
+/*
+ * On a desk the app is a window, not a document: the page itself never
+ * scrolls (the screen inside it does), so it should not rubber-band either.
+ */
+@media (min-width: 64rem) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+}

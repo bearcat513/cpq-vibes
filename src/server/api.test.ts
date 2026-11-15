@@ -488,9 +488,130 @@ describe("a quote's life", () => {
     expect(revised.quote.supersedesId).toBe(created.quote.id);
     expect(revised.quote.number).toContain("-r2");
 
-    // The original is untouched — that is the point of a revision.
+    // The original keeps its own content — that is the point of a revision —
+    // but it is retired: it reads superseded, and names what replaced it.
     const original = await json(`/api/quotes/${created.quote.id}`);
     expect(original.version).toBe(1);
+    expect(original.status).toBe("superseded");
+    expect(original.supersededById).toBe(revised.quote.id);
+  });
+
+  signedIn("a revision of a revision is -r3, not -r2-r3", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: "Thrice" }));
+    const second = await post(`/api/quotes/${created.quote.id}/revise`, {});
+    const third = await post(`/api/quotes/${second.quote.id}/revise`, {});
+
+    expect(second.quote.number).toBe(`${created.quote.number}-r2`);
+    expect(third.quote.number).toBe(`${created.quote.number}-r3`);
+    expect(third.quote.version).toBe(3);
+  });
+
+  signedIn("only the latest version can be revised", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: "Forked" }));
+    await post(`/api/quotes/${created.quote.id}/revise`, {});
+
+    // Revising the original again would leave two live revisions of one deal.
+    const again = await api(`/api/quotes/${created.quote.id}/revise`, { method: "POST" });
+    expect(again.status).toBe(409);
+    expect((await again.json()).error).toContain("latest");
+  });
+
+  signedIn("a superseded quote cannot be sent, edited or invoiced", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: "Retired" }));
+    await post(`/api/quotes/${created.quote.id}/revise`, {});
+
+    const send = await api(`/api/quotes/${created.quote.id}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status: "sent" }),
+    });
+    expect(send.status).toBe(409);
+    expect((await send.json()).error).toContain("superseded");
+
+    const edit = await api(`/api/quotes/${created.quote.id}`, { method: "PUT", body: JSON.stringify(quoteBody()) });
+    expect(edit.status).toBe(409);
+
+    const invoice = await api(`/api/quotes/${created.quote.id}/invoice`, { method: "POST" });
+    expect(invoice.status).toBe(409);
+  });
+
+  signedIn("deleting the revision brings the original back", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: "Second thoughts" }));
+    const revised = await post(`/api/quotes/${created.quote.id}/revise`, {});
+    expect((await json(`/api/quotes/${created.quote.id}`)).status).toBe("superseded");
+
+    expect((await api(`/api/quotes/${revised.quote.id}`, { method: "DELETE" })).status).toBe(200);
+
+    const original = await json(`/api/quotes/${created.quote.id}`);
+    expect(original.status).toBe("draft");
+    expect(original.supersededById).toBeNull();
+  });
+
+  signedIn("an accepted quote is a contract, and cannot be revised", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: "Signed" }));
+    await post(`/api/quotes/${created.quote.id}/submit`, {});
+    await post(`/api/quotes/${created.quote.id}/status`, { status: "sent" });
+    await post(`/api/quotes/${created.quote.id}/status`, { status: "accepted" });
+
+    const response = await api(`/api/quotes/${created.quote.id}/revise`, { method: "POST" });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain("contract");
+  });
+
+  signedIn("quotes are found by the server, however old, and the page says how many matched", async () => {
+    const needle = `Needle ${suffix}`;
+    const created = await post("/api/quotes", quoteBody({ name: needle }));
+    // Bury it under a page's worth of newer quotes' worth of noise is not
+    // needed: a page of one is enough to prove the search is not client-side.
+    await post("/api/quotes", quoteBody({ name: "Noise" }));
+
+    const response = await api(`/api/quotes?q=${encodeURIComponent(needle)}&perPage=1`);
+    const found = await response.json();
+    expect(found.map((quote: any) => quote.id)).toEqual([created.quote.id]);
+    expect(response.headers.get("X-Total-Count")).toBe("1");
+
+    const paged = await api("/api/quotes?perPage=1&page=2");
+    expect((await paged.json()).length).toBe(1);
+    expect(Number(paged.headers.get("X-Total-Count"))).toBeGreaterThan(1);
+  });
+
+  signedIn("filtering by status uses the status a quote actually has", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: `Superseded ${suffix}` }));
+    await post(`/api/quotes/${created.quote.id}/revise`, {});
+
+    const superseded = await json(`/api/quotes?status=superseded&q=${encodeURIComponent(suffix)}`);
+    expect(superseded.map((quote: any) => quote.id)).toContain(created.quote.id);
+    const drafts = await json(`/api/quotes?status=draft&q=${encodeURIComponent(`Superseded ${suffix}`)}`);
+    expect(drafts.map((quote: any) => quote.id)).not.toContain(created.quote.id);
+
+    const counts = await json("/api/quotes/counts");
+    expect(counts.superseded).toBeGreaterThanOrEqual(1);
+    expect(counts.all).toBeGreaterThanOrEqual(counts.superseded);
+  });
+
+  signedIn("a usage line is reported apart from the contract value", async () => {
+    const meter = await post("/api/products", {
+      sku: `METER-${suffix}`,
+      name: "API calls",
+      chargeType: "usage",
+      unitOfMeasure: "1k calls",
+      listPrice: 2,
+      currency: "USD",
+    });
+    const created = await post("/api/quotes", {
+      ...quoteBody({ name: "Metered", discountPercent: 10 }),
+      lines: [{ id: "ln_m", productId: meter.id, quantity: 1000, discountPercent: 0, unitPriceOverride: null, selectedOptions: [], termMonths: 0, description: "", parentId: null, sortOrder: 0 }],
+    });
+
+    const totals = created.quote.totals;
+    expect(totals.oneTimeTotal).toBe(0);
+    // 2,000 at list, less the 10% quote discount.
+    expect(totals.usageTotal).toBe(1800);
+    // An estimate is not a commitment.
+    expect(totals.totalContractValue).toBe(0);
+    expect(totals.netTotal).toBe(1800);
+
+    await api(`/api/quotes/${created.quote.id}`, { method: "DELETE" });
+    await api(`/api/products/${meter.id}`, { method: "DELETE" });
   });
 
   signedIn("with no approval rules, a submitted quote is approved outright", async () => {
@@ -552,7 +673,8 @@ describe("receivables", () => {
     const raised = await post(`/api/quotes/${acceptedQuote.id}/invoice`, {});
     invoiceId = raised.invoice.id;
 
-    expect(raised.invoice.number).toMatch(/^INV-\d{4}-\d{4}$/);
+    // A draft has no number yet — it takes one when it is issued.
+    expect(raised.invoice.number).toStartWith("DRAFT-");
     // Always a draft: issuing is a separate, deliberate act.
     expect(raised.invoice.state).toBe("draft");
     expect(raised.invoice.issueDate).toBe("");
@@ -1246,6 +1368,187 @@ describe("the API document", () => {
   });
 });
 
+describe("the data table", () => {
+  test("/table is a page of its own", async () => {
+    const response = await api("/table?table_name=products", { cookie: " " });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/html");
+    expect(await response.text()).toContain("Data table");
+  });
+
+  test("reading a collection needs an account", async () => {
+    expect((await api("/api/table/products", { cookie: " " })).status).toBe(401);
+  });
+
+  signedIn("lists a collection through PocketBase's own filter, with its columns", async () => {
+    const page = await json(`/api/table/products?filter=${encodeURIComponent('sku = "PLAT"')}`);
+    expect(page.totalItems).toBe(1);
+    expect(page.items[0].sku).toBe("PLAT");
+    expect(page.items[0].collectionId).toBeUndefined();
+    expect(page.fields.map((field: { name: string }) => field.name)).toContain("sku");
+    expect(page.fields[0]).toEqual({ name: "id", type: "text" });
+  });
+
+  signedIn("sorts and pages in PocketBase, not on the loaded rows", async () => {
+    const made = [
+      await post("/api/products", { ...PLATFORM, sku: "TBL-B", name: "Table B" }),
+      await post("/api/products", { ...PLATFORM, sku: "TBL-A", name: "Table A" }),
+    ];
+    const filter = encodeURIComponent('sku ~ "TBL-"');
+
+    const descending = await json(`/api/table/products?filter=${filter}&sort=-sku&perPage=1`);
+    expect(descending.totalItems).toBe(2);
+    expect(descending.totalPages).toBe(2);
+    expect(descending.items.map((item: { sku: string }) => item.sku)).toEqual(["TBL-B"]);
+
+    const second = await json(`/api/table/products?filter=${filter}&sort=-sku&perPage=1&page=2`);
+    expect(second.items.map((item: { sku: string }) => item.sku)).toEqual(["TBL-A"]);
+
+    // Later describes count the catalogue.
+    for (const product of made) await api(`/api/products/${product.id}`, { method: "DELETE" });
+  });
+
+  signedIn("a filter that matches nothing still says what the columns are", async () => {
+    const page = await json(`/api/table/products?filter=${encodeURIComponent('sku = "no-such-sku"')}`);
+    expect(page.totalItems).toBe(0);
+    expect(page.items).toEqual([]);
+    expect(page.fields.map((field: { name: string }) => field.name)).toContain("sku");
+  });
+
+  signedIn("the collection's rules decide the rows: another organization's are invisible", async () => {
+    const filter = encodeURIComponent('name = "Harbour Logistics"');
+    expect((await json(`/api/table/accounts?filter=${filter}`)).totalItems).toBe(1);
+    expect((await json(`/api/table/accounts?filter=${filter}`, { cookie: bobCookie })).totalItems).toBe(0);
+  });
+
+  signedIn("a hidden field never leaves PocketBase", async () => {
+    const issued = await post("/api/keys", { name: "table check" });
+    const page = await json("/api/table/api_keys");
+    const row = page.items.find((item: { id: string }) => item.id === issued.id);
+    expect(row).toBeDefined();
+    expect(row.key_hash).toBeUndefined();
+    expect(page.fields.map((field: { name: string }) => field.name)).not.toContain("key_hash");
+    await api(`/api/keys/${issued.id}`, { method: "DELETE" });
+  });
+
+  signedIn("refusals are sentences with honest statuses", async () => {
+    const badFilter = await api(`/api/table/products?filter=${encodeURIComponent("nonsense ===")}`);
+    expect(badFilter.status).toBe(400);
+    expect((await badFilter.json()).error).toContain("refused the filter");
+
+    const missing = await api("/api/table/no_such_collection");
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).error).toContain("no collection called");
+
+    // No user rule reaches the counters at all.
+    const counters = await api("/api/table/counters");
+    expect(counters.status).toBe(403);
+
+    expect((await api("/api/table/a-b")).status).toBe(400);
+    expect((await api("/api/table/products?sort=name;drop")).status).toBe(400);
+    expect((await api("/api/table/products?perPage=100000")).status).toBe(400);
+  });
+
+  const patchRecord = (path: string, payload: unknown, init?: RequestInit & { cookie?: string }) =>
+    api(path, { ...init, method: "PATCH", body: JSON.stringify(payload) });
+
+  signedIn("a row opens as a record with a form, built from the record when none is stored", async () => {
+    const opened = await json(`/api/table/products/${platformId}`);
+    expect(opened.record.sku).toBe("PLAT");
+    expect(opened.record.collectionId).toBeUndefined();
+    expect(opened.form).toMatchObject({ collection: "products", source: "default", configId: null, writable: true });
+    const names = opened.form.layout.sections.flatMap((section: any) => section.fields.map((field: any) => field.name));
+    expect(names).toContain("sku");
+
+    // Another organization's record is simply not there.
+    expect((await api(`/api/table/products/${platformId}`, { cookie: bobCookie })).status).toBe(404);
+    expect((await api("/api/table/products/no_such_record")).status).toBe(404);
+    expect((await api("/api/table/products/a-b")).status).toBe(400);
+  });
+
+  signedIn("saving writes the fields the form offers, and refuses a stale or locked write", async () => {
+    const before = (await json(`/api/table/products/${platformId}`)).record;
+
+    const saved = await patchRecord(`/api/table/products/${platformId}`, {
+      values: { name: "Platform (table)" },
+      updated: before.updated,
+    });
+    expect(saved.status).toBe(200);
+    const after = (await saved.json()).record;
+    expect(after.name).toBe("Platform (table)");
+
+    // Opened before that save: refused rather than overwritten.
+    const stale = await patchRecord(`/api/table/products/${platformId}`, { values: { name: "Stale" }, updated: before.updated });
+    expect(stale.status).toBe(409);
+    expect((await stale.json()).error).toContain("changed since you opened it");
+
+    const locked = await patchRecord(`/api/table/products/${platformId}`, { values: { owner: "someone" } });
+    expect(locked.status).toBe(400);
+    expect((await locked.json()).error).toContain("set by PocketBase");
+
+    const mistyped = await patchRecord(`/api/table/products/${platformId}`, { values: { listPrice: "lots" } });
+    expect(mistyped.status).toBe(400);
+
+    expect((await patchRecord(`/api/table/products/${platformId}`, { values: { name: "Hijack" } }, { cookie: bobCookie })).status).toBe(404);
+
+    // Later describes read the product's name.
+    await patchRecord(`/api/table/products/${platformId}`, { values: { name: before.name } });
+    expect((await json(`/api/table/products/${platformId}`)).record.name).toBe(before.name);
+  });
+
+  signedIn("quotes open read-only: the server prices them, so this route never writes one", async () => {
+    const quote = (await post("/api/quotes", quoteBody({ name: "Table read-only" }))).quote;
+    expect(quote.id).toBeDefined();
+    const opened = await json(`/api/table/quotes/${quote.id}`);
+    expect(opened.form.writable).toBe(false);
+    expect(opened.form.readOnlyReason).toContain("quote editor");
+
+    const write = await patchRecord(`/api/table/quotes/${quote.id}`, { values: { total: 1 } });
+    expect(write.status).toBe(409);
+
+    // Later describes count the quotes.
+    await api(`/api/quotes/${quote.id}`, { method: "DELETE" });
+  });
+
+  signedIn("a layout stored in record_forms shapes the form and narrows the write", async () => {
+    const account = (await json(`/api/table/accounts?filter=${encodeURIComponent('name = "Harbour Logistics"')}`)).items[0];
+
+    const response = await api("/api/record-forms/accounts", { method: "POST" });
+    expect(response.status).toBe(201);
+    const config = await response.json();
+    expect(config.collection).toBe("accounts");
+    expect(config.layout.sections.length).toBeGreaterThan(0);
+    expect((await api("/api/record-forms/accounts", { method: "POST" })).status).toBe(409);
+
+    // The layout is a record like any other, edited through the same form.
+    const layout = { sections: [{ title: "Basics", fields: [{ name: "name", required: true, label: "Account name" }] }] };
+    const edited = await patchRecord(`/api/table/record_forms/${config.id}`, { values: { layout } });
+    expect(edited.status).toBe(200);
+
+    const unusable = await patchRecord(`/api/table/record_forms/${config.id}`, {
+      values: { layout: { sections: [{ fields: [{ name: "x", widget: "slider" }] }] } },
+    });
+    expect(unusable.status).toBe(400);
+    expect((await unusable.json()).error).toContain("cannot be used");
+
+    const opened = await json(`/api/table/accounts/${account.id}`);
+    expect(opened.form).toMatchObject({ source: "stored", configId: config.id, problem: null });
+    expect(opened.form.layout).toEqual({ sections: [{ ...layout.sections[0], description: "", columns: 2 }], rest: "hidden" });
+
+    const offLayout = await patchRecord(`/api/table/accounts/${account.id}`, { values: { currency: "EUR" } });
+    expect(offLayout.status).toBe(400);
+    expect((await offLayout.json()).error).toContain("not an editable field");
+
+    const blank = await patchRecord(`/api/table/accounts/${account.id}`, { values: { name: "" } });
+    expect(blank.status).toBe(400);
+    expect((await blank.json()).error).toContain("Account name is required");
+
+    // Another organization neither sees this layout nor gets it.
+    expect((await json("/api/table/record_forms", { cookie: bobCookie })).totalItems).toBe(0);
+    expect((await patchRecord(`/api/table/record_forms/${config.id}`, { values: { title: "x" } }, { cookie: bobCookie })).status).toBe(404);
+  });
+});
+
 describe("sharing", () => {
   signedIn("a shared product is readable, not writable, and quotable", async () => {
     await post(`/api/products/${platformId}/shares`, { email: BOB });
@@ -1285,16 +1588,14 @@ describe("sharing", () => {
     expect(await json("/api/products", { cookie: bobCookie })).toEqual([]);
   });
 
-  signedIn("the directory lists the accounts, so a picker has something to offer", async () => {
-    // The complaint this answers: an empty approver dropdown on an instance
-    // with ten accounts, because the list was built from addresses you had
-    // already typed rather than from the accounts that exist.
+  signedIn("the directory lists your organization, and nobody outside it", async () => {
+    // A picker needs something to offer — but an instance shared by several
+    // companies must not hand any one of them the others' staff list.
     const payload = await json("/api/directory");
 
     const emails = payload.users.map((user: any) => user.email);
     expect(emails).toContain(ALICE);
-    expect(emails).toContain(BOB);
-    expect(payload.users.length).toBeGreaterThanOrEqual(2);
+    expect(emails).not.toContain(BOB);
 
     // Sorted, so a long list is scannable.
     expect([...emails].sort()).toEqual(emails);
@@ -1302,13 +1603,13 @@ describe("sharing", () => {
 
   signedIn("the directory gives out an address and a name, and nothing else", async () => {
     const { users } = await json("/api/directory");
-    const bob = users.find((user: any) => user.email === BOB);
+    const alice = users.find((user: any) => user.email === ALICE);
 
-    expect(Object.keys(bob).sort()).toEqual(["email", "id", "name"]);
+    expect(Object.keys(alice).sort()).toEqual(["email", "id", "name"]);
     // Not the things an account would not want handed out.
-    expect(bob).not.toHaveProperty("verified");
-    expect(bob).not.toHaveProperty("created");
-    expect(bob).not.toHaveProperty("preferences");
+    expect(alice).not.toHaveProperty("verified");
+    expect(alice).not.toHaveProperty("created");
+    expect(alice).not.toHaveProperty("preferences");
   });
 
   signedIn("it still takes an account to read it", async () => {
@@ -1593,6 +1894,25 @@ describe("preferences", () => {
 
     await put("/api/preferences", DEFAULT_PREFERENCES);
   });
+
+  signedIn("a display name can be changed, and nothing else on the account rides along", async () => {
+    const before = (await json("/api/auth/me")).user;
+    const patch = (body: unknown) =>
+      api("/api/auth/profile", { method: "PATCH", body: JSON.stringify(body) });
+
+    // The org and role are hook-guarded fields; a body naming them changes neither.
+    const renamed = await patch({ name: "  Alice Example  ", org: "org_elsewhere", role: "viewer" });
+    expect(renamed.status).toBe(200);
+    const { user } = await renamed.json();
+    expect(user.name).toBe("Alice Example");
+    expect(user.email).toBe(before.email);
+    expect(user.org?.id).toBe(before.org?.id);
+    expect(user.role).toBe(before.role);
+
+    expect((await patch({ name: "x".repeat(500) })).status).toBe(400);
+
+    await patch({ name: before.name });
+  });
 });
 
 /* --------------------------------- sample -------------------------------- */
@@ -1680,5 +2000,294 @@ describe("the worked example", () => {
     expect(again.created.invoices ?? 0).toBe(0);
     expect(again.skipped.invoices).toBe(3);
     expect(await json("/api/invoices", { cookie: erin })).toHaveLength(3);
+  });
+});
+
+/* ------------------------- organizations and roles ----------------------- */
+
+/**
+ * The rules that decide who may change what live in PocketBase
+ * (1750000010_organizations.js); `PERMISSIONS` in src/lib/organization.ts is
+ * the same table written down for the UI. These walk the table against the
+ * real rules with one account per role, invited into Alice's organization.
+ */
+describe("organizations and roles", () => {
+  const SALES = `sam-${suffix}@example.com`;
+  const FINANCE = `fay-${suffix}@example.com`;
+  const VIEWER = `vic-${suffix}@example.com`;
+  const sessions: Record<string, string> = {};
+  let orgId = "";
+
+  const as = (role: string) => ({ cookie: sessions[role] });
+
+  /** Status only — what a refused write comes back as. */
+  const status = async (path: string, method: string, payload: unknown, role: string) =>
+    (await api(path, { method, body: JSON.stringify(payload), cookie: sessions[role] })).status;
+
+  signedIn("every account starts as the admin of an organization of its own", async () => {
+    const alice = await json("/api/org");
+    const bob = await json("/api/org", { cookie: bobCookie });
+
+    expect(alice.role).toBe("admin");
+    expect(alice.org.id).toBeString();
+    expect(bob.org.id).not.toBe(alice.org.id);
+    orgId = alice.org.id;
+
+    // The session carries it, so the first paint knows what to hide.
+    const me = await json("/api/auth/me");
+    expect(me.user.org.id).toBe(orgId);
+    expect(me.user.role).toBe("admin");
+  });
+
+  signedIn("an invited address joins the organization when it registers", async () => {
+    const invited = await post("/api/org/members", { email: SALES, role: "sales" });
+    expect(invited.outcome).toBe("invited");
+    expect(invited.invitations.map((invite: any) => invite.email)).toContain(SALES);
+
+    sessions.sales = await register(SALES);
+    const me = await json("/api/auth/me", as("sales"));
+    expect(me.user.org.id).toBe(orgId);
+    expect(me.user.role).toBe("sales");
+
+    // An existing account is added straight away instead.
+    sessions.finance = await register(FINANCE);
+    const added = await post("/api/org/members", { email: FINANCE, role: "finance" });
+    expect(added.outcome).toBe("added");
+    // They now belong to two organizations, and are still working in their own.
+    const finance = await json("/api/org", as("finance"));
+    expect(finance.memberships).toHaveLength(2);
+    const switched = await post("/api/org/switch", { orgId }, as("finance"));
+    expect(switched.role).toBe("finance");
+
+    await post("/api/org/members", { email: VIEWER, role: "viewer" });
+    sessions.viewer = await register(VIEWER);
+  });
+
+  signedIn("everyone in the organization reads everything in it", async () => {
+    for (const role of ["sales", "finance", "viewer"]) {
+      const products = await json("/api/products", as(role));
+      expect(products.map((product: any) => product.id)).toContain(platformId);
+      const accounts = await json("/api/accounts", as(role));
+      expect(accounts.map((account: any) => account.id)).toContain(accountId);
+    }
+    // …and nobody outside it does.
+    const bobs = await json("/api/products", { cookie: bobCookie });
+    expect(bobs.map((product: any) => product.id)).not.toContain(platformId);
+  });
+
+  signedIn("the catalogue and pricing policy are the admins' to change", async () => {
+    for (const role of ["sales", "finance", "viewer"]) {
+      expect(await status("/api/products", "POST", { ...PLATFORM, sku: `X-${role}-${suffix}` }, role)).toBeGreaterThanOrEqual(400);
+      expect(await status(`/api/products/${platformId}`, "PUT", { ...PLATFORM, name: "Renamed" }, role)).toBe(404);
+      expect(await status("/api/pricing-rules", "POST", { name: "Sneaky", scope: "line", target: "discountPercent", expression: "50" }, role)).toBeGreaterThanOrEqual(400);
+      expect((await api("/api/sample", { method: "POST", cookie: sessions[role] })).status).toBe(403);
+    }
+    expect((await json(`/api/products/${platformId}`)).name).toBe("Platform");
+  });
+
+  signedIn("sales and finance keep customers; a viewer does not", async () => {
+    expect(await status("/api/accounts", "POST", { name: `By sales ${suffix}`, currency: "USD" }, "sales")).toBe(201);
+    expect(await status("/api/accounts", "POST", { name: `By finance ${suffix}`, currency: "USD" }, "finance")).toBe(201);
+    expect(await status("/api/accounts", "POST", { name: `By viewer ${suffix}`, currency: "USD" }, "viewer")).toBeGreaterThanOrEqual(400);
+  });
+
+  signedIn("a sales member writes their own quotes, and only an admin writes anybody's", async () => {
+    const theirs = await post("/api/quotes", quoteBody({ name: "Sam's deal" }), as("sales"));
+    expect(theirs.quote.ownerId).not.toBe("");
+    // Numbered in the organization's run, not a run of their own.
+    expect(theirs.quote.number).toMatch(/^Q-\d{4}-\d{4}$/);
+
+    const alices = await post("/api/quotes", quoteBody({ name: "Alice's deal" }));
+    expect(await status(`/api/quotes/${alices.quote.id}`, "PUT", quoteBody({ name: "Taken" }), "sales")).toBe(404);
+    expect((await api(`/api/quotes/${alices.quote.id}/revise`, { method: "POST", cookie: sessions.sales })).status).toBe(403);
+    expect(await status(`/api/quotes/${theirs.quote.id}`, "PUT", quoteBody({ name: "Sam's bigger deal" }), "sales")).toBe(200);
+
+    // The admin can write anybody's — a deal outlives the rep who wrote it.
+    expect(await status(`/api/quotes/${theirs.quote.id}`, "PUT", quoteBody({ name: "Reassigned" }), "admin")).toBe(200);
+
+    for (const role of ["finance", "viewer"]) {
+      expect(await status("/api/quotes", "POST", quoteBody({ name: "Not mine to write" }), role)).toBeGreaterThanOrEqual(400);
+    }
+  });
+
+  signedIn("quote numbers run per organization, from one counter", async () => {
+    const sequence = (number: string) => Number(number.split("-")[2]);
+    const first = await post("/api/quotes", quoteBody({ name: "One" }));
+    const second = await post("/api/quotes", quoteBody({ name: "Two" }), as("sales"));
+    expect(sequence(second.quote.number)).toBe(sequence(first.quote.number) + 1);
+
+    // Another organization's quotes — even one shared with Alice — move nothing.
+    const bobs = await post("/api/quotes", quoteBody({ name: "Bob's", accountId: null, lines: [] }), { cookie: bobCookie });
+    await post(`/api/quotes/${bobs.quote.id}/shares`, { email: ALICE }, { cookie: bobCookie });
+    const third = await post("/api/quotes", quoteBody({ name: "Three" }));
+    expect(sequence(third.quote.number)).toBe(sequence(second.quote.number) + 1);
+  });
+
+  signedIn("invoices are finance's and the admin's", async () => {
+    const quote = await post("/api/quotes", quoteBody({ name: "To bill" }));
+    await post(`/api/quotes/${quote.quote.id}/submit`, {});
+    await post(`/api/quotes/${quote.quote.id}/status`, { status: "sent" });
+
+    expect((await api(`/api/quotes/${quote.quote.id}/invoice`, { method: "POST", cookie: sessions.sales })).status).toBeGreaterThanOrEqual(400);
+    const raised = await api(`/api/quotes/${quote.quote.id}/invoice`, { method: "POST", cookie: sessions.finance });
+    expect(raised.status).toBe(201);
+    const invoice = (await raised.json()).invoice;
+
+    expect((await api(`/api/invoices/${invoice.id}/issue`, { method: "POST", body: "{}", cookie: sessions.viewer })).status).toBeGreaterThanOrEqual(400);
+    const issued = await post(`/api/invoices/${invoice.id}/issue`, {}, as("finance"));
+    expect(issued.number).toMatch(/^INV-/);
+  });
+
+  /** A fresh quote walked to `accepted` — no approval rule trips on the default body. */
+  const acceptedQuote = async (name: string) => {
+    const created = await post("/api/quotes", quoteBody({ name }));
+    await post(`/api/quotes/${created.quote.id}/submit`, {});
+    await post(`/api/quotes/${created.quote.id}/status`, { status: "sent" });
+    return post(`/api/quotes/${created.quote.id}/status`, { status: "accepted" });
+  };
+
+  signedIn("an invoice is numbered when it is issued, so a discarded draft leaves no gap", async () => {
+    const quote = await acceptedQuote("Numbered on issue");
+    const issue = async () => {
+      const raised = await post(`/api/quotes/${quote.id}/invoice`, {});
+      return post(`/api/invoices/${raised.invoice.id}/issue`, { issueDate: "2026-04-01" });
+    };
+    const sequence = (number: string) => Number(number.split("-")[2]);
+
+    const first = await issue();
+    expect(first.number).toMatch(/^INV-2026-\d{4}$/);
+
+    // A draft raised and thrown away in between…
+    const discarded = await post(`/api/quotes/${quote.id}/invoice`, {});
+    expect((await api(`/api/invoices/${discarded.invoice.id}`, { method: "DELETE" })).status).toBe(200);
+
+    // …takes nothing from the run.
+    const second = await issue();
+    expect(sequence(second.number)).toBe(sequence(first.number) + 1);
+  });
+
+  signedIn("a draft cannot be issued by editing its state", async () => {
+    const quote = await acceptedQuote("Sneaky issue");
+    const raised = await post(`/api/quotes/${quote.id}/invoice`, {});
+
+    // Straight at PocketBase, past this server: the hook still refuses it.
+    const response = await fetch(`${pocketbase.url}/api/collections/invoices/records/${raised.invoice.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: decodeURIComponent(cookie.split("=")[1] ?? "") },
+      body: JSON.stringify({ state: "issued", number: "INV-1999-0001" }),
+    });
+    expect(response.status).toBe(400);
+    expect((await json(`/api/invoices/${raised.invoice.id}`)).state).toBe("draft");
+  });
+
+  signedIn("only an admin manages members, and the last admin cannot leave", async () => {
+    expect(await status("/api/org/members", "POST", { email: `x-${suffix}@example.com`, role: "admin" }, "sales")).toBe(403);
+
+    const { members } = await json("/api/org/members");
+    const alice = members.find((member: any) => member.email === ALICE);
+    const demote = await api(`/api/org/members/${alice.id}`, { method: "PUT", body: JSON.stringify({ role: "viewer" }) });
+    expect(demote.status).toBe(400);
+    expect((await demote.json()).error).toContain("only admin");
+
+    // A role change applies at once — the very next request.
+    const viewer = members.find((member: any) => member.email === VIEWER);
+    await put(`/api/org/members/${viewer.id}`, { role: "sales" });
+    expect(await status("/api/accounts", "POST", { name: `Promoted ${suffix}`, currency: "USD" }, "viewer")).toBe(201);
+    await put(`/api/org/members/${viewer.id}`, { role: "viewer" });
+    expect(await status("/api/accounts", "POST", { name: `Demoted ${suffix}`, currency: "USD" }, "viewer")).toBeGreaterThanOrEqual(400);
+  });
+
+  signedIn("a role cannot be granted by writing it onto your own account", async () => {
+    const me = await json("/api/auth/me", as("viewer"));
+    const token = decodeURIComponent(sessions.viewer!.split("=")[1] ?? "");
+    await fetch(`${pocketbase.url}/api/collections/users/records/${me.user.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: token },
+      body: JSON.stringify({ role: "admin", org: orgId }),
+    });
+    expect((await json("/api/auth/me", as("viewer"))).user.role).toBe("viewer");
+  });
+
+  signedIn("a removed member loses access at once, and their records stay", async () => {
+    const leaver = `leo-${suffix}@example.com`;
+    await post("/api/org/members", { email: leaver, role: "sales" });
+    const session = await register(leaver);
+    const quote = await post("/api/quotes", quoteBody({ name: "Leo's deal" }), { cookie: session });
+
+    const { members } = await json("/api/org/members");
+    const leo = members.find((member: any) => member.email === leaver);
+    expect((await api(`/api/org/members/${leo.id}`, { method: "DELETE" })).status).toBe(200);
+
+    expect((await api(`/api/quotes/${quote.quote.id}`, { cookie: session })).status).toBe(404);
+    // The deal belongs to the organization, not to the person who left.
+    expect((await json(`/api/quotes/${quote.quote.id}`)).name).toBe("Leo's deal");
+  });
+
+  signedIn("an API key works in the organization it was issued in", async () => {
+    const issued = await post("/api/keys", { name: "pinned" });
+    const keyed = (path: string) => fetch(`${BASE}${path}`, { headers: { "X-API-Key": issued.key } });
+
+    // Alice starts a second organization and moves into it…
+    const second = await post("/api/orgs", { name: `Side project ${suffix}` });
+    expect(second.role).toBe("admin");
+    expect((await json("/api/org")).org.id).toBe(second.org.id);
+    expect((await json("/api/products")).map((product: any) => product.id)).not.toContain(platformId);
+
+    // …and the key, issued in the first, refuses to follow her: a script
+    // written against one catalogue must not start writing to another.
+    const refused = await keyed("/api/products");
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error).toContain("another organization");
+
+    // Back in the first, it works again.
+    await post("/api/org/switch", { orgId });
+    expect((await json("/api/org")).org.id).toBe(orgId);
+    expect((await (await keyed("/api/org")).json()).org.id).toBe(orgId);
+    expect((await (await keyed("/api/products")).json()).map((product: any) => product.id)).toContain(platformId);
+
+    // A key cannot move between organizations or manage members.
+    const switched = await fetch(`${BASE}/api/org/switch`, {
+      method: "POST",
+      headers: { "X-API-Key": issued.key, "Content-Type": "application/json" },
+      body: JSON.stringify({ orgId: second.org.id }),
+    });
+    expect(switched.status).toBe(403);
+  });
+
+  signedIn("today is a day in the organization's time zone", async () => {
+    expect((await api("/api/org", { method: "PUT", body: JSON.stringify({ timeZone: "Mars/Olympus" }) })).status).toBe(400);
+    expect(await status("/api/org", "PUT", { timeZone: "Pacific/Kiritimati" }, "sales")).toBe(403);
+
+    // UTC+14: the zone most often on a different date from UTC.
+    const zone = "Pacific/Kiritimati";
+    const saved = await put("/api/org", { timeZone: zone });
+    expect(saved.settings.timeZone).toBe(zone);
+
+    const { quoteValidDays } = await json("/api/preferences");
+    const created = await post("/api/quotes", quoteBody({ name: "Dated", validUntil: "" }));
+    const local = new Intl.DateTimeFormat("en-CA", { timeZone: zone }).format(new Date());
+    const expected = new Date(`${local}T00:00:00Z`);
+    expected.setUTCDate(expected.getUTCDate() + Math.max(1, quoteValidDays));
+    expect(created.quote.validUntil).toBe(expected.toISOString().slice(0, 10));
+
+    await put("/api/org", { timeZone: "" });
+  });
+
+  signedIn("signing out ends the session, not just the cookie", async () => {
+    const login = await fetch(`${BASE}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: ALICE, password: PASSWORD }),
+    });
+    const session = (login.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+    expect((await api("/api/org", { cookie: session })).status).toBe(200);
+
+    const out = await post("/api/auth/logout", {}, { cookie: session });
+    expect(out.revoked).toBe(true);
+
+    // Somebody who copied the cookie before it was cleared gets nothing.
+    expect((await api("/api/org", { cookie: session })).status).toBe(401);
+    // Alice's other session is untouched.
+    expect((await api("/api/org")).status).toBe(200);
   });
 });

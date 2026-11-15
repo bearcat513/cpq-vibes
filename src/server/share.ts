@@ -17,7 +17,7 @@
  * writes the relation the rules are evaluated against.
  */
 import { ApiError } from "./http";
-import { POCKETBASE_URL, toApiError } from "./pocketbase";
+import { callHook } from "./pocketbase";
 
 /** Collection names as PocketBase knows them, keyed by API path segment. */
 const COLLECTIONS = {
@@ -38,33 +38,14 @@ export const isShareable = (value: string): value is Shareable => value in COLLE
 export type Shares = {
   /** The owner's email address — who shared it, when it is not yours. */
   owner: string;
-  /** The people it is shared with. Only ever populated for the owner. */
+  /** The people it is shared with. Populated for the record's organization. */
   sharedWith: string[];
   /** Whether this caller may change the list. */
   canShare: boolean;
 };
 
-async function relay<T>(token: string, path: string, init: RequestInit = {}): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${POCKETBASE_URL}${path}`, {
-      ...init,
-      headers: { Authorization: token, ...(init.headers ?? {}) },
-      signal: AbortSignal.timeout(20_000),
-    });
-  } catch (error) {
-    throw toApiError(error, "Could not reach PocketBase");
-  }
-
-  const payload = (await response.json().catch(() => null)) as (T & { message?: string }) | null;
-
-  if (!response.ok) {
-    // PocketBase's error shape is { message, status }; the API's is { error }.
-    throw new ApiError(payload?.message || "The request failed.", response.status);
-  }
-
-  return payload as T;
-}
+/** Carries the caller's own credential — a token or a key — to the hook. */
+const relay = <T>(credential: string, path: string, init: RequestInit = {}) => callHook<T>(credential, path, init);
 
 const sharePath = (kind: Shareable, id: string, search = "") =>
   `/api/cpq/shares/${COLLECTIONS[kind]}/${encodeURIComponent(id)}${search}`;
@@ -94,7 +75,8 @@ export type StampedApprovers = {
 /**
  * Sets which accounts a quote is waiting on.
  *
- * Only the owner may call it, which PocketBase checks. An address with no
+ * Only the quote's owner or an admin of its organization may call it, which
+ * PocketBase checks. An address with no
  * account is reported rather than refused: an approval rule naming someone who
  * has not signed up yet is a configuration problem worth surfacing on the
  * quote, not a reason to refuse to submit it.
@@ -111,10 +93,8 @@ export const stampApprovers = (token: string, quoteId: string, emails: string[])
 export type DirectoryUser = { id: string; email: string; name: string };
 
 /**
- * The accounts on this instance, for the pickers that name a person.
- *
- * Every signed-in account can read this — see docker/pb_hooks/lib/directory.js
- * for what that does and does not expose. A caller that cannot reach it treats
+ * The members of the caller's organization, for the pickers that name a
+ * person. See docker/pb_hooks/lib/directory.js for what that exposes. A caller that cannot reach it treats
  * the answer as empty and falls back to typing an address, so an instance that
  * drops the hook keeps working.
  */

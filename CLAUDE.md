@@ -129,7 +129,57 @@ the whole point: every rule already written applies to a key unchanged. `clientF
 string through without caring which it holds. **A key may not manage keys** — issuing and revoking
 take `requireSessionToken`, and PocketBase refuses a key of its own accord, because revocation is
 how you recover from a leak. `api_keys` is the one collection deliberately *not* in `OWNED`: it
-keys off `user`, set by the hook that creates the record.
+keys off `user`, set by the hook that creates the record. **A key belongs to the organization it was
+issued in, and is refused (403) while its owner works in another.** It cannot carry an organization
+of its own: PocketBase resolves `@request.auth.*` in a rule by reading the *stored* user record, not
+the in-memory `e.auth` the middleware sets, so overriding `org` on the auth record changes nothing a
+rule sees. Refusing the key is the only honest option.
+
+**Records belong to an organization; roles decide who changes them.** `organizations`,
+`memberships` (org, user, role) and `invitations` are collections; `users` carries a denormalized
+`org` (the one you are working in) and `role` (your role there), because a rule can only read
+`@request.auth.<field>`. Only the hooks in `docker/pb_hooks/lib/orgs.js` write those two fields or
+a membership — `setup/members.js` clears them from any user create or update request, and keeps
+`role` in step with the active membership. Every `OWNED` collection has an `org` relation, stamped
+and restored by `rules/ownership.js` exactly like `owner`. The rules are built from `IN_ORG` and
+`role(...)` in `1750000010_organizations.js`: everybody in the org reads, and writes go to
+
+| Role | Writes |
+| --- | --- |
+| `admin` | everything, the organization and its members included |
+| `sales` | accounts, and quotes it owns (an admin edits any quote) |
+| `finance` | accounts (not deleting them), invoices, payments, credits |
+| `viewer` | nothing |
+
+There is no approver role: approving is being named by a rule, which still grants read access to
+that one quote across organizations. `sharedWith` is now for reaching someone *outside* the
+organization. `src/lib/organization.ts` holds the same table as `PERMISSIONS` — the UI hides what a
+role cannot do (`components/app/access.tsx`, `useAccess()`), and `requirePermission` in
+`src/server/context.ts` refuses a batch write (a sample install, a catalogue import) before its
+first write rather than halfway through. Neither grants anything; the rules do. **Change a role's
+reach in both places**, the migration's rules and `PERMISSIONS`, or the UI will offer what PocketBase
+refuses. A new user joins every org that invited its address, or gets a personal org as admin;
+`CPQ_SIGNUP=invite` (an env var on the `pocketbase` service) refuses an uninvited sign-up except the
+very first account. The last admin cannot be removed or demoted.
+
+**Every request knows its organization.** `guarded` in `src/index.ts` asks PocketBase
+(`GET /api/cpq/context`) who the credential is, and runs the handler inside an AsyncLocalStorage
+(`src/server/context.ts`). `requireContext()` gives the user, org, role and memberships — use it
+rather than another round trip. **"Today" is the organization's date**: `src/lib/clock.ts` has
+`today()` read a time-zone provider, which the server points at the request's org and the browser at
+the signed-in org, so expiry, due dates and overdue all turn over at the org's midnight. Never write
+`new Date().toISOString().slice(0, 10)` for a business date — use `today()` or `addDaysTo`.
+
+**Numbers come from counters, through a hook.** `counters` (org, kind, year, value; no user rules
+at all) is incremented inside a transaction by `POST /api/cpq/numbers/{kind}` — two reps saving at
+once get two numbers. Quotes take one on create; **an invoice takes one when it is issued**
+(`POST /api/cpq/invoices/{id}/issue`), and is `DRAFT-<id>` until then, so a discarded draft leaves
+no gap. The update hook refuses moving an invoice from draft to issued any other way.
+
+**Signing out revokes the token.** `revoked_tokens` holds the SHA-256 of each signed-out token until
+its own expiry, a `routerUse` middleware in `lib/sessions.js` refuses one with a 401, and a daily
+cron sweeps the table. "Sign out everywhere" rotates the user's `tokenKey`, which kills every JWT
+at once. Neither touches API keys.
 
 **The API documents itself from one list.** `src/server/openapi.ts` holds every endpoint, and all
 three surfaces print it: `GET /api/openapi.json` (the document), `GET /api` (its index, via
@@ -216,7 +266,14 @@ stakes are sharper: a client that could set its own balance could mark its own d
 - `src/lib/samples.ts` / `samplesHealthcare.ts` — the two worked examples, installed by
   `src/server/seed.ts` (`POST /api/sample?set=`). The second is the workbook in `tools/`, and its
   header explains how block and percent-of-license pricing map onto this engine
-- `src/server/quotes.ts` — pricing orchestration, lifecycle and revisions
+- `src/lib/quoteLifecycle.ts` — `effectiveStatus`: the two statuses that are **derived, never
+  stored**. A sent quote past `validUntil` is `expired`; one with `supersededById` set (and not
+  accepted) is `superseded`. Every read path that returns a quote applies `withLifecycle`, and every
+  guard that asks "can this be sent / invoiced" asks `effectiveStatus`, not `quote.status`
+- `src/server/quotes.ts` — pricing orchestration, lifecycle and revisions. A revision is numbered
+  from the original (`Q-2026-0007-r3`, never `-r2-r3`), only the latest may be revised, an accepted
+  quote may not be, and creating one stamps `supersededBy` on its parent — through a hook, which
+  checks the named record really revises it. Delete the revision and the parent comes back
 - `src/server/invoices.ts` — the receivables orchestration, and where three rules are enforced
   rather than left to the UI: **an issued invoice's lines are fixed** (change what is owed with a
   credit, not an edit), **only an issued invoice has a ledger** (nothing to pay against a draft),
@@ -229,8 +286,11 @@ stakes are sharper: a client that could set its own balance could mark its own d
   schedule — the obvious next layer, and deliberately not here
 - `src/server/db.ts` — the collections. Every call takes a token and is async
 - `src/server/share.ts` — proxies to PocketBase's `/api/cpq/...` hook routes: sharing, approver
-  stamping, and the account directory (`GET /api/directory`, id/email/name only). All three need to
-  read `users`, which no user token may do, so they live in `docker/pb_hooks/`
+  stamping, and the directory (`GET /api/directory`, id/email/name only, **members of your own
+  organization only**). All three need to read `users`, which no user token may do, so they live in
+  `docker/pb_hooks/`. Proxying goes through `callHook` in `src/server/pocketbase.ts`
+- `src/server/orgs.ts` — the organization routes. Membership changes proxy to `orgs/routes.js`;
+  renaming or retiming the org is a plain record update its rules limit to admins
 - `src/server/apiKeys.ts` — listing and revoking are ordinary record calls the collection's own
   rules allow; only issuing proxies to a hook, because only issuing has to hash a secret and hand
   the raw value back once
@@ -245,7 +305,11 @@ stakes are sharper: a client that could set its own balance could mark its own d
   `1750000004_multi_approver.js` does, and test the statement (`src/server/migration.test.ts`).
   `1750000007_ledger_collections.js` fans a JSON array *out* into rows with `json_each`, and its
   statements are tested the same way — it is the one migration that moves data rather than adding
-  to it, so a dropped row would be a customer's payment with nothing left to recover it from
+  to it, so a dropped row would be a customer's payment with nothing left to recover it from.
+  `1750000010_organizations.js` gives every existing user a personal org (`org_<user id>`) as its
+  admin and stamps every record with its owner's org — all as exported, tested SQL constants, and
+  idempotent, so a re-run changes nothing. It also seeds the counters from the highest number
+  already used, so the next one does not collide
 - `docker/pb_hooks/` — server-side JS run by PocketBase's own JSVM, not by Bun. **A hook body
   cannot see its file's scope**: declare what a handler needs inside the handler, or `require` it
   there. Code that breaks this rule registers fine and fails only at runtime
@@ -293,6 +357,21 @@ sharp ease, nothing overshoots. Entrance animations fill `both` and therefore st
 `opacity: 0` — which is why a screenshot tool that does not run animations photographs an empty
 page. `prefers-reduced-motion` is honoured globally at the bottom of the stylesheet.
 
+**The frame is `components/app/Chrome.tsx`, and `components/app/navigation.tsx` is its one table.**
+On `lg` and up the app is a desktop window — `h-dvh`, never scrolling as a page, with the sidebar,
+a title bar and a status bar around `<main>`, the only scrolling region. Below `lg` those go and a
+top bar plus a bottom tab bar (`MOBILE_TABS`, then *More*) replace them, and `<main>` pads itself
+clear of the tab bar and the safe-area insets. `navigation.tsx` lists every screen (`VIEWS`, with
+the letter of its `g` shortcut), everything that can be started (`CREATES`, with the permission it
+needs) and `SHORTCUTS`; the sidebar, the tab bar, the launcher, the dashboard and the shortcut list
+all read it, so **a new screen is added there** and gets its nav entry, launcher command and key
+together. `src/components/shell.test.tsx` asserts no binding is the start of another. Arriving at a
+screen with something to show — a record open, a form started, a filter on — is a `ViewIntent`
+passed as that screen's initial state; its nonce is in the screen's key, so it remounts. The key
+handler is one `keydown` listener in `App.tsx` over `SequenceMatcher` (`src/lib/commands.ts`, pure);
+it stands down in a field, an open menu and under any `aria-modal`, and only Ctrl/⌘ K survives the
+`keyboardShortcuts` preference being off.
+
 **Overlays are portalled onto `<body>`** (`components/ui/portal.tsx`, used by `Sheet` and
 `Dialog`). `position: fixed` is only fixed to the window while nothing above it has a transform,
 and every screen renders inside `animate-extend` — so an overlay left where it was written is
@@ -302,7 +381,31 @@ pinned to, and sized against, the view that opened it.
 → `src/components/docs/`). It is read by people who have not signed in, the document it renders
 needs no credential, and none of the quote editor has to load for it. It applies the account's
 theme, accent and face the same way `App.tsx` does, so it does not flash a different look. Every
-`src/**/*.html` is a build entry point, so adding a page is adding a file.
+`src/**/*.html` is a build entry point, so adding a page is adding a file. Both pages take the
+account's look from `components/app/useAccountTheme.ts`.
+
+**`/table?table_name=<collection>&query=<filter>` is the record browser**, an entry point like
+`/docs` (`src/table.html` → `src/components/table/`). It reads `GET /api/table/:collection`
+(`src/server/table.ts`), which lists through the caller's own credential, so the collection's rules
+decide the rows and a hidden field never comes back. Rows are **stored records**, not domain objects
+(no derived status or balance). A user token cannot read a schema, so the columns are **inferred**
+from the visible records (`inferFields` in `src/lib/dataTable.ts`). The table is
+`@tanstack/react-table` **v9** (`useTable`, `tableFeatures`, not v8's `useReactTable`), with sorting
+and paging in manual mode: PocketBase does both. The filter is edited as a tree, and
+`src/lib/filterQuery.ts` is the only code that writes the PocketBase string, so quoting is done in
+one place. A filter the builder can't show opens as text and is still applied. Applying writes both
+parameters back to the URL, which is the page's whole state.
+
+**Clicking a row opens the record form** (`components/table/RecordForm.tsx`, `@tanstack/react-form`,
+in a `Sheet` like every editor), and `&record=<id>` puts it in the URL. Its layout is data: the
+`record_forms` collection (one per collection per org, admins write, everyone reads; in `OWNED`)
+holds sections of fields with a widget, label and bounds each, checked by `readFormLayout` in
+`src/lib/recordForm.ts`. With nothing stored, the form is built from the record (`fallbackLayout`).
+`GET`/`PATCH /api/table/:collection/:id` (`src/server/recordForms.ts`) resolve the same layout, and
+the server refuses any field the form does not offer as editable, re-runs each field's check, and
+refuses a write whose `updated` stamp is stale (409). That narrows the route; the collection's rules
+still decide. **Quotes, invoices, payments and credits are never written there** (`SERVER_OWNED`),
+because a raw write would skip pricing and totals. Neither are `LOCKED_FIELDS` (owner, org, sharedWith…).
 
 **Forms are panels, previews are modals.** Every editor opens in `components/ui/sheet.tsx` — a
 right-hand, full-height panel. Only things meant to be read (a rendered proposal, a PDF) use
@@ -346,7 +449,7 @@ history from `GET /api/accounts/:id/quotes`, because `/api/quotes` is capped at 
 — searchable, portalled to `document.body` so the panel's `overflow-y-auto` cannot clip it, and
 dismissing on an outside click without also closing the panel behind it. `productOptions` and
 `familyOptions` build the lists. `src/components/combobox.test.tsx` asserts each reference field is
-bound to one. Approver and share pickers offer the account directory; anything a
+bound to one. Approver and share pickers offer the organization's directory; anything a
 picker cannot find is still typable, since an address may be named before it registers.
 
 Anything that persists lives in the account's preferences (`src/lib/preferences.ts`); nothing in

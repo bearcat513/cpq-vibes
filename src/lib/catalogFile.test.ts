@@ -247,7 +247,7 @@ describe("round trip", () => {
 
   test("ids are stripped on export, so the file stays diffable", () => {
     const built = buildCatalogFile({
-      products: [{ ...product(), id: "prd_1", ownerId: "u1", sharedWith: [], createdAt: "x", updatedAt: "y" } as unknown as Product],
+      products: [{ ...product(), id: "prd_1", ownerId: "u1", orgId: "", sharedWith: [], createdAt: "x", updatedAt: "y" } as unknown as Product],
     });
 
     expect(built.products[0]).not.toHaveProperty("id");

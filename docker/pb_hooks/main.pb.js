@@ -9,11 +9,12 @@
  */
 const MODULES = [
   "setup/superuser.js",
-  "setup/adopt.js",
+  "setup/members.js",
   "rules/ownership.js",
   "rules/approvals.js",
   "share/routes.js",
   "keys/routes.js",
+  "orgs/routes.js",
 ];
 
 MODULES.forEach(path => {

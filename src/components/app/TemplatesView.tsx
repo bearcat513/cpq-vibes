@@ -7,6 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { EmptyState, Field, Notice, Section } from "./common";
 import { PdfTemplateEditor } from "./PdfTemplateEditor";
+import { useAccess } from "./access";
 import { api, type Shareable } from "@/lib/api";
 import { LINES_CLOSE, LINES_OPEN, unknownTokensIn, type TokenDescription } from "@/lib/document";
 import { INVOICE_LINE_TOKENS, INVOICE_TOKENS } from "@/lib/invoiceDocument";
@@ -42,11 +43,12 @@ type Props = {
   sellerName: string;
   sellerEmail: string;
   locale: string;
-  myId: string;
   onChanged: () => Promise<void>;
   onShare: (kind: Shareable, id: string, title: string) => void;
   onError: (error: unknown) => void;
   confirmed: (message: string) => boolean;
+  /** Arrive on this template — from the launcher. */
+  initialId?: string;
 };
 
 /**
@@ -65,10 +67,21 @@ type Props = {
  * hand. Anything the app does not recognise is called out as you type, because
  * an unresolved token renders as a blank in a document going to a customer.
  */
-export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId, onChanged, onShare, onError, confirmed }: Props) {
-  const [activeId, setActiveId] = useState<string | null>(templates[0]?.id ?? null);
+export function TemplatesView({
+  templates,
+  sellerName,
+  sellerEmail,
+  locale,
+  onChanged,
+  onShare,
+  onError,
+  confirmed,
+  initialId,
+}: Props) {
+  const initial = templates.find(template => template.id === initialId) ?? templates[0];
+  const [activeId, setActiveId] = useState<string | null>(initial?.id ?? null);
   /** Which kind the list is showing, and what New makes. */
-  const [listKind, setListKind] = useState<TemplateKind>(templates[0]?.kind ?? "quote");
+  const [listKind, setListKind] = useState<TemplateKind>(initial?.kind ?? "quote");
   const [draft, setDraft] = useState<{
     name: string;
     kind: TemplateKind;
@@ -80,7 +93,11 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
   const active = templates.find(template => template.id === activeId) ?? null;
   const editing =
     draft ?? (active ? { name: active.name, kind: active.kind, format: active.format, body: active.body } : null);
-  const mine = !active || active.ownerId === myId;
+  const access = useAccess();
+  // Templates are the organization's house style: everybody reads and renders
+  // them, an admin changes them. One shared in from outside is copied on save.
+  const writer = access.can("templates.write");
+  const mine = !active || access.isOurs(active);
 
   const isPdf = editing?.format === "pdf";
   const kind = editing?.kind ?? "quote";
@@ -191,9 +208,11 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
       <Section
         title="Templates"
         actions={
-          <Button size="sm" onClick={() => startNew(listKind)}>
-            <Plus /> New
-          </Button>
+          writer && (
+            <Button size="sm" onClick={() => startNew(listKind)}>
+              <Plus /> New
+            </Button>
+          )
         }
       >
         {/* The two kinds are listed apart rather than mixed with a badge: you
@@ -254,7 +273,7 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
                   <span className="min-w-0 flex-1 truncate text-sm">{template.name}</span>
                   <Badge tone="outline">{template.format}</Badge>
                 </button>
-                {template.ownerId === myId && (
+                {writer && access.isOurs(template) && (
                   <>
                     <Button
                       variant="ghost"
@@ -285,11 +304,19 @@ export function TemplatesView({ templates, sellerName, sellerEmail, locale, myId
       {editing ? (
         <Section
           title={active ? active.name : "New template"}
-          description={mine ? undefined : "Shared with you — saving keeps your own copy."}
+          description={
+            !writer
+              ? "Read only — an admin of your organization changes templates."
+              : mine
+                ? undefined
+                : "Shared with you — saving keeps your own copy."
+          }
           actions={
-            <Button size="sm" onClick={() => void save()} disabled={busy}>
-              {busy ? <Loader2 className="animate-spin" /> : <Save />} Save
-            </Button>
+            writer && (
+              <Button size="sm" onClick={() => void save()} disabled={busy}>
+                {busy ? <Loader2 className="animate-spin" /> : <Save />} Save
+              </Button>
+            )
           }
         >
           <div className="space-y-3 p-4">

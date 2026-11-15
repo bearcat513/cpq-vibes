@@ -73,6 +73,7 @@ export const PROPOSAL_TOKENS: TokenDescription[] = [
   { token: "totals.arr", description: "Annual recurring revenue" },
   { token: "totals.tcv", description: "Total contract value over the term" },
   { token: "totals.oneTime", description: "Non-recurring charges" },
+  { token: "totals.usage", description: "Usage charges at their estimated quantity — billed on actual use" },
 ];
 
 /** Tokens usable inside `{{#lines}}…{{/lines}}`. */
@@ -136,6 +137,8 @@ function resolve(context: ProposalContext, format: ProposalFormat): Record<strin
     "totals.arr": money(totals.annualRecurringTotal),
     "totals.tcv": money(totals.totalContractValue),
     "totals.oneTime": money(totals.oneTimeTotal),
+    // A quote priced before usage was reported apart has none recorded.
+    "totals.usage": money(totals.usageTotal ?? 0),
   };
 }
 

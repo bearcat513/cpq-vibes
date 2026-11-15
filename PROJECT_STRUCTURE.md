@@ -1,8 +1,8 @@
 # Project structure
 
 A reusable blueprint for a Bun + React + PocketBase app that is **usable as a UI and as an API**,
-documents itself with OpenAPI, issues API keys for scripts, and can notify a chat when something
-finishes.
+documents itself with OpenAPI, issues API keys for scripts, and keeps its records in
+**organizations** whose members' roles decide who may change what.
 
 Copy this file into a new repo and work down it. Everything is a convention, not a framework:
 there is no hidden magic, only files in agreed places. Throughout, `<app>` stands for the project's
@@ -16,13 +16,12 @@ short name (`<APP>` for its upper-case form) — replace it as you copy.
 - [6. API keys](#6-api-keys)
 - [7. Storage and access control](#7-storage-and-access-control)
 - [8. API docs (OpenAPI + /docs)](#8-api-docs-openapi--docs)
-- [9. Telegram notifications](#9-telegram-notifications)
-- [10. The UI](#10-the-ui)
-- [11. Configuration and secrets](#11-configuration-and-secrets)
-- [12. Docker Compose](#12-docker-compose)
-- [13. Tests](#13-tests)
-- [14. Adding a feature, end to end](#14-adding-a-feature-end-to-end)
-- [15. Conventions at a glance](#15-conventions-at-a-glance)
+- [9. The UI](#9-the-ui)
+- [10. Configuration and secrets](#10-configuration-and-secrets)
+- [11. Docker Compose](#11-docker-compose)
+- [12. Tests](#12-tests)
+- [13. Adding a feature, end to end](#13-adding-a-feature-end-to-end)
+- [14. Conventions at a glance](#14-conventions-at-a-glance)
 
 ---
 
@@ -38,7 +37,7 @@ short name (`<APP>` for its upper-case form) — replace it as you copy.
 | Privileged server logic | PocketBase **hooks** (`pb_hooks/`) | The only place allowed to hold privilege — see §7. |
 | Orchestration | Docker Compose | App and database come up together with one command. |
 
-Everything else — schema inference, generation, export, notifications — is plain TypeScript in
+Everything else — pricing, documents, export — is plain TypeScript in
 `src/`, with no framework between it and the runtime.
 
 ## 2. Directory layout
@@ -59,30 +58,38 @@ Everything else — schema inference, generation, export, notifications — is p
 │   ├── index.html  index.css    # the app shell
 │   ├── frontend.tsx  App.tsx    # the app entry point and its root component
 │   ├── docs.html  docs.tsx      # the API reference, a page of its own
+│   ├── table.html  table.tsx    # the record browser, a page of its own
 │   │
 │   ├── server/                  # runs only in Bun. May read env, may hold secrets.
 │   │   ├── http.ts              # ApiError, fail(), readJson(), param parsing, handler()
 │   │   ├── session.ts           # the cookie, token/API-key reading, requireToken()
+│   │   ├── context.ts           # who is asking, in which org, as what — per request
+│   │   ├── pocketbase.ts        # clientFor(credential), callHook(), toApiError()
 │   │   ├── auth.ts              # register / login / logout / me routes
 │   │   ├── <db>.ts              # every storage call. Each one takes a token and is async.
+│   │   ├── orgs.ts              # organization routes: proxies to the membership hooks
 │   │   ├── apiKeys.ts           # list, revoke, and a proxy to the hook that issues
 │   │   ├── share.ts             # proxies to the privileged sharing routes
+│   │   ├── table.ts             # any collection, listed through the caller's credential
 │   │   ├── openapi.ts           # the OpenAPI document and the endpoint index
-│   │   ├── telegram.ts          # the bot token and the calls to Telegram
 │   │   └── *.test.ts            # server tests, incl. the end-to-end API test
 │   │
 │   ├── lib/                     # shared by both sides. No env, no secrets, no I/O.
 │   │   ├── types.ts             # the domain types both sides agree on
 │   │   ├── api.ts               # the browser's typed client for the API
+│   │   ├── organization.ts      # roles and PERMISSIONS — the UI's copy of the rules
+│   │   ├── clock.ts             # today(), in the organization's time zone
+│   │   ├── commands.ts          # the keyboard-shortcut matcher
 │   │   ├── openapiDoc.ts        # parsing the OpenAPI document for the docs page
 │   │   ├── preferences.ts       # normalizers: one shape, whoever wrote it
-│   │   ├── telegram.ts          # settings shape + message text (never the bot token)
 │   │   └── *.test.ts
 │   │
 │   └── components/
-│       ├── ui/                  # button, input, card, select… copied in, owned by us
-│       ├── app/                 # the application's own panels and dialogs
-│       └── docs/                # the API reference page's components
+│       ├── ui/                  # button, input, sheet, dialog, combobox… copied in, owned by us
+│       ├── app/                 # the application's own screens, panels and frame
+│       ├── docs/                # the API reference page's components
+│       ├── table/               # the record browser's components
+│       └── *.test.tsx           # component tests, rendered to static markup
 │
 └── docker/
     ├── bun.dockerfile  pb.dockerfile
@@ -90,9 +97,9 @@ Everything else — schema inference, generation, export, notifications — is p
     └── pb_hooks/                # server-side JS run by PocketBase's JSVM
         ├── main.pb.js           # the only .pb.js: requires each module's register()
         ├── lib/                 # the privileged implementations
-        ├── rules/               # ownership enforcement
-        ├── keys/ share/         # routes that need privilege
-        └── setup/               # first-boot superuser, data adoption
+        ├── rules/               # ownership and org stamping, the approver's write
+        ├── keys/ share/ orgs/   # routes that need privilege
+        └── setup/               # first-boot superuser; guarding users.org / users.role
 ```
 
 **One rule holds the layout together:** a file's directory says what it may touch.
@@ -201,15 +208,41 @@ export function handler<T>(fn: Handler<T>): Handler<T> {
 - Parameter readers (`intParam`, `boolParam`, `enumParam`) throw `ApiError` with the offending
   value quoted: `"limit" must be a number (got "lots").`
 
-### `guarded` — the one-line auth wrapper
+### `guarded` — the auth wrapper
 
 ```ts
-const guarded = <T,>(fn: (token: string, req: Request & T) => Response | Promise<Response>) =>
-  handler<T>(req => fn(requireToken(req), req));
+function guarded<T>(fn: (token: string, req: Request & T) => Response | Promise<Response>) {
+  return handler<T>(async req => {
+    const token = requireToken(req);
+    const context = await loadContext(token);       // GET /api/cpq/context, one round trip
+    return withContext(context, () => fn(token, req));
+  });
+}
 ```
 
 A route is public if it uses `handler`, authenticated if it uses `guarded`. That is the whole
 access-control surface in the route table, and it is visible on every line.
+
+### The request context
+
+`guarded` asks the database once who the credential belongs to — the user, the organization they
+are working in, their role there, their memberships, and whether a session or a key arrived — and
+runs the handler inside an `AsyncLocalStorage` (`server/context.ts`). Anything below reads it with
+`requireContext()` rather than making another round trip.
+
+Asking the database rather than decoding the token is deliberate: for an API key it answers with
+the key's organization and role, which is exactly what the rules will apply, and it proves the
+credential before anything else runs.
+
+Two things ride on it:
+
+- **"Today" is the organization's date.** `lib/clock.ts` has `today()` read a time-zone provider;
+  the server points it at the request's organization and the browser at the signed-in one, so
+  pure code in `lib/` gets the right calendar without anything threaded through it. Never write
+  `new Date().toISOString().slice(0, 10)` for a business date.
+- **A batch is refused before its first write.** `requirePermission("samples.install", "install a
+  worked example")` throws a 403 with a sentence when the role cannot, rather than letting the rules refuse
+  the fortieth record of forty. It grants nothing — the rules still decide each write.
 
 ### Error messages are sentences
 
@@ -251,6 +284,12 @@ list with a 200 on it. Decoding the JWT's `exp` locally turns that silent empty 
 "sign in again". This proves nothing about authenticity; the signature is the database's to check,
 and it does, on every request.
 
+**Signing out revokes the token.** A JWT is good until it expires whatever the browser forgets, so
+clearing the cookie ends the session only for that browser. Sign-out records the token's SHA-256 in
+a `revoked_tokens` collection, a hook middleware refuses a recorded token with a 401 until its own
+expiry, and a daily cron sweeps the table. **Sign out everywhere** rotates the user's `tokenKey`,
+which kills every JWT at once. Neither touches API keys — those are revoked one by one.
+
 ## 6. API keys
 
 A key is how a cron job or a script reaches the API without a week-long session cookie.
@@ -263,6 +302,7 @@ A key is how a cron job or a script reaches the API without a week-long session 
 | Listing / revoking | Ordinary record calls — the collection's own rules let an owner read and delete their keys, and nothing else. |
 | Reach | Exactly what its owner reaches. A middleware resolves the key to the same authenticated identity a session produces, so the collection rules are the only access model whichever credential arrived. |
 | **A key may not manage keys** | Issuing and revoking require a *session*. Revocation is how you recover from a leak, so it is the one thing a leaked key must not be able to do. Enforce it in both layers — a sentence from the app, a refusal from the database. |
+| Organization | A key belongs to the organization it was issued in, and is **refused (403) while its owner works in another**. It cannot carry an organization of its own: a rule resolves `@request.auth.*` from the *stored* user record, not the in-memory one a middleware sets, so overriding it changes nothing a rule sees. Refusing is the only honest option. |
 | Expiry | Optional, capped (ten years is not "never", but it is past the life of any script). |
 | Last used | Written at most every few minutes, so a busy key does not cause a write per request. |
 
@@ -306,20 +346,61 @@ callers act on differently:
 ### Migrations
 
 `docker/pb_migrations/<timestamp>_<what>.js`, one file per change, baked into the image. Collections,
-fields, and — the part that matters — **API rules**:
+fields, and — the part that matters — **API rules**, built from two small helpers rather than
+written out by hand:
 
 ```js
-// Owner-only, on every rule a collection has.
-listRule = viewRule = createRule = updateRule = deleteRule = "owner = @request.auth.id";
+const IN_ORG = '@request.auth.org != "" && org = @request.auth.org';
+const role = (...roles) => "(" + roles.map(r => `@request.auth.role = "${r}"`).join(" || ") + ")";
+
+// Everybody in the organization reads; the roles that may write, write.
+listRule = viewRule = IN_ORG;
+createRule = updateRule = `${IN_ORG} && ${role("admin", "sales")}`;
+deleteRule = `${IN_ORG} && ${role("admin")}`;
 ```
 
 A schema change is a new migration file, never a dashboard edit: a fresh volume comes up without it.
+
+**Backfill data in SQL, and test the statement.** A JSON field reaches the JSVM as a byte array
+(`types.JSONRaw`), so reading one, mutating it and saving runs without error and writes nothing.
+Use SQLite's `json_set` / `json_each` instead, export each statement as a constant, and run it
+against a real database in a test (`server/migration.test.ts`). Make it idempotent, so a re-run
+changes nothing.
+
+### Organizations and roles
+
+A rule can only read `@request.auth.<field>`, so the user record carries a **denormalized** `org`
+(the one they are working in) and `role` (their role there), beside the real collections:
+`organizations`, `memberships` (org, user, role) and `invitations`. Every owned collection has an
+`org` relation, and the rules above key off it.
+
+- **Only the organization hooks write `users.org`, `users.role` or a membership.** A setup hook
+  clears those fields from any user create or update request, and keeps `role` in step with the
+  active membership.
+- **`owner` and `org` are stamped from the caller** on create and restored on update by
+  `rules/ownership.js`, so neither can be set from a request body. A new collection goes in its
+  `OWNED` list, or its records are created belonging to nobody and every rule misses them.
+- **A role's reach is written twice**: once in the migration's rules, which grant it, and once as
+  `PERMISSIONS` in `lib/organization.ts`, which the UI reads to hide what it would only have
+  refused. Change one and you change both, or the UI offers what the database refuses.
+- **The last admin cannot be removed or demoted**, and a new account joins every organization that
+  invited its address, or gets one of its own as admin.
+
+### Numbers from counters
+
+A human-facing sequence number (a quote's, an invoice's) comes from a `counters` collection with
+**no user rules at all**, incremented inside a transaction by a hook route. Two people saving at
+once get two numbers. Take a number at the moment it becomes real — an invoice when it is issued,
+not when it is drafted — so a discarded draft leaves no gap.
 
 ### Hooks
 
 `docker/pb_hooks/` is server-side JS run by the database's own JS VM, not by Bun. It is the only
 place privilege is allowed, and it holds one route per thing that needs it (issuing keys, granting a
-share) plus the global middleware that honours an API key.
+share, changing a membership, taking the next number, answering "who am I" for the request
+context), plus the global middlewares — one that honours an API key, one that refuses a revoked
+token — and the cron that sweeps expired revocations. The server reaches a hook route through one
+proxy, `callHook`, with the caller's own token.
 
 > **The one rule people trip over:** a hook body cannot see its own file's scope. Declare what a
 > handler needs *inside* the handler, or `require` it there. Code that breaks this registers fine
@@ -340,7 +421,7 @@ src/server/openapi.ts  ──┬──▶  GET /api/openapi.json   (Postman, Bru
 
 - The document is **the only list of endpoints.** `GET /api` prints its index rather than keeping a
   second copy, so a renamed route cannot go on being advertised under its old name.
-- **Limits are imported, never retyped.** `TELEGRAM_LIMITS`, `METADATA_LIMITS`, `FIELD_TYPES` come
+- **Limits are imported, never retyped.** `MAX_TAGS`, `MAX_KEYS`, `PREFERENCE_LIMITS` come
   from `lib/`, so the document cannot promise a bound the server does not keep.
 - **OpenAPI 3.0.3**, not 3.1 — every tool reads 3.0 today.
 - The file a browser downloads is the same bytes the tools fetch.
@@ -362,59 +443,14 @@ const jsonResponse = (description: string, schema: Json) =>
 `GET /api` should also answer the questions a reader has before the endpoint list: how to
 authenticate, what the error shape is, what the common query options mean.
 
-## 9. Telegram notifications
-
-Notifying a chat when a long job finishes is the highest-value-per-line feature in this stack.
-A bot token is one `curl` away from BotFather and needs no inbound webhook.
-
-**Split across two files, deliberately:**
-
-| File | Holds | Never holds |
-| --- | --- | --- |
-| `lib/telegram.ts` | The settings shape, its normalizer, and the message text | The bot token — it is a credential and never reaches the browser |
-| `server/telegram.ts` | The bot token and every call to Telegram | Anything the UI needs to render |
-
-**Two places a bot can come from.** An operator may set `TELEGRAM_BOT_TOKEN`, and then nobody has
-to make a bot at all; an account that would rather use its own pastes one in, and that one wins.
-Neither is required — with no bot anywhere, the settings page says so and nothing is sent.
-
-**Linking a chat: a pairing code, not a chat ID.** Nobody knows their own chat ID. The app shows a
-short code from an unambiguous alphabet (`ABCDEFGHJKLMNPQRSTUVWXYZ23456789` — no `O`/`0` or `I`/`1`
-to read back wrong), the user sends it to the bot, and the app confirms. The code has a TTL.
-
-**Validate a token before storing it**, so a pasted mistake is refused by name rather than at the
-first notification that fails to arrive:
-
-```ts
-export const isBotToken = (v: string) => /^\d{5,}:[A-Za-z0-9_-]{30,}$/.test(v.trim());
-```
-
-**Settings worth having** (all normalized, all in `lib/`):
-
-```ts
-type NotificationSettings = {
-  enabled: boolean;
-  chatId: string;  chatLabel: string;       // the label is for the settings page to show
-  events: { finished: boolean; failed: boolean };
-  minRows: number;                          // small runs say nothing — a 25-row preview is not news
-  apiKeyOnly: boolean;                      // a run from the editor has its result on screen already;
-};                                          // one from a cron job at 3am is why this exists
-```
-
-**Calling Telegram**: one `callTelegram(botToken, method, body)` helper with an 8s timeout, where
-every failure — refused token, unreachable network, a chat the bot cannot post to — comes back as
-**one sentence**, because that sentence is what the settings page shows and what `last_error` keeps.
-Telegram's own `description` is the useful part; the status alone is not.
-
-**Notifications never block the request.** Send after the response is decided, and let a failure
-land in `last_error` rather than failing the job that succeeded.
-
-## 10. The UI
+## 9. The UI
 
 ### Entry points
 
 Every `src/**/*.html` is a build entry point, found by a glob — adding a page is adding an HTML
-file, with nothing to register:
+file, with nothing to register. Make something its own page rather than a screen when it is read
+by people who have not signed in (`/docs`), or when it should load none of the app (`/table`, a
+record browser whose whole state is its URL):
 
 ```html
 <!-- src/index.html -->
@@ -433,9 +469,36 @@ const elem = document.getElementById("root")!;
 
 | Directory | What belongs there | Test |
 | --- | --- | --- |
-| `components/ui/` | `button`, `input`, `card`, `select`, `popover`, `label`, `textarea` — generic, copied in, styled with `cva` + `cn()` | Would it be the same in an unrelated product? |
-| `components/app/` | `Dashboard`, `Sidebar`, `SettingsPanel`, `ApiKeys`, `TelegramNotifications`, `ShareDialog` — this product | Does it name a domain concept? |
+| `components/ui/` | `button`, `input`, `select`, `sheet`, `dialog`, `combobox`, `tabs`, `kbd`, `portal` — generic, copied in, styled with `cva` + `cn()` | Would it be the same in an unrelated product? |
+| `components/app/` | `Chrome`, `Dashboard`, `Launcher`, `SettingsPanel`, `ApiKeys`, `ShareDialog`, the screens — this product | Does it name a domain concept? |
 | `components/docs/` | `DocsPage`, `OperationCard`, `SchemaView`, `MethodBadge`, `CodeBlock` | Does it render the API document? |
+| `components/table/` | The record browser: the table, the filter builder, the record form | Does it render stored records? |
+
+### One table for the frame
+
+`components/app/navigation.tsx` lists every screen (with the letter of its `g` shortcut), everything
+that can be started (with the permission it needs) and the shortcuts. The sidebar, the phone's tab
+bar, the launcher, the dashboard and the shortcut list all read it, so **a new screen is added
+there** and gets its nav entry, launcher command and key together. The key handler is one
+`keydown` listener over a pure matcher (`lib/commands.ts`); it stands down in a field, an open menu
+and under any `aria-modal`, and a test asserts no binding is the start of another.
+
+### Panels, modals, and where overlays live
+
+- **Forms are panels, previews are modals.** Every editor opens in `ui/sheet.tsx`, a right-hand,
+  full-height panel; only things meant to be *read* use `ui/dialog.tsx`. The sheet's body is a
+  `@container`, so forms inside it use container queries (`@md:grid-cols-2`), never viewport ones.
+- **Overlays are portalled onto `<body>`.** `position: fixed` is only fixed to the window while
+  nothing above it has a transform, and an entrance animation is a transform — an overlay left
+  where it was written is pinned to the view that opened it.
+- **A field that names another record is a searchable `Combobox`**, never a free `Input`, so a typo
+  cannot quietly point at nothing.
+
+### The UI hides, the rules refuse
+
+`useAccess()` (`components/app/access.tsx`) reads the session's role through `PERMISSIONS` and hides
+what that role cannot do. That is courtesy, not security: the button that is not drawn is a request
+the database would have refused anyway.
 
 ### `lib/api.ts` is the only client that knows URLs
 
@@ -448,10 +511,14 @@ that calls `fetch` directly is a bug.
 Carry the account's preferences **on the session object** rather than fetching them after mount —
 otherwise the app renders a default theme and then corrects itself in front of the user. Apply the
 theme with a `dark` class plus `style.colorScheme`, and honour `system` by listening to
-`matchMedia("(prefers-color-scheme: dark)")`. The `/docs` page applies the same preferences, so it
-does not flash white against the app.
+`matchMedia("(prefers-color-scheme: dark)")`. Every page takes the look from one hook
+(`components/app/useAccountTheme.ts`), so `/docs` and `/table` do not flash a different theme
+against the app.
 
-## 11. Configuration and secrets
+**Anything that persists lives in the account's preferences.** Nothing in the UI writes to
+`localStorage`, so a choice follows the user to another machine.
+
+## 10. Configuration and secrets
 
 `.env.example` is the **documented** list of every variable; `.env` is the copy that runs. Bun
 auto-loads it and Compose reads it from the repo root, so `bun dev` and `docker compose up` see the
@@ -470,20 +537,11 @@ PB_PORT=8091          # not 8090: that default is commonly already taken
 PB_ADMIN_EMAIL=admin@example.com
 PB_ADMIN_PASSWORD=change-me-please
 
-# --- Telegram notifications (optional) ---
-# TELEGRAM_BOT_TOKEN=123456789:AA...
-
-# --- visible to user-supplied scripts ---
-# Only variables named <APP>_SCRIPT_* are visible to a user snippet as `env`.
-# <APP>_SCRIPT_API_TOKEN=...
+# --- sign-up (read by a PocketBase hook) ---
+CPQ_SIGNUP=open       # or "invite": only an invited address may register
 ```
 
-**If users can supply code that runs server-side**, two rules are not optional: run it in a
-`node:vm` context with a timeout, and give it **only** variables carrying an agreed prefix. Sign-up
-is open, so a snippet is untrusted code and the server's secrets stay out of its reach. The bot
-token is deliberately not prefixed.
-
-## 12. Docker Compose
+## 11. Docker Compose
 
 ```
 docker-compose.yml           the app and the database. Publishes NO host ports.
@@ -514,43 +572,52 @@ Worth copying:
 
 Scripts: `docker:up` (`up -d --build`), `docker:down`, `docker:logs`, `docker:init`.
 
-## 13. Tests
+## 12. Tests
 
 `bun test`, with tests beside the code they cover.
 
-| Suffix | Runs | For |
+| File | Runs | For |
 | --- | --- | --- |
-| `*.test.ts` | Node-ish environment | Pure `lib/` logic and server units |
-| `*.test.tsx` | Same | Component logic that needs no DOM |
-| `*.dom.test.tsx` | `@happy-dom/global-registrator` | Rendering and interaction |
+| `lib/*.test.ts` | In milliseconds, no I/O | The pure domain: every rule worth keeping has a test beside it |
+| `components/*.test.tsx` | `renderToStaticMarkup`, no DOM | Structural rules: every editor is a `Sheet`, every reference field a `Combobox`, no shortcut shadows another |
+| `server/openapi.test.ts` | Against the route table | Every documented path is one the server answers on |
+| `server/migration.test.ts` | Against SQLite | The backfill statements migrations run, on real rows |
+| `server/api.test.ts` | Against a real PocketBase container | The access rules — see below |
 
 **One end-to-end API test is worth more than the rest combined.** `server/api.test.ts` starts a
-throwaway database container, registers two accounts, and drives the real HTTP surface:
+throwaway database container, registers several accounts, and drives the real HTTP surface:
 register → sign in → create → share → read as the other account → export → issue a key → call with
-the key → revoke → confirm it now fails. That test is what proves the access rules, not just the
-routes.
+the key → revoke → confirm it now fails; then the same records through each role, a role written
+onto one's own account (refused), a removed member (locked out at once), and a key used from the
+wrong organization (403). That test is what proves the access rules, not just the routes.
 
 Gate it on the container being available so `bun test` still passes on a machine without Docker,
 and print a skip line rather than a green false negative.
 
-## 14. Adding a feature, end to end
+## 13. Adding a feature, end to end
 
 The order that avoids rework:
 
 1. **Types and normalizer** → `src/lib/<feature>.ts` (+ its test). Shape first; both sides agree here.
-2. **Migration** → `docker/pb_migrations/<ts>_<feature>.js`: the collection, its fields, and
-   owner-only rules on all five.
-3. **Storage** → `src/server/<feature>.ts`: functions taking a token, errors through `toApiError`.
-4. **Privilege, only if unavoidable** → a `pb_hooks/` route the server proxies to with the caller's
-   token. Declare dependencies *inside* the handler.
-5. **Routes** → a block in `src/index.ts` with a comment rule, `guarded` where it needs an account.
-6. **The document** → `src/server/openapi.ts`: paths, schemas, limits *imported* from step 1.
+2. **Migration** → `docker/pb_migrations/<ts>_<feature>.js`: the collection, its fields, an `org`
+   relation, and rules from `IN_ORG` and `role(...)` on all five. Add it to `OWNED` in
+   `rules/ownership.js`.
+3. **Permissions** → if it is a new kind of write, a `Permission` in `src/lib/organization.ts` with
+   the same roles the rules allow.
+4. **Storage** → `src/server/<feature>.ts`: functions taking a token, errors through `toApiError`,
+   `requireContext()` for the org or its date.
+5. **Privilege, only if unavoidable** → a `pb_hooks/` route the server reaches through `callHook`
+   with the caller's token. Declare dependencies *inside* the handler.
+6. **Routes** → a block in `src/index.ts` with a comment rule, `guarded` where it needs an account.
+7. **The document** → `src/server/openapi.ts`: paths, schemas, limits *imported* from step 1.
    `/api` and `/docs` update themselves.
-7. **The client** → `src/lib/api.ts`, then the panel in `src/components/app/`.
-8. **Tests** → the unit test from step 1, plus a leg in the end-to-end test proving the access rules.
-9. **`.env.example`** if it added a variable, **README** if it added a user-visible capability.
+8. **The client** → `src/lib/api.ts`, then the panel in `src/components/app/` — in a `Sheet`, and
+   a screen added to `navigation.tsx` if it is one.
+9. **Tests** → the unit test from step 1, plus a leg in the end-to-end test proving the access rules
+   for each role.
+10. **`.env.example`** if it added a variable, **README** if it added a user-visible capability.
 
-## 15. Conventions at a glance
+## 14. Conventions at a glance
 
 **Naming**
 
@@ -558,10 +625,10 @@ The order that avoids rework:
 | --- | --- |
 | Files | `camelCase.ts` for modules, `PascalCase.tsx` for components |
 | Tests | Beside the source: `foo.ts` → `foo.test.ts`; DOM tests `*.dom.test.tsx` |
-| Routes | Plural nouns, kebab-case: `/api/script-templates/:id/shares` |
+| Routes | Plural nouns, kebab-case: `/api/price-books/:id/shares` |
 | API fields | `camelCase` in JSON, whatever the database uses in storage — map at the boundary |
 | Timestamps | ISO-8601 everywhere in the API; convert at the boundary, once (`toIso`) |
-| Env vars | `SCREAMING_SNAKE`; user-script-visible ones carry the `<APP>_SCRIPT_` prefix |
+| Env vars | `SCREAMING_SNAKE`; the app's own carry its prefix (`CPQ_SIGNUP`) |
 | API keys | `<app>_` prefix, so identifying one is a string test |
 | Constants | Exported `UPPER_SNAKE` from `lib/`, imported by the document — never retyped |
 
@@ -571,6 +638,9 @@ The order that avoids rework:
 - Every route goes through `handler`; every authenticated route through `guarded`.
 - Every storage call takes the caller's credential. The server holds none of its own.
 - Access control lives in the database's rules. A route is not a security boundary.
+- A role's reach is changed in the migration's rules *and* in `PERMISSIONS`, together.
+- A business date is `today()`, in the organization's time zone — never the server's UTC date.
+- What can be derived is not stored: a status that depends on the date is computed when read.
 - Limits are defined once in `lib/` and imported by the validator, the document, and the UI.
 - `lib/` imports nothing environment-specific. If it needs `process.env`, it belongs in `server/`.
 - A schema change is a migration file, not a dashboard edit.

@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- The record browser: /table?table_name=<collection>&query=<filter>. Its own
+     entry point rather than a screen in the app, like /docs: the URL is the
+     whole of its state, and none of the quote editor has to load for it. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The same bolt head as the app, so a tab opened from it still looks
+         like the same place. -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='3' fill='%23245eb1'/%3E%3Cpath fill-rule='evenodd' d='M12 3.65 19.25 8.14v7.72L12 20.35 4.75 15.86V8.14L12 3.65Zm0 4.72a3.32 3.32 0 1 0 0 6.64 3.32 3.32 0 0 0 0-6.64Z' fill='%23f7f8fb'/%3E%3C/svg%3E"
+    />
+    <meta name="theme-color" content="#ebeef1" />
+    <title>Data table — CPQ</title>
+    <script type="module" src="./table.tsx" async></script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

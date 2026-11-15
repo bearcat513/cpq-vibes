@@ -65,6 +65,31 @@ export const FONTS: { id: FontChoice; label: string; hint: string }[] = [
   { id: "mono", label: "Monospace", hint: "Everything on the same grid" },
 ];
 
+/**
+ * Whether the app moves. "system" follows the operating system's
+ * reduced-motion setting; "reduced" turns movement off on this account
+ * wherever it signs in, for somebody whose machine is not theirs to set.
+ */
+export type MotionChoice = "system" | "reduced";
+export const MOTIONS: { id: MotionChoice; label: string }[] = [
+  { id: "system", label: "Follow this machine" },
+  { id: "reduced", label: "Reduce motion" },
+];
+
+/** The screens the app can open on — the ones a working day starts from. */
+export type StartView = "home" | "quotes" | "approvals" | "customers" | "receivables" | "catalog";
+export const START_VIEWS: { id: StartView; label: string }[] = [
+  { id: "home", label: "Home" },
+  { id: "quotes", label: "Quotes" },
+  { id: "approvals", label: "Approvals" },
+  { id: "customers", label: "Customers" },
+  { id: "receivables", label: "Receivables" },
+  { id: "catalog", label: "Catalogue" },
+];
+
+/** What a payment term reads as on a customer, from its number of days. */
+export const paymentTermsLabel = (days: number) => (days === 0 ? "Due on receipt" : `Net ${days}`);
+
 export type Preferences = {
   /** "system" follows the OS; the other two override it. */
   theme: Theme;
@@ -72,6 +97,10 @@ export type Preferences = {
   accent: Accent;
   /** The face the app is set in. Headings keep the display face. */
   font: FontChoice;
+  /** Whether the app animates. */
+  motion: MotionChoice;
+  /** The screen the app opens on after signing in. */
+  startView: StartView;
   /** The currency a new quote is denominated in. */
   defaultCurrency: CurrencyCode;
   /** The price book a new quote starts on; empty means the default book. */
@@ -82,11 +111,18 @@ export type Preferences = {
   defaultTaxPercent: number;
   /** How long a new quote's pricing is good for, in days. */
   quoteValidDays: number;
+  /**
+   * The customer-facing notes a new quote starts with — the standing terms a
+   * rep would otherwise paste in every time. Editable on each quote.
+   */
+  defaultQuoteNotes: string;
+  /** The payment term, in days, a new customer starts with. 0 is due on receipt. */
+  defaultPaymentTermDays: number;
   /** The proposal template preselected when rendering; empty means the first. */
   defaultProposalTemplateId: string;
   /** The same for an invoice. Its own key because the two are different kinds. */
   defaultInvoiceTemplateId: string;
-  /** How many quotes the sidebar lists. */
+  /** How many quotes the quote list shows on a page. */
   quoteListLimit: number;
   /**
    * Whether cost and margin are on screen.
@@ -108,6 +144,15 @@ export type Preferences = {
   navCollapsed: boolean;
   /** Ask before deleting anything. It is the only confirmation there is. */
   confirmDestructive: boolean;
+  /**
+   * Whether the single-key shortcuts (`g q`, `n c`, `?`, `/`, `[`) answer.
+   *
+   * A shortcut with no modifier fires on one stray keystroke, which is a
+   * problem for speech input and for anybody who types with a pointer, so it
+   * has to be possible to switch them off (WCAG 2.1.4). The launcher's own
+   * Ctrl/⌘ K carries a modifier and stays on regardless.
+   */
+  keyboardShortcuts: boolean;
 };
 
 /** Bounds shared by the settings inputs and the normalizer below. */
@@ -116,17 +161,23 @@ export const PREFERENCE_LIMITS = {
   validDays: { min: 1, max: 365 },
   quoteList: { min: 5, max: 200 },
   taxPercent: { min: 0, max: 100 },
+  paymentTermDays: { min: 0, max: 365 },
+  quoteNotes: { max: 4000 },
 } as const;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
   accent: "cobalt",
   font: "sans",
+  motion: "system",
+  startView: "home",
   defaultCurrency: DEFAULT_CURRENCY,
   defaultPriceBookId: "",
   defaultTermMonths: 12,
   defaultTaxPercent: 0,
   quoteValidDays: 30,
+  defaultQuoteNotes: "",
+  defaultPaymentTermDays: 30,
   defaultProposalTemplateId: "",
   defaultInvoiceTemplateId: "",
   quoteListLimit: 50,
@@ -134,6 +185,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   locale: "",
   navCollapsed: false,
   confirmDestructive: true,
+  keyboardShortcuts: true,
 };
 
 export const THEMES: Theme[] = ["system", "light", "dark"];
@@ -182,6 +234,8 @@ export function normalizePreferences(raw: unknown): Preferences {
     theme: oneOf(THEMES, input.theme, DEFAULT_PREFERENCES.theme),
     accent: oneOf(ACCENTS.map(a => a.id), input.accent, DEFAULT_PREFERENCES.accent),
     font: oneOf(FONTS.map(f => f.id), input.font, DEFAULT_PREFERENCES.font),
+    motion: oneOf(MOTIONS.map(m => m.id), input.motion, DEFAULT_PREFERENCES.motion),
+    startView: oneOf(START_VIEWS.map(v => v.id), input.startView, DEFAULT_PREFERENCES.startView),
     defaultCurrency: asCurrency(input.defaultCurrency, DEFAULT_PREFERENCES.defaultCurrency),
     defaultPriceBookId: asRecordId(input.defaultPriceBookId),
     defaultTermMonths: asNumber(input.defaultTermMonths, DEFAULT_PREFERENCES.defaultTermMonths, PREFERENCE_LIMITS.termMonths),
@@ -192,6 +246,14 @@ export function normalizePreferences(raw: unknown): Preferences {
       false,
     ),
     quoteValidDays: asNumber(input.quoteValidDays, DEFAULT_PREFERENCES.quoteValidDays, PREFERENCE_LIMITS.validDays),
+    defaultQuoteNotes: typeof input.defaultQuoteNotes === "string"
+      ? input.defaultQuoteNotes.slice(0, PREFERENCE_LIMITS.quoteNotes.max)
+      : DEFAULT_PREFERENCES.defaultQuoteNotes,
+    defaultPaymentTermDays: asNumber(
+      input.defaultPaymentTermDays,
+      DEFAULT_PREFERENCES.defaultPaymentTermDays,
+      PREFERENCE_LIMITS.paymentTermDays,
+    ),
     defaultProposalTemplateId: asRecordId(input.defaultProposalTemplateId),
     defaultInvoiceTemplateId: asRecordId(input.defaultInvoiceTemplateId),
     quoteListLimit: asNumber(input.quoteListLimit, DEFAULT_PREFERENCES.quoteListLimit, PREFERENCE_LIMITS.quoteList),
@@ -200,5 +262,6 @@ export function normalizePreferences(raw: unknown): Preferences {
     locale: LOCALE.test(locale) ? locale : "",
     navCollapsed: input.navCollapsed === true,
     confirmDestructive: input.confirmDestructive !== false,
+    keyboardShortcuts: input.keyboardShortcuts !== false,
   };
 }

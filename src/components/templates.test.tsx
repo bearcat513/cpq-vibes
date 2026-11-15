@@ -96,7 +96,6 @@ describe("the templates screen", () => {
         sellerName="Sam Rep"
         sellerEmail="sam@seller.example.com"
         locale="en-GB"
-        myId="usr_1"
         onChanged={async () => {}}
         onShare={() => {}}
         onError={() => {}}

@@ -19,9 +19,18 @@
  */
 import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NAME_LENGTH } from "../lib/document";
 import { FUNCTION_NAMES } from "../lib/formula";
-import { DEFAULT_PREFERENCES, PREFERENCE_LIMITS, ACCENTS, FONTS, THEMES } from "../lib/preferences";
+import { DEFAULT_PREFERENCES, PREFERENCE_LIMITS, ACCENTS, FONTS, MOTIONS, START_VIEWS, THEMES } from "../lib/preferences";
 import { AGING_BUCKETS } from "../lib/receivable";
 import { SAMPLE_SETS } from "../lib/samples";
+import {
+  BROWSABLE_COLLECTIONS,
+  COLLECTION_NAME,
+  DEFAULT_TABLE_PAGE_SIZE,
+  FIELD_TYPES,
+  MAX_TABLE_PAGE_SIZE,
+} from "../lib/dataTable";
+import { MAX_FILTER_LENGTH } from "../lib/filterQuery";
+import { FORM_WIDGETS, LOCKED_FIELDS, RECORD_FORMS_COLLECTION, REST_MODES, SERVER_OWNED } from "../lib/recordForm";
 import {
   ACCOUNT_STATUSES,
   APPROVAL_METRICS,
@@ -41,8 +50,10 @@ import {
   TEMPLATE_KINDS,
   TIER_KINDS,
 } from "../lib/types";
+import { MAX_ORG_NAME, PERMISSIONS, ROLES } from "../lib/organization";
 import { MAX_APPROVERS, MAX_CONTACTS, MAX_INVOICE_LINES, MAX_LEDGER_ENTRIES, MAX_TAGS } from "../lib/validate";
 import { MAX_EXPIRY_DAYS, MAX_KEY_NAME_LENGTH, MAX_KEYS } from "./apiKeys";
+import { MAX_DISPLAY_NAME } from "./auth";
 import { API_KEY_HEADER, API_KEY_PREFIX, SESSION_COOKIE } from "./session";
 
 type Json = Record<string, unknown>;
@@ -58,7 +69,7 @@ export type OpenApiDocument = {
 };
 
 /** Matches package.json; the document's own version, not the spec's. */
-const API_VERSION = "0.0.1";
+const API_VERSION = "0.1.0";
 
 /** What a browser saves it as, and what the tools show in their import list. */
 export const OPENAPI_FILE_NAME = "cpq.openapi.json";
@@ -147,7 +158,7 @@ const documentResponse = (what: string) => ({
 /* -------------------------------- operations ------------------------------- */
 
 type Operation = {
-  method: "get" | "post" | "put" | "delete";
+  method: "get" | "post" | "put" | "patch" | "delete";
   /** OpenAPI-style, with `{id}` where the route table writes `:id`. */
   path: string;
   tag: string;
@@ -309,10 +320,11 @@ export const OPERATIONS: Operation[] = [
     path: "/api/directory",
     tag: "Discovery",
     operationId: "getDirectory",
-    summary: "The accounts on this instance (?search=) — id, email and name only",
+    summary: "The members of your organization (?search=) — id, email and name only",
     description:
-      "What the approver and share pickers offer. PocketBase answers it, since reading the user " +
-      "list needs authority no user token carries.",
+      "What the approver and share pickers offer. Scoped to the organization you are working in: " +
+      "nobody can list the accounts of another. PocketBase answers it, since reading the user list " +
+      "needs authority no user token carries.",
     parameters: [queryParam("search", "Narrow the list by name or email.", { type: "string" })],
     responses: { "200": jsonResponse("The directory.", ref("Directory")) },
   },
@@ -324,10 +336,17 @@ export const OPERATIONS: Operation[] = [
     tag: "Auth",
     operationId: "register",
     summary: "{ email, password, name? } → create an account and sign in",
-    description: "Sign-up is open. The session cookie comes back on the same response.",
+    description:
+      "The session cookie comes back on the same response. A new account joins every organization " +
+      "that invited its address; with none, it gets an organization of its own, as its admin.\n\n" +
+      "When the instance runs with `CPQ_SIGNUP=invite`, only an invited address may register " +
+      "(the first account on an empty instance always may).",
     anonymous: true,
     requestBody: jsonBody("The account to create.", ref("RegisterInput")),
-    responses: { "201": sessionResponse("The account, now signed in.") },
+    responses: {
+      "201": sessionResponse("The account, now signed in."),
+      "403": jsonResponse("Sign-up is by invitation, and this address has none.", ref("Error")),
+    },
   },
   {
     method: "post",
@@ -347,10 +366,21 @@ export const OPERATIONS: Operation[] = [
     path: "/api/auth/logout",
     tag: "Auth",
     operationId: "logout",
-    summary: "End the session",
-    description: "Clears the cookie. An API key is unaffected — revoke one with `DELETE /api/keys/{id}`.",
+    summary: "End the session (?everywhere=1 ends them all)",
+    description:
+      "Revokes the token on the server — a copy of it stops working at once, not when it expires — " +
+      "and clears the cookie. With `?everywhere=1`, every session this account holds is ended, " +
+      "this one included. An API key is unaffected — revoke one with `DELETE /api/keys/{id}`.",
     anonymous: true,
-    responses: { "200": jsonResponse("The cookie has been cleared.", ref("Ok")) },
+    parameters: [
+      queryParam("everywhere", "`1` to end every session this account has, not just this one.", {
+        type: "string",
+        enum: ["1"],
+      }),
+    ],
+    responses: {
+      "200": jsonResponse("The session is over.", ref("LogoutResult")),
+    },
   },
   {
     method: "get",
@@ -359,6 +389,18 @@ export const OPERATIONS: Operation[] = [
     operationId: "getMe",
     summary: "The signed-in account, with its preferences",
     responses: { "200": jsonResponse("Who this credential belongs to.", ref("SessionEnvelope")) },
+  },
+  {
+    method: "patch",
+    path: "/api/auth/profile",
+    tag: "Auth",
+    operationId: "updateProfile",
+    summary: "{ name } → change your display name",
+    description:
+      "What members, approvers and the documents you send see. The email cannot change: it is how " +
+      "an invitation finds you.",
+    requestBody: jsonBody("The new name. Empty clears it, and the email is shown instead.", ref("ProfileInput")),
+    responses: { "200": jsonResponse("The account, renamed.", ref("SessionEnvelope")) },
   },
   {
     method: "post",
@@ -396,7 +438,10 @@ export const OPERATIONS: Operation[] = [
       `The response is the only time the key exists: only its SHA-256 is stored, so it cannot be ` +
       `shown again. Send it as \`${API_KEY_HEADER}\` on any endpoint under \`/api\`.\n\n` +
       "Issuing needs a real session. A leaked key must not be able to mint its replacement, " +
-      "because revocation is how you recover from the leak.",
+      "because revocation is how you recover from the leak.\n\n" +
+      "A key belongs to the organization it was issued in, and acts with its owner's role there. " +
+      "It is refused with a 403 while its owner is working in another organization — switch back, " +
+      "or issue a key in the new one.",
     requestBody: jsonBody("What the key is for, and how long it should last.", ref("ApiKeyInput")),
     responses: {
       "201": jsonResponse("The key, this once.", ref("IssuedApiKey")),
@@ -759,18 +804,158 @@ export const OPERATIONS: Operation[] = [
     responses: { "200": jsonResponse("Whether it parses, and what it may name.", ref("FormulaCheck")) },
   },
 
+  /* ---------------------------- organizations --------------------------- */
+  {
+    method: "get",
+    path: "/api/org",
+    tag: "Organizations",
+    operationId: "getOrganization",
+    summary: "The organization you are working in, your role, and what each role may do",
+    description:
+      "Every record belongs to an organization, and every member reads all of it. The role decides " +
+      "who may change what — PocketBase's collection rules enforce it, and `permissions` is the " +
+      "same table the UI uses to hide what it would refuse.",
+    responses: { "200": jsonResponse("Where you are working.", ref("OrganizationContext")) },
+  },
+  {
+    method: "put",
+    path: "/api/org",
+    tag: "Organizations",
+    operationId: "updateOrganization",
+    summary: "{ name?, timeZone? } → rename it, or change its calendar (admin)",
+    description:
+      "The time zone is what \"today\" means here: when a sent quote expires, when an invoice falls " +
+      "due and when it turns overdue. Empty is UTC.",
+    requestBody: jsonBody("What to change.", ref("OrganizationInput")),
+    responses: {
+      "200": jsonResponse("The organization.", ref("Organization")),
+      "403": jsonResponse("Only an admin can change it.", ref("Error")),
+    },
+  },
+  {
+    method: "get",
+    path: "/api/org/members",
+    tag: "Organizations",
+    operationId: "listMembers",
+    summary: "The members of your organization, and its open invitations",
+    responses: { "200": jsonResponse("Who is in it.", ref("MemberListing")) },
+  },
+  {
+    method: "post",
+    path: "/api/org/members",
+    tag: "Organizations",
+    operationId: "addMember",
+    summary: "{ email, role } → add an account, or invite an address (admin)",
+    description:
+      "An address that already has an account joins at once. Any other is invited, and joins when " +
+      "it registers. Needs a session, not a key.",
+    requestBody: jsonBody("Who, and as what.", ref("MemberInput")),
+    responses: {
+      "201": jsonResponse("The members now, with `outcome` saying which happened.", ref("MemberListing")),
+      "403": jsonResponse("Only an admin can add members.", ref("Error")),
+    },
+  },
+  {
+    method: "put",
+    path: "/api/org/members/{id}",
+    tag: "Organizations",
+    operationId: "changeMemberRole",
+    summary: "{ role } → change a member's role (admin)",
+    description: "Refused when it would leave the organization with no admin. Needs a session, not a key.",
+    parameters: [idParam("membership")],
+    requestBody: jsonBody("The new role.", ref("RoleInput")),
+    responses: { "200": jsonResponse("The members now.", ref("MemberListing")) },
+  },
+  {
+    method: "delete",
+    path: "/api/org/members/{id}",
+    tag: "Organizations",
+    operationId: "removeMember",
+    summary: "Remove a member (admin), or leave (your own membership)",
+    description:
+      "Their records stay with the organization. Refused when it would leave the organization with " +
+      "no admin. Needs a session, not a key.",
+    parameters: [idParam("membership")],
+    responses: { "200": jsonResponse("The members now.", ref("MemberListing")) },
+  },
+  {
+    method: "delete",
+    path: "/api/org/invitations/{id}",
+    tag: "Organizations",
+    operationId: "revokeInvitation",
+    summary: "Withdraw an invitation (admin)",
+    parameters: [idParam("invitation")],
+    responses: { "200": jsonResponse("The members now.", ref("MemberListing")) },
+  },
+  {
+    method: "post",
+    path: "/api/org/switch",
+    tag: "Organizations",
+    operationId: "switchOrganization",
+    summary: "{ orgId } → work in another organization you belong to",
+    description:
+      "Moves the account, not just this session: every session sees the new organization. An API " +
+      "key works only while its owner is in the organization it was issued in, and is refused " +
+      "with a 403 otherwise.",
+    requestBody: jsonBody("Where to.", ref("OrganizationSwitchInput")),
+    responses: { "200": jsonResponse("Where you are now.", ref("OrganizationSwitch")) },
+  },
+  {
+    method: "post",
+    path: "/api/orgs",
+    tag: "Organizations",
+    operationId: "createOrganization",
+    summary: "{ name } → start an organization, as its admin, and move into it",
+    requestBody: jsonBody("Its name.", ref("OrganizationCreateInput")),
+    responses: { "201": jsonResponse("Where you are now.", ref("OrganizationSwitch")) },
+  },
+
   /* -------------------------------- quotes ------------------------------ */
   {
     method: "get",
     path: "/api/quotes",
     tag: "Quotes",
     operationId: "listQuotes",
-    summary: "List quotes (?limit=)",
-    description: "Summaries: the header and the totals, without the lines.",
+    summary: "Search quotes (?q=&status=&page=&perPage=)",
+    description:
+      "Summaries: the header and the totals, without the lines, most recently changed first. " +
+      "The search and the paging run in the database, so the whole book is reachable, not just " +
+      "the first page. The totals ride in the response headers, so the body stays a plain array.\n\n" +
+      "`status` filters on the status a quote *reads* as: `expired` finds sent quotes past their " +
+      "date, `superseded` finds versions a later revision replaced, and `sent` excludes both.",
     parameters: [
-      queryParam("limit", "How many to return. `0` returns all of them.", { type: "integer", minimum: 0 }),
+      queryParam("q", "Matches the number, the name or the customer's name.", { type: "string" }),
+      queryParam("status", "Only quotes in this status.", { type: "string", enum: [...QUOTE_STATUSES] }),
+      queryParam("page", "1-based.", { type: "integer", minimum: 1, default: 1 }),
+      queryParam("perPage", "Page size, up to 500. `0` is the largest page.", { type: "integer", minimum: 0, maximum: 500, default: 50 }),
+      queryParam("limit", "The older name for `perPage`.", { type: "integer", minimum: 0, deprecated: true }),
     ],
-    responses: { "200": jsonResponse("The quotes, newest first.", array(ref("QuoteSummary"))) },
+    responses: {
+      "200": {
+        ...jsonResponse("One page of quotes.", array(ref("QuoteSummary"))),
+        headers: {
+          "X-Total-Count": { description: "How many quotes match, across every page.", schema: { type: "integer" } },
+          "X-Page": { description: "This page.", schema: { type: "integer" } },
+          "X-Per-Page": { description: "The page size used.", schema: { type: "integer" } },
+          "X-Total-Pages": { description: "How many pages there are.", schema: { type: "integer" } },
+        },
+      },
+    },
+  },
+  {
+    method: "get",
+    path: "/api/quotes/counts",
+    tag: "Quotes",
+    operationId: "countQuotes",
+    summary: "How many quotes are in each status (?q=)",
+    description: "The list's filter chips. `all` is every quote matching `q`; each status counts as `GET /api/quotes?status=` would.",
+    parameters: [queryParam("q", "The same search the list takes.", { type: "string" })],
+    responses: {
+      "200": jsonResponse(
+        "A count per status, plus `all`.",
+        { type: "object", additionalProperties: { type: "integer" } },
+      ),
+    },
   },
   {
     method: "post",
@@ -1265,7 +1450,117 @@ export const OPERATIONS: Operation[] = [
     ],
     responses: { "201": jsonResponse("What was installed.", ref("SeedReport")) },
   },
+
+  /* ------------------------------ data table ----------------------------- */
+  {
+    method: "get",
+    path: "/api/table/{collection}",
+    tag: "Data table",
+    operationId: "listTable",
+    summary: "One page of any collection, with a PocketBase filter and sort",
+    description:
+      "What the record browser at `/table?table_name=<collection>&query=<filter>` reads. The rows " +
+      "are the stored records — no derived quote status, no invoice balance — and the collection's " +
+      "own rules decide which of them you see, exactly as for every other route. A collection no " +
+      "user rule reaches answers 403.\n\n" +
+      "`filter` is PocketBase's filter syntax, passed through: `status = \"sent\" && total > 1000`. " +
+      "Because a user token cannot read a collection's schema, `fields` is inferred from the records " +
+      "you can see — when the filter matches nothing, from one unfiltered row.",
+    parameters: [
+      {
+        name: "collection",
+        in: "path",
+        required: true,
+        description: `The collection's name: ${BROWSABLE_COLLECTIONS.map(name => `\`${name}\``).join(", ")}, or any other.`,
+        schema: { type: "string", pattern: COLLECTION_NAME.source },
+      },
+      queryParam("filter", "A PocketBase filter expression.", { type: "string", maxLength: MAX_FILTER_LENGTH }),
+      queryParam("sort", "Comma-separated fields, `-` for descending: `-created,name`.", { type: "string" }),
+      queryParam("page", "Which page, from 1.", { type: "integer", minimum: 1, default: 1 }),
+      queryParam("perPage", "Rows per page.", {
+        type: "integer",
+        minimum: 1,
+        maximum: MAX_TABLE_PAGE_SIZE,
+        default: DEFAULT_TABLE_PAGE_SIZE,
+      }),
+    ],
+    responses: {
+      "200": jsonResponse("The page.", ref("TablePage")),
+      "403": jsonResponse("The collection's rules do not let your account list it.", ref("Error")),
+      "404": jsonResponse("There is no such collection.", ref("Error")),
+    },
+  },
+  {
+    method: "get",
+    path: "/api/table/{collection}/{id}",
+    tag: "Data table",
+    operationId: "readTableRecord",
+    summary: "One stored record, and the form to edit it with",
+    description:
+      "What a click on a row in `/table` opens. `form` is the organization's layout for the " +
+      `collection from \`${RECORD_FORMS_COLLECTION}\` when there is one, and otherwise a layout built ` +
+      "from the record's own fields (`source: \"default\"`). A stored layout that cannot be read " +
+      "falls back to the default and says why in `problem`.\n\n" +
+      `Never written here, whatever the layout says: ${Object.keys(SERVER_OWNED).map(name => `\`${name}\``).join(", ")} ` +
+      "— the server prices and totals them on every save — so their form comes back with " +
+      "`writable: false` and the reason.",
+    parameters: [tableCollectionParam(), idParam("record")],
+    responses: {
+      "200": jsonResponse("The record and its form.", ref("RecordWithForm")),
+      "404": jsonResponse("No such record that you can see, or no such collection.", ref("Error")),
+    },
+  },
+  {
+    method: "patch",
+    path: "/api/table/{collection}/{id}",
+    tag: "Data table",
+    operationId: "updateTableRecord",
+    summary: "Change the fields a record's form offers",
+    description:
+      "Only fields the form shows as editable may be sent, and each must be a value its widget " +
+      `accepts; anything else is a 400. ${[...LOCKED_FIELDS].map(name => `\`${name}\``).join(", ")} are ` +
+      "never written by a request. The layout narrows what this route writes and grants nothing: " +
+      "the collection's update rule still decides whether you may change the record (403).\n\n" +
+      "Send `updated` as you read it, and a record changed since is refused with a 409 rather than " +
+      `overwritten. A change to a \`${RECORD_FORMS_COLLECTION}\` layout is checked before it is stored.`,
+    parameters: [tableCollectionParam(), idParam("record")],
+    requestBody: jsonBody("The change.", ref("RecordUpdate")),
+    responses: {
+      "200": jsonResponse("The record as saved, and its form.", ref("RecordWithForm")),
+      "403": jsonResponse("The collection's rules do not let your account change this record.", ref("Error")),
+      "404": jsonResponse("No such record that you can see.", ref("Error")),
+      "409": jsonResponse("The record changed since `updated`, or this collection is not written here.", ref("Error")),
+    },
+  },
+  {
+    method: "post",
+    path: "/api/record-forms/{collection}",
+    tag: "Data table",
+    operationId: "createRecordForm",
+    summary: "Store a collection's default form layout, to edit",
+    description:
+      `Writes the layout a collection gets by default into \`${RECORD_FORMS_COLLECTION}\`, built from one ` +
+      "record you can see, so there is a record to change — in the data table itself, if you like. " +
+      "Admins only, by the collection's rules. A collection that already has one is a 409.",
+    parameters: [tableCollectionParam()],
+    responses: {
+      "201": jsonResponse("The stored layout.", ref("RecordFormConfig")),
+      "403": jsonResponse("Only an admin may change layouts.", ref("Error")),
+      "409": jsonResponse("There is already a layout, or no record to build one from.", ref("Error")),
+    },
+  },
 ];
+
+/** The `{collection}` of the data table's routes. */
+function tableCollectionParam() {
+  return {
+    name: "collection",
+    in: "path",
+    required: true,
+    description: "The collection's name.",
+    schema: { type: "string", pattern: COLLECTION_NAME.source },
+  };
+}
 
 /* --------------------------------- schemas -------------------------------- */
 
@@ -1290,7 +1585,8 @@ const object = (description: string, properties: Record<string, Json>, required:
 const currency = () => enum_(CURRENCIES, "ISO 4217 code. Nothing in this app ever adds two currencies.");
 
 const ownership = {
-  ownerId: id("The account that owns it."),
+  ownerId: id("The account that created it — and, for a quote, the rep it belongs to."),
+  orgId: id("The organization it belongs to. Every member reads it; their role decides who may change it."),
   sharedWith: array(id("An account it is shared with, read-only.")),
   createdAt: timestamp("When it was created."),
   updatedAt: timestamp("When it last changed."),
@@ -1308,6 +1604,13 @@ function preferencesSchema(): Json {
     theme: { enum: [...THEMES] },
     accent: { enum: ACCENTS.map(accent => accent.id) },
     font: { enum: FONTS.map(font => font.id) },
+    motion: { enum: MOTIONS.map(motion => motion.id) },
+    startView: { enum: START_VIEWS.map(view => view.id) },
+    defaultQuoteNotes: { maxLength: PREFERENCE_LIMITS.quoteNotes.max },
+    defaultPaymentTermDays: {
+      minimum: PREFERENCE_LIMITS.paymentTermDays.min,
+      maximum: PREFERENCE_LIMITS.paymentTermDays.max,
+    },
     defaultCurrency: { enum: [...CURRENCIES] },
     defaultTermMonths: { minimum: PREFERENCE_LIMITS.termMonths.min, maximum: PREFERENCE_LIMITS.termMonths.max },
     defaultTaxPercent: { minimum: PREFERENCE_LIMITS.taxPercent.min, maximum: PREFERENCE_LIMITS.taxPercent.max },
@@ -1379,7 +1682,11 @@ function schemas(): Record<string, Json> {
     oneTimeTotal: money("One-time charges."),
     monthlyRecurringTotal: money("MRR."),
     annualRecurringTotal: money("ARR."),
-    totalContractValue: money("One-time charges plus the full recurring value of the term."),
+    usageTotal: money(
+      "Usage lines at their estimated quantity, after the quote discount. Part of `netTotal`, but not " +
+        "of `totalContractValue`: it is a forecast, not a commitment.",
+    ),
+    totalContractValue: money("One-time charges plus the full recurring value of the term. Usage is not included."),
   });
 
   const quoteLineInput = object("One line as a caller writes it. Everything priced is derived from these.", {
@@ -1420,11 +1727,22 @@ function schemas(): Record<string, Json> {
    */
   const quoteHeader: Record<string, Json> = {
     id: id("The quote's id."),
-    number: string_('Sequential per account: "Q-2026-0007". A revision appends `-r<version>`.'),
+    number: string_(
+      'Sequential per organization and year, from a counter, so two reps never take the same one: ' +
+        '"Q-2026-0007". A revision is the original\'s number with `-r<version>`: "Q-2026-0007-r2".',
+    ),
     name: string_("What it is called."),
-    status: enum_(QUOTE_STATUSES, "Where it stands. A sent quote past `validUntil` reads as `expired`."),
+    status: enum_(
+      QUOTE_STATUSES,
+      "Where it stands. Two are derived as it is read, never stored: a sent quote past `validUntil` " +
+        "reads as `expired`, and one a later revision replaced reads as `superseded`.",
+    ),
     version: integer_("1 for the original; a revision of a sent quote increments it."),
     supersedesId: string_("The quote this one revises.", { nullable: true }),
+    supersededById: string_(
+      "The revision that replaced this one. While it is set, this version cannot be sent, accepted or invoiced.",
+      { nullable: true },
+    ),
     customer: ref("CustomerSnapshot"),
     priceBookId: id("The book it was priced from."),
     currency: currency(),
@@ -1445,7 +1763,10 @@ function schemas(): Record<string, Json> {
   /** The same, for an invoice: its header, without lines or ledger rows. */
   const invoiceHeader: Record<string, Json> = {
     id: id("The invoice's id."),
-    number: string_('Sequential per account: "INV-2026-0007". The run is gapless.'),
+    number: string_(
+      'Taken when it is issued, per organization and year: "INV-2026-0007". A draft reads ' +
+        '"DRAFT-<id>" until then, so a discarded draft leaves no gap in the run.',
+    ),
     quoteId: string_("The quote it was raised from.", { nullable: true }),
     quoteNumber: string_("That quote's number, snapshotted, so the link still reads after it is gone."),
     customer: ref("CustomerSnapshot"),
@@ -1483,7 +1804,7 @@ function schemas(): Record<string, Json> {
       proposalTemplates: integer_("Templates.", { nullable: true }),
     }),
 
-    Directory: object("The accounts on this instance — id, email and name, and nothing else.", {
+    Directory: object("The members of your organization — id, email and name, and nothing else.", {
       users: array(
         object("One account.", {
           id: id("Their account id."),
@@ -1527,8 +1848,84 @@ function schemas(): Record<string, Json> {
       verified: boolean_("Whether the address has been verified."),
       createdAt: timestamp("When the account was created."),
       preferences: ref("Preferences"),
+      org: { ...ref("Organization"), nullable: true, description: "Where the account is working. `null` when it belongs to none." },
+      role: enum_([...ROLES, ""], "Its role there. Empty when it is in no organization."),
+      memberships: array(ref("Membership")),
     }),
     SessionEnvelope: object("What the auth endpoints answer with.", { user: ref("SessionUser") }, ["user"]),
+
+    /* ---------------------------- organizations --------------------------- */
+    Organization: object("An organization: where records belong.", {
+      id: id("Its id."),
+      name: string_("What it is called."),
+      settings: object("Its settings.", {
+        timeZone: string_('An IANA zone, such as "Europe/London". Empty is UTC.'),
+      }),
+    }),
+    Membership: object("One organization an account belongs to.", {
+      id: id("The membership's id."),
+      org: object("The organization.", { id: id("Its id."), name: string_("Its name.") }),
+      role: enum_(ROLES, "The role there."),
+    }),
+    OrganizationContext: object("Where you are working, and what each role may do there.", {
+      org: { ...ref("Organization"), nullable: true },
+      role: enum_([...ROLES, ""], "Your role."),
+      memberships: array(ref("Membership")),
+      roles: array(object("A role.", { role: enum_(ROLES, "Its name."), description: string_("What it may do.") })),
+      permissions: object(
+        "Each permission, and the roles that hold it.",
+        Object.fromEntries(Object.keys(PERMISSIONS).map(name => [name, array(enum_(ROLES, "A role."))])),
+      ),
+      timeZones: array(string_("A time zone this server knows.")),
+    }),
+    OrganizationInput: object("What to change about the organization.", {
+      name: string_("A new name.", { maxLength: MAX_ORG_NAME }),
+      timeZone: string_("An IANA zone, or empty for UTC."),
+    }),
+    OrganizationSwitch: object("Where you are working after a switch or a create.", {
+      org: ref("Organization"),
+      role: enum_(ROLES, "Your role there."),
+    }),
+    MemberListing: object("The members of an organization, and its open invitations.", {
+      members: array(
+        object("A member.", {
+          id: id("The membership's id — what a role change or removal names."),
+          userId: id("Their account id."),
+          email: string_("Their email.", { format: "email" }),
+          name: string_("Their name."),
+          role: enum_(ROLES, "Their role."),
+          joined: timestamp("When they joined."),
+        }),
+      ),
+      invitations: array(
+        object("An address invited, and not yet registered.", {
+          id: id("The invitation's id."),
+          email: string_("The address.", { format: "email" }),
+          role: enum_(ROLES, "The role it joins as."),
+          created: timestamp("When it was sent."),
+        }),
+      ),
+      canManage: boolean_("Whether you may change any of it — that is, whether you are an admin."),
+      outcome: enum_(["added", "invited"], "After adding: whether the address joined, or was invited."),
+    }),
+    MemberInput: object(
+      "Who to add, and as what.",
+      { email: string_("Their email.", { format: "email" }), role: enum_(ROLES, "Their role.") },
+      ["email", "role"],
+    ),
+    RoleInput: object("A role.", { role: enum_(ROLES, "The new role.") }, ["role"]),
+    ProfileInput: object("Your display name.", { name: string_("The name.", { maxLength: MAX_DISPLAY_NAME }) }, ["name"]),
+    OrganizationSwitchInput: object("Where to work.", { orgId: id("One of your memberships' organizations.") }, ["orgId"]),
+    OrganizationCreateInput: object(
+      "The new organization.",
+      { name: string_("What it is called.", { maxLength: MAX_ORG_NAME }) },
+      ["name"],
+    ),
+    LogoutResult: object("What was ended.", {
+      ok: boolean_("Always true."),
+      revoked: boolean_("Whether a token was revoked on the server (false when there was none to revoke)."),
+      everywhere: boolean_("Whether every session was ended."),
+    }),
 
     /* ------------------------------ api keys ------------------------------ */
     ApiKey: object("An API key, as it can be described after it exists. Never the secret itself.", {
@@ -2145,6 +2542,90 @@ function schemas(): Record<string, Json> {
     }),
     ShareInput: object("Who to share with.", { email: string_("Their address.", { format: "email" }) }, ["email"]),
 
+    /* ------------------------------ data table ----------------------------- */
+    TablePage: object("One page of a collection, as stored.", {
+      collection: string_("The collection asked for."),
+      filter: string_("The filter applied, trimmed. Empty is none."),
+      sort: string_("The sort applied. Empty is PocketBase's default."),
+      page: integer_("This page, from 1."),
+      perPage: integer_("Rows per page."),
+      totalItems: integer_("Rows matching the filter, across every page."),
+      totalPages: integer_("Pages at this size."),
+      items: array({ type: "object", additionalProperties: true, description: "A record, as PocketBase stores it." }),
+      fields: array(
+        object("A column, inferred from the records.", {
+          name: string_("The field."),
+          type: enum_(FIELD_TYPES, "What its values look like. `unknown` where rows disagree."),
+        }),
+      ),
+    }),
+
+    FormLayout: object(
+      `A record form's layout, as stored in \`${RECORD_FORMS_COLLECTION}\`. A field may be written as ` +
+        "its bare name to take every default.",
+      {
+        sections: array(
+          object("A titled group of fields.", {
+            title: string_("Its heading. May be empty."),
+            description: string_("A line under the heading."),
+            columns: integer_("One column or two, against the panel's width.", { enum: [1, 2], default: 2 }),
+            fields: array(
+              object(
+                "One field.",
+                {
+                  name: string_("The record's field."),
+                  label: string_("Shown above it. The field name, in words, when left out."),
+                  widget: enum_(FORM_WIDGETS, "How it is edited. Guessed from the value when left out."),
+                  span: integer_("Across both columns.", { enum: [1, 2] }),
+                  readOnly: boolean_("Shown, never written."),
+                  required: boolean_("Refused empty."),
+                  help: string_("A line under the input."),
+                  placeholder: string_("Shown in an empty input."),
+                  options: array(string_("A `select`'s choice.")),
+                  min: number_("A number's lowest value, or a text's shortest length."),
+                  max: number_("A number's highest value, or a text's longest length."),
+                  rows: integer_("A `textarea` or `json` field's height.", { minimum: 1, maximum: 40 }),
+                },
+                ["name"],
+              ),
+            ),
+          }, ["fields"]),
+        ),
+        rest: enum_(REST_MODES, "What happens to the record's other fields: left out, or shown read-only."),
+      },
+      ["sections"],
+    ),
+    RecordForm: object("The form for one record.", {
+      collection: string_("The collection."),
+      title: string_("The form's heading."),
+      description: string_("A line under it."),
+      layout: ref("FormLayout"),
+      source: enum_(["stored", "default"], "From `record_forms`, or built from the record."),
+      configId: string_("The `record_forms` record, when there is one.", { nullable: true }),
+      problem: string_("Why a stored layout was not used.", { nullable: true }),
+      writable: boolean_("False where this route never writes."),
+      readOnlyReason: string_("Why not, when it does not.", { nullable: true }),
+    }),
+    RecordWithForm: object("A record and its form.", {
+      record: { type: "object", additionalProperties: true, description: "The record, as PocketBase stores it." },
+      form: ref("RecordForm"),
+    }),
+    RecordUpdate: object(
+      "A change to a record.",
+      {
+        values: { type: "object", additionalProperties: true, description: "Field → new value, as PocketBase stores it." },
+        updated: string_("The record's `updated` stamp as you read it. A record changed since is a 409."),
+      },
+      ["values"],
+    ),
+    RecordFormConfig: object("A stored layout.", {
+      id: id("The `record_forms` record."),
+      collection: string_("The collection it lays out."),
+      title: string_("The form's heading."),
+      description: string_("A line under it."),
+      layout: ref("FormLayout"),
+    }),
+
     /* ------------------------------ workspace ------------------------------ */
     SeedReport: object("What installing the sample did.", {
       created: {
@@ -2169,6 +2650,7 @@ const TAGS: Json[] = [
   { name: "Discovery", description: "What this server is, what it knows, and whether it and its database are up." },
   { name: "Auth", description: "Register, sign in, sign out, change a password." },
   { name: "API keys", description: "Long-lived credentials for scripts. Managing them needs a session." },
+  { name: "Organizations", description: "Where records belong, who is in it, and what each role may change." },
   { name: "Preferences", description: "Per-account defaults, stored on the account rather than the browser." },
   { name: "Customers", description: "Accounts, the people in them, and their quote and invoice history." },
   { name: "Catalogue", description: "Products with their options and bundles, price books, and the catalogue file." },
@@ -2176,8 +2658,9 @@ const TAGS: Json[] = [
   { name: "Quotes", description: "Writing, pricing, approving and revising a quote — and billing it." },
   { name: "Receivables", description: "Invoices, the payments and credits against them, and the aging report." },
   { name: "Documents", description: "Templates, and rendering a quote or an invoice through one." },
-  { name: "Sharing", description: "Letting another account read a record you own." },
+  { name: "Sharing", description: "Letting an account outside your organization read one record." },
   { name: "Workspace", description: "The whole account as one file, and the worked example." },
+  { name: "Data table", description: "Any collection's stored records, filtered in PocketBase's own syntax, and a form to edit one." },
 ];
 
 const DESCRIPTION = [

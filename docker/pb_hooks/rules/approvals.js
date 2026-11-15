@@ -3,9 +3,11 @@
 /**
  * A quote has two writers, and they may do very different things to it.
  *
- * **Its owner** edits it freely — lines, prices, discounts, status — but may
- * not change who owns it, who it is shared with, or who it is waiting on.
- * Those three are set through endpoints that check something first.
+ * **An editor** — an admin of its organization, or the sales member who owns
+ * it — edits it freely: lines, prices, discounts, status. They may not change
+ * who owns it, which organization it is in, its number, who it is shared with
+ * or who it is waiting on; those are set by endpoints that check something
+ * first.
  *
  * **An approver** can write the quote they were actually asked about, because
  * the update rule lets them, because otherwise recording a decision would need
@@ -30,17 +32,37 @@ module.exports.register = () => {
     if (!e.auth) throw new UnauthorizedError("Sign in to continue.");
 
     const original = e.record.original();
-    const isOwner = original.get("owner") === e.auth.id;
 
-    // Set by /api/cpq/approvers, never by a request body.
-    const restoreRelations = () => {
+    // An editor is an admin of the quote's organization, or a sales member
+    // who owns it — the same test as the update rule's first half.
+    const org = String(e.auth.get("org") || "");
+    const role = e.auth.getString("role");
+    const inOrg = org !== "" && original.get("org") === org;
+    const isEditor = inOrg && (role === "admin" || (role === "sales" && original.get("owner") === e.auth.id));
+
+    if (isEditor) {
+      // Set by /api/cpq/approvers and the share routes, never by a body.
       e.record.set("owner", original.get("owner"));
+      e.record.set("org", original.get("org"));
       e.record.set("sharedWith", original.get("sharedWith"));
       e.record.set("approvers", original.get("approvers"));
-    };
+      e.record.set("number", original.get("number"));
 
-    if (isOwner) {
-      restoreRelations();
+      // `supersededBy` may only name a revision *of this quote*, in the same
+      // organization — which is what revising writes. Anything else would
+      // let an editor retire a quote by pointing it at an unrelated one.
+      const next = String(e.record.get("supersededBy") || "");
+      if (next && next !== String(original.get("supersededBy") || "")) {
+        let revision = null;
+        try {
+          revision = e.app.findRecordById("quotes", next);
+        } catch (err) {
+          revision = null;
+        }
+        if (!revision || revision.get("supersedes") !== original.id || revision.get("org") !== original.get("org")) {
+          throw new BadRequestError("A quote can only be superseded by one of its own revisions.");
+        }
+      }
       return e.next();
     }
 

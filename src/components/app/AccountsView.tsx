@@ -10,9 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { AccountStatusBadge, EmptyState, Field, Notice, Section } from "./common";
 import { CustomerDetail } from "./CustomerDetail";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
+import { useAccess } from "./access";
 import { api } from "@/lib/api";
 import { ACCOUNT_SORTS, accountTags, filterAccounts, sortAccounts, type AccountSort } from "@/lib/customers";
-import type { Preferences } from "@/lib/preferences";
+import { paymentTermsLabel, type Preferences } from "@/lib/preferences";
 import {
   ACCOUNT_STATUSES,
   ACCOUNT_STATUS_LABELS,
@@ -41,6 +42,10 @@ type Props = {
   /** Switches to the receivables screen, where an invoice can be acted on. */
   onOpenReceivables: () => void;
   confirmed: (message: string) => boolean;
+  /** Arrive on this customer — from the launcher or the dashboard. */
+  initialOpenId?: string;
+  /** Arrive with the new-customer panel open. */
+  initialCreate?: boolean;
 };
 
 /**
@@ -65,9 +70,14 @@ export function AccountsView({
   onOpenQuote,
   onOpenReceivables,
   confirmed,
+  initialOpenId,
+  initialCreate,
 }: Props) {
-  const [editing, setEditing] = useState<Account | null | undefined>(undefined);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const access = useAccess();
+  const canWrite = access.can("accounts.write");
+  const canDelete = access.can("accounts.delete");
+  const [editing, setEditing] = useState<Account | null | undefined>(initialCreate && canWrite ? null : undefined);
+  const [openId, setOpenId] = useState<string | null>(initialOpenId ?? null);
 
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<AccountStatus | "">("");
@@ -101,6 +111,7 @@ export function AccountsView({
     <AccountEditor
       account={editing}
       priceBooks={priceBooks}
+      preferences={preferences}
       onSave={async input => {
         if (editing) await api.updateAccount(editing.id, input);
         else await api.createAccount(input);
@@ -184,9 +195,11 @@ export function AccountsView({
               </SelectContent>
             </Select>
 
-            <Button size="sm" onClick={() => setEditing(null)}>
-              <Plus /> New customer
-            </Button>
+            {canWrite && (
+              <Button size="sm" onClick={() => setEditing(null)}>
+                <Plus /> New customer
+              </Button>
+            )}
           </>
         }
       >
@@ -269,6 +282,7 @@ export function AccountsView({
                   </Td>
                   <Td>
                     <div className="flex justify-end gap-0.5">
+                      {canWrite && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -280,6 +294,8 @@ export function AccountsView({
                       >
                         <Pencil />
                       </Button>
+                      )}
+                      {canDelete && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -291,6 +307,7 @@ export function AccountsView({
                       >
                         <Trash2 className="text-muted-foreground hover:text-destructive" />
                       </Button>
+                      )}
                     </div>
                   </Td>
                 </Tr>
@@ -346,16 +363,26 @@ const BLANK: AccountInput = {
 function AccountEditor({
   account,
   priceBooks,
+  preferences,
   onSave,
   onClose,
 }: {
   account: Account | null;
   priceBooks: PriceBook[];
+  /** Where a new customer's currency and payment term start. */
+  preferences: Preferences;
   onSave: (input: AccountInput) => Promise<void>;
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<AccountInput>(() => {
-    if (!account) return structuredClone(BLANK);
+    if (!account) {
+      return {
+        ...structuredClone(BLANK),
+        currency: preferences.defaultCurrency,
+        paymentTermDays: preferences.defaultPaymentTermDays,
+        paymentTerms: paymentTermsLabel(preferences.defaultPaymentTermDays),
+      };
+    }
     const { id, ownerId, createdAt, updatedAt, ...rest } = account;
     return structuredClone(rest);
   });

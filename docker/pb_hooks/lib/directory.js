@@ -1,55 +1,49 @@
 /**
- * The people you can pick from.
+ * The people you can pick from: the members of the organization you are
+ * working in.
  *
- * Until now this app deliberately had no directory: an address could be
- * *resolved* — sharing and approver stamping look up what you typed and say
- * whether an account exists — but never *listed*. That works when you already
- * know the address. It does not work for an approval rule, where the question
- * is "who on this instance can sign this off", and the honest answer was an
- * empty dropdown next to ten accounts.
+ * Approver and share pickers offer this list. It is scoped to your
+ * organization because that is who an approval rule is written about, and
+ * because an instance shared by several companies must not hand any one of
+ * them the others' staff list. Somebody outside it can still be named — the
+ * pickers accept a typed address, and sharing and approver stamping resolve
+ * one — but they cannot be *browsed*.
  *
- * So there is a directory now, and it is worth being clear about what that
- * changes: **any signed-in account can see the address and name of every other
- * account.** Sign-up is open by default, so that is everyone who registers.
- * Nothing else about an account is exposed — no verified flag, no created
- * date, no preferences, and no record any of them owns — and the collection
- * rules are untouched, so this endpoint is the only way through. If that is
- * the wrong trade for an instance, close sign-up or drop this module from
- * pb_hooks/main.pb.js; every caller treats an empty directory as "type the
- * address yourself", which is exactly how it behaved before.
- *
- * It lives here rather than in the Bun server for the same reason sharing
- * does: reading `users` needs authority no user token has, and the Bun server
- * holds no credentials of its own.
+ * Only the address and display name are exposed. It lives here rather than in
+ * the Bun server because reading `users` needs authority no user token has.
  */
-
 /** Enough for a company; past this, typing the address is faster anyway. */
 const MAX_RESULTS = 200;
 
 function list(e) {
   const query = e.request.url.query();
-  const search = String(query.get("search") || "").trim().toLowerCase();
+  const search = String(query.get("search") || "")
+    .trim()
+    .toLowerCase();
+  const org = String(e.auth.get("org") || "");
+  if (!org) return e.json(200, { users: [], truncated: false });
 
-  let records;
+  const filter = search
+    ? "org = {:org} && (user.email ~ {:q} || user.name ~ {:q})"
+    : "org = {:org}";
+  let memberships;
   try {
-    records = search
-      ? e.app.findRecordsByFilter("users", "email ~ {:q} || name ~ {:q}", "email", MAX_RESULTS, 0, { q: search })
-      : e.app.findRecordsByFilter("users", "id != ''", "email", MAX_RESULTS, 0);
+    memberships = e.app.findRecordsByFilter("memberships", filter, "", MAX_RESULTS, 0, { org: org, q: search });
   } catch (err) {
-    // An instance with no accounts yet is not an error.
-    records = [];
+    memberships = [];
   }
 
   const users = [];
-  for (const record of records) {
-    if (!record) continue;
-    users.push({
-      id: record.id,
-      email: record.email(),
-      // The display name, when the account set one. Never anything else.
-      name: String(record.get("name") || ""),
-    });
+  for (const membership of memberships) {
+    if (!membership) continue;
+    try {
+      const record = e.app.findRecordById("users", membership.getString("user"));
+      users.push({ id: record.id, email: record.email(), name: String(record.get("name") || "") });
+    } catch (err) {
+      // A deleted account; its membership cascades.
+    }
   }
+  users.sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : 0));
 
   return e.json(200, { users: users, truncated: users.length >= MAX_RESULTS });
 }

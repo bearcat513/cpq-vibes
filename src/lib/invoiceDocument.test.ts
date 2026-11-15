@@ -86,7 +86,7 @@ const invoice = (overrides: Partial<Invoice> = {}): Invoice => {
     payments,
     credits,
     totals: invoiceTotals(lines, payments, credits, "USD"),
-    ownerId: "u",
+    ownerId: "u", orgId: "",
     sharedWith: [],
     createdAt: "2026-08-01T09:00:00.000Z",
     updatedAt: "2026-08-01T09:00:00.000Z",
@@ -175,8 +175,8 @@ describe("what the ledger and the calendar decide", () => {
 
   test("a part payment shows as paid, credited and a balance that is the difference", () => {
     const part = invoice({
-      payments: [{ id: "pay_1", invoiceId: "inv_1", receivedOn: "2026-08-10", amount: 500, method: "bank_transfer", reference: "", note: "", ownerId: "u", createdAt: "", updatedAt: "" }],
-      credits: [{ id: "crd_1", invoiceId: "inv_1", issuedOn: "2026-08-11", amount: 85, reason: "goodwill", note: "", ownerId: "u", createdAt: "", updatedAt: "" }],
+      payments: [{ id: "pay_1", invoiceId: "inv_1", receivedOn: "2026-08-10", amount: 500, method: "bank_transfer", reference: "", note: "", ownerId: "u", orgId: "", createdAt: "", updatedAt: "" }],
+      credits: [{ id: "crd_1", invoiceId: "inv_1", issuedOn: "2026-08-11", amount: 85, reason: "goodwill", note: "", ownerId: "u", orgId: "", createdAt: "", updatedAt: "" }],
     });
 
     const result = renderInvoiceDocument(
@@ -191,7 +191,7 @@ describe("what the ledger and the calendar decide", () => {
   test("an overpaid invoice prints what it owes back, not zero", () => {
     // Clamping here would be the document quietly losing a customer's money.
     const overpaid = invoice({
-      payments: [{ id: "pay_1", invoiceId: "inv_1", receivedOn: "2026-08-10", amount: 1_200, method: "bank_transfer", reference: "", note: "", ownerId: "u", createdAt: "", updatedAt: "" }],
+      payments: [{ id: "pay_1", invoiceId: "inv_1", receivedOn: "2026-08-10", amount: 1_200, method: "bank_transfer", reference: "", note: "", ownerId: "u", orgId: "", createdAt: "", updatedAt: "" }],
     });
 
     const result = renderInvoiceDocument("{{totals.balance}} {{invoice.status}}", "text", context({ invoice: overpaid }));

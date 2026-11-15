@@ -26,6 +26,7 @@
  * scope actually offers. A formula that cannot work is caught by the person
  * writing it rather than by the quote it mispriced a month later.
  */
+import { today } from "./clock";
 import { parseFormula } from "./formula";
 import { isEmbeddableImage } from "./image";
 import { asCurrency, atLeastZero, clampPercent, isCurrency } from "./money";
@@ -292,7 +293,7 @@ function readComponent(raw: unknown): BundleComponent {
 }
 
 /** The shape a product is written in, before ownership and timestamps. */
-export type ProductInput = Omit<Product, "id" | "ownerId" | "sharedWith" | "createdAt" | "updatedAt">;
+export type ProductInput = Omit<Product, "id" | "ownerId" | "orgId" | "sharedWith" | "createdAt" | "updatedAt">;
 
 export function readProduct(raw: unknown): Validated<ProductInput> {
   const input = asRecord(raw);
@@ -420,7 +421,7 @@ function readEntry(raw: unknown): PriceBookEntry {
   };
 }
 
-export type PriceBookInput = Omit<PriceBook, "id" | "ownerId" | "sharedWith" | "createdAt" | "updatedAt">;
+export type PriceBookInput = Omit<PriceBook, "id" | "ownerId" | "orgId" | "sharedWith" | "createdAt" | "updatedAt">;
 
 export function readPriceBook(raw: unknown): Validated<PriceBookInput> {
   const input = asRecord(raw);
@@ -464,7 +465,7 @@ export function readPriceBook(raw: unknown): Validated<PriceBookInput> {
 
 /* ----------------------------- pricing rules ----------------------------- */
 
-export type PricingRuleInput = Omit<PricingRule, "id" | "ownerId" | "createdAt" | "updatedAt">;
+export type PricingRuleInput = Omit<PricingRule, "id" | "ownerId" | "orgId" | "createdAt" | "updatedAt">;
 
 export function readPricingRule(raw: unknown): Validated<PricingRuleInput> {
   const input = asRecord(raw);
@@ -508,7 +509,7 @@ export function readPricingRule(raw: unknown): Validated<PricingRuleInput> {
 
 /* ---------------------------- approval rules ----------------------------- */
 
-export type ApprovalRuleInput = Omit<ApprovalRule, "id" | "ownerId" | "createdAt" | "updatedAt">;
+export type ApprovalRuleInput = Omit<ApprovalRule, "id" | "ownerId" | "orgId" | "createdAt" | "updatedAt">;
 
 /**
  * The most people one rule may ask.
@@ -678,7 +679,7 @@ function readTags(raw: unknown): string[] {
   return [...seen].sort();
 }
 
-export type AccountInput = Omit<Account, "id" | "ownerId" | "createdAt" | "updatedAt">;
+export type AccountInput = Omit<Account, "id" | "ownerId" | "orgId" | "createdAt" | "updatedAt">;
 
 export function readAccount(raw: unknown): Validated<AccountInput> {
   const input = asRecord(raw);
@@ -725,7 +726,7 @@ export function readAccount(raw: unknown): Validated<AccountInput> {
 
 /* --------------------------- proposal templates -------------------------- */
 
-export type ProposalTemplateInput = Omit<ProposalTemplate, "id" | "ownerId" | "sharedWith" | "createdAt" | "updatedAt">;
+export type ProposalTemplateInput = Omit<ProposalTemplate, "id" | "ownerId" | "orgId" | "sharedWith" | "createdAt" | "updatedAt">;
 
 export function readProposalTemplate(raw: unknown): Validated<ProposalTemplateInput> {
   const input = asRecord(raw);
@@ -1275,7 +1276,7 @@ export function readInvoiceLines(raw: unknown): Validated<InvoiceLine[]> {
  * the URL, not the body — a payment cannot be filed against a different
  * invoice than the one being posted to.
  */
-export type PaymentInput = Omit<InvoicePayment, "id" | "invoiceId" | "ownerId" | "createdAt" | "updatedAt">;
+export type PaymentInput = Omit<InvoicePayment, "id" | "invoiceId" | "ownerId" | "orgId" | "createdAt" | "updatedAt">;
 
 export function readPayment(raw: unknown): Validated<PaymentInput> {
   const input = asRecord(raw);
@@ -1286,7 +1287,7 @@ export function readPayment(raw: unknown): Validated<PaymentInput> {
   if (!(amount > 0)) return invalid("A payment has to be an amount greater than zero.");
 
   return valid({
-    receivedOn: isoDate(input.receivedOn) || new Date().toISOString().slice(0, 10),
+    receivedOn: isoDate(input.receivedOn) || today(),
     amount,
     method: oneOf(input.method, PAYMENT_METHODS, "bank_transfer"),
     reference: text(input.reference, 120),
@@ -1294,7 +1295,7 @@ export function readPayment(raw: unknown): Validated<PaymentInput> {
   });
 }
 
-export type CreditInput = Omit<InvoiceCredit, "id" | "invoiceId" | "ownerId" | "createdAt" | "updatedAt">;
+export type CreditInput = Omit<InvoiceCredit, "id" | "invoiceId" | "ownerId" | "orgId" | "createdAt" | "updatedAt">;
 
 export function readCredit(raw: unknown): Validated<CreditInput> {
   const input = asRecord(raw);
@@ -1303,7 +1304,7 @@ export function readCredit(raw: unknown): Validated<CreditInput> {
   if (!(amount > 0)) return invalid("A credit has to be an amount greater than zero.");
 
   return valid({
-    issuedOn: isoDate(input.issuedOn) || new Date().toISOString().slice(0, 10),
+    issuedOn: isoDate(input.issuedOn) || today(),
     amount,
     reason: oneOf(input.reason, CREDIT_REASONS, "adjustment"),
     note: text(input.note, 1_000),

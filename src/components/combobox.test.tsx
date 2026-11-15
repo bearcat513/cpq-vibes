@@ -34,7 +34,7 @@ const product = (sku: string, name: string, overrides: Partial<Product> = {}): P
     components: [],
     volumeTiers: [],
     attributes: {},
-    ownerId: "u",
+    ownerId: "u", orgId: "",
     sharedWith: [],
     createdAt: "",
     updatedAt: "",

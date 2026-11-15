@@ -120,7 +120,7 @@ export function quoteVariables(quote: ApprovableQuote): Record<string, number> {
     lineCount: totals.lineCount,
     totalQuantity: quote.lines.reduce((total, line) => total + line.quantity, 0),
     oneTimeTotal: totals.oneTimeTotal,
-    recurringTotal: roundRate(totals.netTotal - totals.oneTimeTotal),
+    recurringTotal: roundRate(totals.netTotal - totals.oneTimeTotal - (totals.usageTotal ?? 0)),
     monthlyRecurringTotal: totals.monthlyRecurringTotal,
     annualRecurringTotal: totals.annualRecurringTotal,
   };

@@ -16,6 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { AccountStatusBadge, EmptyState, InvoiceStatusBadge, Notice, Section, StatusBadge, formatters } from "./common";
+import { useAccess } from "./access";
 import { api } from "@/lib/api";
 import { customerStats, EMPTY_STATS, type CustomerStats } from "@/lib/customers";
 import { agingReport, creditPosition, daysOverdue, invoiceStatus, today } from "@/lib/receivable";
@@ -68,6 +69,7 @@ export function CustomerDetail({
   onOpenReceivables,
   onError,
 }: Props) {
+  const canWrite = useAccess().can("accounts.write");
   const [quotes, setQuotes] = useState<QuoteSummary[] | null>(null);
   const [stats, setStats] = useState<CustomerStats>(() => EMPTY_STATS(account.currency));
   const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
@@ -135,9 +137,11 @@ export function CustomerDetail({
             <Button variant="ghost" size="sm" onClick={onBack}>
               <ArrowLeft /> All customers
             </Button>
-            <Button size="sm" onClick={onEdit}>
-              <Pencil /> Edit
-            </Button>
+            {canWrite && (
+              <Button size="sm" onClick={onEdit}>
+                <Pencil /> Edit
+              </Button>
+            )}
           </>
         }
       >

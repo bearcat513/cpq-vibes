@@ -18,7 +18,7 @@ import {
   healthcareApprovalRules,
 } from "./samplesHealthcare";
 
-const stored = { ownerId: "u", sharedWith: [], createdAt: "", updatedAt: "" };
+const stored = { ownerId: "u", orgId: "", sharedWith: [], createdAt: "", updatedAt: "" };
 
 const products = HEALTHCARE_PRODUCTS.map(input => {
   const parsed = readProduct(input);

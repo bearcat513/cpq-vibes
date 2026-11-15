@@ -2,12 +2,15 @@
 
 Configure, price and quote. Build a catalogue of what you sell — with options, rules, volume tiers
 and bundles — put price books and commercial policy around it, and turn that into quotes that price
-themselves, route for approval when they should, and render into a document you can send.
+themselves, route for approval when they should, and render into a document you can send. When one
+is won, bill it: invoices, payments, credits and an aging report, with every balance worked out
+from the ledger rather than stored.
 
-Everyone has their own catalogue, customers and quotes. A product, a price book, a quote or a
-proposal template can be shared, read-only, with anyone else who has an account, and a quote
-awaiting someone's approval becomes visible to that person and to nobody else — see
-[Accounts, sharing and approvals](#accounts-sharing-and-approvals).
+Everything belongs to an **organization**, and a member's **role** — admin, sales, finance or
+viewer — decides what they may change. A product, a price book, a quote or a template can be
+shared, read-only, with somebody outside it, and a quote awaiting someone's approval becomes
+visible to that person and to nobody else — see
+[Organizations, roles, sharing and approvals](#organizations-roles-sharing-and-approvals).
 
 The app and its database run together under Docker Compose:
 
@@ -21,10 +24,12 @@ with a worked example you can take apart.
 
 Usable as a UI or as a local REST API — see [API](#api).
 
-It is dressed as the thing it produces: warm parchment with a laid-paper tooth, walnut ink, forest
-green for anything live, and titles set in a serif — with a dark mode that is the same wood at
-dusk. Motion is slight and always `motion-safe`: screens settle onto the page, the section you are
-on is marked with a leaf's vein, and nothing moves for anyone who has asked it not to.
+It is dressed as the plant floor its numbers end up on: cool concrete with a drafting grid,
+graphite ink, machined corners, and the signal colours of a shop floor for anything live, late or
+wrong — with a dark mode that is the same shop on the night shift. The accent (one of seven signal
+colours) and the reading face are yours to pick in Settings; the status colours are not, so paid
+always reads as paid. Motion is machine motion, under half a second and always `motion-safe`, and
+nothing moves for anyone who has asked it not to.
 
 ## What it does
 
@@ -110,6 +115,12 @@ full rather than being stopped by something the engine already fixed.
 deliberately fractional, so an 18-month deal on annual billing is 1.5 periods rather than a lie in
 either direction. Totals report one-time, MRR, ARR and total contract value separately.
 
+**Usage lines are an estimate, and say so.** A metered product is quoted at the quantity the
+customer expects to use, and its value is reported as its own **usage (estimated)** total. It is in
+the net total, so the customer sees what the forecast costs, but it is *not* in total contract value
+or in recurring revenue — a forecast is not a commitment, and counting it as one inflates exactly
+the number an approver reads.
+
 ### Pricing rules
 
 Commercial policy changes far more often than software does, so policy is data: a condition and an
@@ -163,11 +174,18 @@ draft ──submit──▶ in_review ──approve──▶ approved ──▶ 
 - **Only `draft` and `rejected` are editable.** A quote in review is being looked at by somebody; a
   sent quote exists in someone else's inbox with a number on it. Changing either underneath its
   readers is how a CPQ stops being trustworthy — `New revision` is the way forward.
-- **A revision is a new record**, numbered `Q-2026-0007-r2`, pointing at what it supersedes. The
-  document that was sent stays exactly as it was sent, which is what makes "which version did they
-  sign" a question with an answer.
+- **Numbers come from a counter**, per organization and per year: `Q-2026-0007`. Two reps saving
+  at the same moment get two numbers, not the same one.
+- **A revision is a new record**, numbered from the original — `Q-2026-0007-r2`, then `-r3`, never
+  `-r2-r3` — pointing at what it supersedes. The document that was sent stays exactly as it was
+  sent, which is what makes "which version did they sign" a question with an answer.
+- **A revised quote is superseded.** The older version reads as `superseded` and can no longer be
+  sent, accepted or invoiced; only the latest revision can be revised again, and an accepted quote
+  cannot be revised at all — it is a contract. Discard the revision and the original comes back.
 - **A sent quote past its `validUntil` reads as expired** without being rewritten — expiry is a fact
-  about the calendar, not a status that only becomes true when a job sweeps it.
+  about the calendar, not a status that only becomes true when a job sweeps it. The calendar is the
+  organization's: "today" is the date in its time zone (Settings → Organization), so a quote in
+  Sydney does not expire at eleven in the morning.
 - **A quote snapshots what it was priced from.** Each line carries the product's name, SKU and list
   price as they were; the quote carries the customer's address and terms. A quote sent last quarter
   still renders correctly after the catalogue moves on, and one shared with a colleague who cannot
@@ -189,8 +207,8 @@ policies no single number describes, a formula.
 
 Three things make an approval mean something here:
 
-**A rule asks the people you name, with a quorum.** The approver picker offers everyone with an
-account here, and flags anyone named who has not registered — a rule addressed to somebody who
+**A rule asks the people you name, with a quorum.** The approver picker offers the members of your
+organization, and flags anyone named who has not registered — a rule addressed to somebody who
 cannot sign in would leave the quote in review forever. One of three is a rota, where whoever is at
 their desk answers. Three of three is a board, where everyone signs. Two of three is the
 arrangement neither of those describes, and it is the reason the number is yours to set.
@@ -218,10 +236,72 @@ Submitting reprices the quote against the catalogue as it stands now — the thi
 to be the thing that will be sent. A quote that trips nothing is approved outright rather than
 sitting in a queue nobody needs to look at.
 
-### Quote documents
+### Customers
 
-A quote renders into a document through a **proposal template**, and a workspace can hold as many
-as it likes — a full proposal, a one-page summary, a partner version. Four formats:
+A **customer** is an account with people in it: a list of contacts, one of them *primary* — who a
+quote is addressed to, and whose name and address the quote snapshots — plus a lifecycle status
+(`prospect`, `customer`, `inactive`), free-text tags, payment terms, a tax position, and a billing
+address. The shipping address follows the billing one until you say it differs.
+
+The customers screen is a list you can search, filter by status or tag, and sort, until you pick
+one. Then it is that customer's page: their contacts, every quote ever written for them (not just
+the latest page), their invoices, and a roll-up — open pipeline, won, win rate. **It never adds two
+currencies.** A quote written in something other than the account's currency is counted and
+labelled, never summed into a figure that would then be confidently wrong.
+
+An account also carries a **credit limit**, and it is advisory: the customer page shows where they
+stand against it, and nothing refuses to quote them for being over it. A limit somebody typed last
+year would block the wrong deal more often than the right one.
+
+### Bill
+
+A quote is an offer that gets revised and superseded; an invoice is a number sitting in somebody's
+accounts payable. So receivables are **their own collections** — `invoices`, `payments` and
+`credits` — not one more quote status.
+
+```
+draft ──issue──▶ issued ──▶ open ─▶ part paid ─▶ paid
+  │                 │         └──── overdue (past its due date with a balance)
+discard            void (only while nothing has been paid)
+```
+
+- **Only `state` is stored** — draft, issued or void. *Open*, *part paid*, *paid* and *overdue* are
+  worked out from the ledger and the organization's date every time they are asked for. A stored
+  "overdue" is wrong the morning after it is written.
+- **The balance is never stored either.** Paid and credited are added up from their own records on
+  every read, so recording a payment is an insert — two people banking cash at the same moment
+  cannot lose one. A balance **may go negative**: an overpaid invoice owes the customer money back,
+  and clamping it at zero would lose it.
+- **An invoice is numbered when it is issued**, not when it is drafted (`DRAFT-…` until then), so a
+  discarded draft leaves no gap. Issuing sets the due date from the account's payment terms.
+- **An issued invoice's lines are fixed.** To change what is owed, credit it — an adjustment, a
+  return, goodwill or a write-off. A credit larger than the balance is refused, because unlike an
+  overpayment it is always a typo.
+- **Nothing ever issued is deleted.** A draft may be discarded; anything past that is voided, and
+  voiding is refused once a payment exists.
+- **The server totals every invoice**, from its own lines, rounding at every step. Totals and
+  balances in a request body are ignored — a client that could set its own balance could mark its
+  own debts paid.
+
+**Invoice a quote** from any sent or accepted quote: it bills the whole contract value, with the
+quote's discount, adjustment and shipping as their own lines, addressed exactly where the quote
+was. It warns rather than refuses when something looks wrong — the quote (or an earlier revision of
+it) has already been invoiced, a usage line went in at its estimated quantity, or the total lands a
+penny off the quote's. Billing a subscription period by period is a billing schedule, and
+deliberately not here.
+
+**Receivables** lists invoices by status, and the **aging report** buckets what is owed into
+current, 1–30, 31–60, 61–90 and 90+ days overdue — by the balance, not the total, and never across
+two currencies.
+
+### Documents
+
+A quote or an invoice renders into a document through a **template**, and a workspace can hold as
+many as it likes — a full proposal, a one-page summary, a partner version, a remittance-friendly
+invoice. Every template has a `kind`, *quote* or *invoice*: the editor, the formats and the block
+language are the same, and only what the tokens mean differs. A quote template will not render an
+invoice — every token would come out blank — so it is refused rather than sent full of holes. Four
+formats:
 
 | Format | The body is | Good for |
 | --- | --- | --- |
@@ -250,6 +330,10 @@ not recognise, because an unresolved token renders as a blank in a document goin
 Nothing is executed: rendering is string substitution, and values are escaped for the target format
 — a product called `AC/DC <5kW>` renders as those characters rather than as broken markup.
 
+An invoice template has `{{invoice.number}}`, `{{invoice.dueDate}}`, `{{totals.paid}}`,
+`{{totals.balance}}` and the rest, and `{{invoice.status}}` and `{{invoice.daysOverdue}}` are
+derived **as it renders** — an invoice printed the morning after it falls due says so.
+
 ### PDF
 
 **A PDF template is a document described as data** rather than prose, because a PDF has no layout
@@ -275,6 +359,19 @@ the first. It sits beside the page setup rather than in the block list because i
 the flow — it is drawn after the layout is finished, like the footer, and a proposal whose second
 page is unbranded looks like a fax.
 
+And a **watermark**: a word stamped across every page — DRAFT, COPY, SPECIMEN — at the size, angle,
+colour and opacity you give it. It is drawn *beneath* the content, so a stamped document is no
+harder to read than a clean one, and its text is token-resolved like everything else: the sample
+order form stamps `{{quote.status}}` in capitals, so the stamp reads the record rather than the
+template.
+
+**The house style is a setting, not a constant.** A template's style holds the leading, the gap
+under a paragraph, the heading scale, face and capitals, the colour of rules, and the line-item
+table's header fill and colour, zebra striping, grid colour, cell padding and row lines. Every
+default reproduces what the renderer used to hard-code, so a template written before the style
+existed renders exactly as it did — and a block still wins where it says something of its own, so
+one document can hold two tables that do not look alike.
+
 Every piece of text in a block runs through the **same token vocabulary as the other formats**, so
 `{{customer.name}}` means the same thing in a PDF as in an HTML template.
 
@@ -287,7 +384,8 @@ up.
 
 **What a PDF template deliberately cannot do.** It cannot print **cost or margin** — the totals it
 may name is a closed, customer-facing list, and internal numbers are simply not on it, so the one
-artefact designed to leave the company has no way to carry them.
+artefact designed to leave the company has no way to carry them. Nor can a template of one kind
+name the other kind's numbers: there is no balance on a quote and no list price on an invoice.
 
 The writer is about a thousand lines with no dependencies, using only the PDF standard 14 fonts, so
 a quote is a few kilobytes and opens anywhere without an embedded font. That is the same trade this
@@ -301,6 +399,7 @@ over the API:
 
 ```bash
 curl -sb jar "localhost:3000/api/quotes/qte_1a2b3c4d/document?templateId=tpl_1a2b3c4d" -o quote.pdf
+curl -sb jar "localhost:3000/api/invoices/inv_1a2b3c4d/document?templateId=tpl_5e6f7a8b" -o invoice.pdf
 ```
 
 ### Branding
@@ -326,6 +425,7 @@ reported rather than failing the render — a proposal missing its logo can stil
 | `*.cpq.json` | Products, price books and both kinds of rule. Meant to live in a repo next to the code that depends on it |
 | Quote CSV / JSON | One row per line, money as bare numbers — a CSV with `$1,234.56` in a cell sums to zero |
 | Catalogue CSV | The catalogue as a spreadsheet, nested parts flattened to something readable |
+| Invoice CSV / JSON | One invoice, or every invoice with its aging; the aging report on its own as CSV |
 | Workspace JSON | Everything: catalogue, policy, customers, templates **and quotes** |
 
 Catalogue files identify records by SKU and name, never by internal id — ids are stripped on export
@@ -361,16 +461,60 @@ either.
 
 ### Your own defaults
 
-The gear beside your name opens *Settings*, where preferences decide what the app starts you with —
-currency, price book, term, tax, how long a quote is valid, locale, how many quotes the list holds,
-and whether deleting asks first. They belong to the account rather than the browser, so they follow
-you to another machine, and they save themselves as you change them.
+The gear beside your name opens *Settings*, one tab at a time:
+
+| Tab | What is there |
+| --- | --- |
+| Account | Your display name, your password, and *Sign out everywhere* |
+| Organization | Its name and time zone, its members and their roles, and your other organizations |
+| Appearance | Theme, font, accent, and motion — "reduce" turns animation off on this account whatever the machine says |
+| Workspace | The screen the app opens on (Home unless you pick another), quotes per page, locale (with a sample of how it prints), and the switches: cost and margin, ask before deleting, collapsed navigation, single-key shortcuts |
+| Defaults | What a new quote starts as — currency, price book, term, tax, validity and its standing notes — a new customer's payment term, and the default quote and invoice templates |
+| Data | Exporting the workspace, and (for an admin) installing a worked example |
+| API keys | Keys for scripts |
+
+Preferences belong to the account rather than the browser, so they follow you to another machine,
+and they save themselves as you change them. Clicking the organization's name in the nav opens its
+tab directly.
 
 **Show cost and margin** is off by default and worth the switch: margin is the number nobody wants
 over their shoulder in front of a customer, and a rep sharing their screen on a call should be able
 to put it away in one click.
 
 ### Getting around
+
+**Home** is where the app opens: four figures across the top — open quotes, what is out with
+customers, what is waiting on your approval, what the organization is owed — each one a door to the
+screen that answers it in full. Below them, *Needs attention* (approvals, quotes expiring this week,
+overdue invoices, rejected quotes, unissued drafts), the newest quotes, the pipeline by status, the
+records your role may start, and a *Getting started* checklist until the workspace has a product,
+a customer, a quote and a template. Money is added up in your default currency only; a quote in
+another currency is counted, not summed.
+
+**On a computer the app is a window, not a page.** It fills the browser and holds still: the sidebar
+down the left, a title bar with where you are and the launcher, a status bar along the foot (the
+database connection, preference saves, your organization and role, and today in the
+organization's time zone), and the screen between them as the one thing that scrolls. **On a
+phone** the sidebar and both bars go, replaced by a slim top bar (where you are, search, your
+account) and a tab bar within reach of a thumb — Home, Quotes, Approvals, Customers, and *More* for
+the rest.
+
+**The launcher** (Ctrl K, or ⌘ K on a Mac, from any screen — or `/`) is one box that goes anywhere
+and starts anything. Typing filters every command — each screen, each *New …*, each settings tab,
+the theme, the margin switch, switching organization — and searches quotes, customers, products and
+templates alongside them. Arrow keys move, Enter opens, Escape clears and then closes.
+
+| Keys | Does |
+| --- | --- |
+| Ctrl/⌘ K, `/` | Open the launcher |
+| `?` | List every shortcut |
+| `g` then a letter | Go to a screen: `g h` Home, `g q` Quotes, `g a` Approvals, `g i` Receivables, `g p` Catalogue, `g r` Rules, `g c` Customers, `g t` Templates, `g s` Settings |
+| `n` then a letter | Start one: `n q` quote, `n c` customer, `n i` invoice, `n p` product — if your role may |
+| `[` | Collapse or expand the navigation |
+
+Shortcuts wait while you are typing in a field and while a panel or dialog is open, so a half-filled
+form is never thrown away by a letter. The single-key ones can be switched off under *Settings →
+Workspace*; Ctrl/⌘ K stays on, since a modifier cannot fire by accident.
 
 The left-hand navigation **collapses to its icons**, which is worth a click on a laptop when the
 quote editor wants the width. It collapses from the button at the foot of the nav, and — like
@@ -401,9 +545,39 @@ workspace has not created yet, which is exactly what the importer warns about ra
 the dropdown still accepts a typed value, and the form says the SKU is not in the catalogue instead
 of silently accepting it.
 
-An approver's address is the one reference that stays typable, offering only the addresses your own
-rules already use. This app resolves an address but never lists one — there is no directory to
-offer, and adding one to save a few keystrokes would be a poor trade.
+An approver's address is the one reference that stays typable: the picker offers the members of your
+organization, but an address may be named before it registers.
+
+### The record browser
+
+**Data table** (in the sidebar, the *More* sheet and the launcher; it opens in a new tab so a
+half-edited quote is not left behind) is a view of the database itself:
+
+```
+/table?table_name=quotes&query=status = "sent" && name ~ "renewal"
+```
+
+Pick any collection and it lists the **stored records** — not the domain objects the rest of the
+app shows, so there is no derived quote status or invoice balance here, and the page says so. It
+reads through your own credential, so the collection's rules decide which rows come back exactly as
+they do everywhere else: a viewer sees what a viewer may, a hidden field (an API key's hash) never
+arrives, and `counters` is refused for everyone. Columns are inferred from the records, sorting and
+paging are done by PocketBase, and the filter is built as a tree of conditions — or typed as text,
+which is still applied when the builder cannot draw it. The URL is the page's whole state, so a
+filtered view is a link you can send.
+
+**Clicking a row opens the record form**, in a panel like every other editor, and `&record=<id>`
+puts it in the URL. Its layout is data: a `record_forms` record per collection holds sections of
+fields, each with a widget (text, number, select, tags, JSON…), a label and its bounds. With
+nothing stored, the form is built from the record. An admin changes a layout by editing that
+record — in the data table, since `record_forms` is a collection like any other.
+
+The server resolves the same layout the form was drawn from, refuses any field it does not offer as
+editable, re-runs each field's check, and refuses a save whose record changed underneath it (409).
+That narrows what the form writes and grants nothing; the collection's rules still decide.
+**Quotes, invoices, payments and credits are read-only here**, because a raw write would skip the
+pricing and totals the server owns, and so are `owner`, `org` and the other fields PocketBase or a
+hook sets.
 
 ## Running it
 
@@ -453,12 +627,41 @@ Bun server talking to a real PocketBase in a throwaway container built from `doc
 table, the storage layer, the collection rules and the hooks are all exercised for real. Without
 Docker those tests skip and everything else still runs.
 
-## Accounts, sharing and approvals
+## Organizations, roles, sharing and approvals
 
-Sign-up is open: an email address and a password of at least eight characters make an account.
-Everything you then create is yours, and nobody else's list, count or export can reach it.
+Every record belongs to an **organization**, and every member of it reads all of it — the
+catalogue, the customers, the quotes and the receivables are the team's, not one rep's. What each
+member may *change* is decided by their **role**:
 
-**Sharing** is read-only and covers the four things worth passing around:
+| Role | May change |
+| --- | --- |
+| `admin` | Everything: the catalogue, price books, pricing and approval rules, templates, the organization and its members, and any quote |
+| `sales` | Customers, and their own quotes — create, edit, submit, send, revise, share, delete |
+| `finance` | Customers (not deleting them), and receivables: invoices, payments, credits |
+| `viewer` | Nothing. Reads everything, which is what a manager, an auditor or a new hire needs |
+
+There is no "approver" role. Approving is something a rule asks of a named person, whatever their
+role — a sales director who is a `sales` member approves the quotes their rules send them.
+
+The roles are enforced by PocketBase's collection rules, so a script with an API key is held to them
+exactly as the UI is. The UI reads the same table (`src/lib/organization.ts`) only to hide the
+buttons it would otherwise offer and have refused.
+
+**Getting in.** A new account joins every organization that invited its address. With no invitation
+it gets an organization of its own, as its admin. Set `CPQ_SIGNUP=invite` (in `.env`, read by the
+`pocketbase` service) and only invited addresses may register at all — the first account on an empty
+instance always may, or nobody could start. Upgrading an instance from before organizations put
+each existing account in a personal organization of its own, as admin, holding what it already
+owned.
+
+**Settings → Organization** is where an admin renames it, sets its time zone, adds a member (an
+address with an account joins at once; any other is invited), changes a role or removes someone.
+Removing a member keeps their records with the organization. Nobody can remove or demote the last
+admin. Anyone can leave, start another organization, or switch to another they belong to — an
+account works in one at a time.
+
+**Sharing** is how a record reaches somebody *outside* your organization. It is read-only and covers
+the four things worth passing around:
 
 | A recipient can | A recipient cannot |
 | --- | --- |
@@ -466,38 +669,39 @@ Everything you then create is yours, and nobody else's list, count or export can
 | Export it | Share it on to anyone else |
 | Quote from a shared product or price book — the quotes are theirs, not yours | See who else it is shared with |
 
-Saving a change to something shared with you does not fail — it keeps your own copy, owned by you.
+Saving a change to something shared with you does not fail — it keeps your own copy, owned by your
+organization.
 A recipient can drop a share from their own list, and the owner can revoke it at any time.
 
 **Approvals** are the other way someone sees a record of yours, and the narrowest. Submitting a
-quote makes it readable by the people its rules name — and only that quote. An approver gets no
-access to your catalogue, your customers, your rules or your other quotes. They can record a
+quote makes it readable by the people its rules name — and only that quote. An approver from outside
+the organization gets no access to its catalogue, customers, rules or other quotes. They can record a
 decision, and a hook holds them to the approval fields on the way through: an approver who posts a
 whole quote with new prices approves the old ones.
 
-**The account directory.** Picking an approver or someone to share with means choosing a person,
-so `GET /api/directory` lists the accounts on the instance — **id, email and display name, and
-nothing else**. No verified flag, no dates, no preferences, and nothing any of them owns.
+**The directory.** Picking an approver or someone to share with means choosing a person, so
+`GET /api/directory` lists **the members of your organization — id, email and display name, and
+nothing else**. Nobody can list the accounts of another organization, or of the instance; a user
+token still cannot read the `users` collection, and this endpoint is one file
+(`docker/pb_hooks/lib/directory.js`). Outside it, addresses are only resolved, never enumerated:
+sharing and approver stamping look up the address you give them and say whether an account exists
+for it.
 
-Be aware of what that means: with sign-up open, anyone who registers can see every account's
-address. The collection rules are untouched — a user token still cannot read the `users` collection
-— so this endpoint is the only way through, and it is one file
-(`docker/pb_hooks/lib/directory.js`). Drop it from `pb_hooks/main.pb.js`, or close sign-up, if that
-is the wrong trade for your instance: every picker treats an empty directory as "type the address
-yourself", which is how they behaved before.
-
-Beyond the directory, addresses are still only resolved, never enumerated: sharing and approver
-stamping look up the address you give them and say whether an account exists for it.
+**Signing out ends the session.** The token is revoked on the server, not just dropped from the
+browser, so a copy of it stops working at once. **Settings → Sessions → Sign out everywhere** ends
+every session the account has; API keys are revoked one by one.
 
 **Upgrading from the dummy-data generator this grew out of?** Its three collections are dropped by
 `docker/pb_migrations/1750000003_cpq.js` — a generated dataset has no CPQ meaning to migrate into.
 Take a `GET /api/export` from the old app first if the contents still matter. Records made before
 accounts existed have no owner and are invisible until the first account registers, which inherits
-them.
+them into its organization.
 
 ## Storage
 
-Everything lives in PocketBase, in eleven collections created by `docker/pb_migrations/`:
+Everything lives in PocketBase, in seventeen collections created by `docker/pb_migrations/` — the
+eleven that hold the work, five that hold the organization around it, and one that lays out the
+record browser:
 
 | Collection | Holds |
 | --- | --- |
@@ -507,11 +711,17 @@ Everything lives in PocketBase, in eleven collections created by `docker/pb_migr
 | `approval_rules` | Who has to look at what, and when |
 | `accounts` | Customers, with their currency, terms and tax position |
 | `quotes` | Lines, totals and approvals, stored as priced |
-| `proposal_templates` | Document bodies — text with `{{token}}` placeholders, or a PDF document description with its branding inside it |
-| `invoices` | What a customer owes: lines and line totals, `state`, `dueDate`. No `status` and no `balance` — both are derived on every read |
+| `proposal_templates` | Document bodies for quotes and invoices (a `kind` says which) — text with `{{token}}` placeholders, or a PDF document description with its style and branding inside it |
+| `invoices` | What a customer owes: lines and line totals, `state`, `dueDate`. No `status` and no `balance` — both are derived on every read. Numbered when issued, not when drafted, so a discarded draft leaves no gap |
 | `payments` | Cash received. One row per payment, belonging to one invoice, so banking two at once cannot lose either |
 | `credits` | Amounts credited or written off, the same way |
-| `api_keys` | A SHA-256 per key, hidden, with its name, expiry and last use. Never the key |
+| `api_keys` | A SHA-256 per key, hidden, with its name, expiry, last use and the organization it was issued in. Never the key |
+| `organizations` | Where records belong: a name and its settings (the time zone) |
+| `memberships` | Who is in which organization, as what role |
+| `invitations` | Addresses invited to an organization and not yet registered |
+| `counters` | The next quote and invoice number, per organization, kind and year. No user can read or write one |
+| `revoked_tokens` | The hash of each signed-out session token, until it would have expired anyway |
+| `record_forms` | The record browser's form layout, one per collection per organization. Everyone reads, admins write |
 
 Each collection has real columns for what the *database* has to do something with — find by SKU,
 sort by name, filter by status, match an approver — and one JSON field for the nested domain object
@@ -525,14 +735,17 @@ load, and they die with the account. Every read and write goes through one norma
 (`src/lib/preferences.ts`), so a stored blob missing a key still reads back as a complete set.
 
 **Who may do what is decided by PocketBase, not by this server.** Every collection carries API rules
-— `owner = @request.auth.id || sharedWith.id ?= @request.auth.id` to read a product, and for quotes
-`|| approvers.id ?= @request.auth.id` on top — and the Bun server holds no credentials of its own:
+— `org = @request.auth.org || sharedWith.id ?= @request.auth.id` to read a product, the role on
+top of that to write one, and for quotes `|| approvers.id ?= @request.auth.id` — and the Bun server
+holds no credentials of its own:
 it passes your token through and PocketBase evaluates those rules against *you*. A mistake in a
 route here cannot hand one account another's records, because the route has no authority to hand
 them over with. The browser never holds a PocketBase token either; it lives in an httpOnly cookie.
 
-Four hooks back that up (`docker/pb_hooks/`): `owner` is stamped from the authenticated account on
-create and restored on update, so it cannot be set from a request body; the sharing endpoints run
+The hooks back that up (`docker/pb_hooks/`): `owner` and `org` are stamped from the authenticated
+account on create and restored on update, so neither can be set from a request body; the
+organization routes (`orgs/routes.js`) are the only writers of a membership, a role or a number
+counter; the sharing endpoints run
 inside PocketBase, where resolving an address does not require the ability to read the user list;
 `rules/approvals.js` rebuilds a quote from what is *stored* when an approver writes it, putting back
 only the decision, the status and the timestamp; and `keys/routes.js` issues an API key — hashing it
@@ -585,12 +798,15 @@ else does.
 ```bash
 curl -sc jar -X POST localhost:3000/api/auth/login -H 'content-type: application/json' \
   -d '{"email":"you@example.com","password":"your-password"}'
-curl -sb jar localhost:3000/api/quotes | jq
+curl -sb jar 'localhost:3000/api/quotes?q=acme&status=sent&page=1&perPage=50' | jq
 ```
+
+A list that pages says how much there is in its headers — `X-Total-Count`, `X-Page`,
+`X-Per-Page`, `X-Total-Pages` — so the body stays a plain array.
 
 Every failure answers `{ "error": string }` with a sentence in it, and an honest status: 400 for a
 bad request, 401 for a missing or spent credential, 403 where a key reaches for something only a
-session may do, 404 for a record that does not exist — or that exists and is not yours, which this
+session may do or a role reaches for something it may not change, 404 for a record that does not exist — or that exists and is not yours, which this
 API declines to tell apart — and 422 where the request was understood and the record's own state
 refuses it (editing an issued invoice, voiding one that has been paid).
 
@@ -613,7 +829,8 @@ curl -s localhost:3000/api/receivables/aging -H "X-API-Key: $CPQ_API_KEY" | jq
 | --- | --- |
 | Format | `cpq_` plus 40 random characters. The prefix is the whole test for "is this a key", and it is unambiguous: a session token is a JWT, which always begins `eyJ` |
 | Storage | **Only a SHA-256 is stored**, in a hidden field. The raw value is in the issuing response and nowhere else, ever — lose it and the remedy is to revoke it and issue another |
-| Reach | Exactly what its owner reaches. A hook resolves a key to the same `@request.auth` a token produces, so the collection rules are the only access model whichever credential arrived |
+| Reach | Exactly what its owner reaches, with its owner's role. A hook resolves a key to the same `@request.auth` a token produces, so the collection rules are the only access model whichever credential arrived |
+| Organization | A key belongs to the organization it was issued in. While its owner is working in another, it is **refused with a 403** — switch back, or issue a key in the new organization. (The rules read the owner's organization from the database, so a key cannot carry one of its own) |
 | **A key cannot manage keys** | Issuing and revoking need a real session. Revocation is how you recover from a leak, so it is the one thing a leaked key must not be able to do — refused by the app with a sentence, and by PocketBase on its own |
 | Expiry | Optional, capped at ten years. Revoking takes effect on the key's next request |
 | Last used | Written at most every few minutes, so a busy key does not cause a write per request |

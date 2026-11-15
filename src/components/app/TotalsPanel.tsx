@@ -22,7 +22,8 @@ type Props = {
  * a guardrail and a complaint.
  */
 export function TotalsPanel({ totals, format, showMargin, approvalsRequired, termMonths }: Props) {
-  const recurring = totals.netTotal - totals.oneTimeTotal;
+  const usage = totals.usageTotal ?? 0;
+  const recurring = totals.netTotal - totals.oneTimeTotal - usage;
 
   return (
     <div className="space-y-4">
@@ -64,7 +65,7 @@ export function TotalsPanel({ totals, format, showMargin, approvalsRequired, ter
       </div>
 
       {/* Revenue shape — the numbers the business reports, not the customer. */}
-      {(recurring !== 0 || totals.oneTimeTotal !== 0) && (
+      {(recurring !== 0 || totals.oneTimeTotal !== 0 || usage !== 0) && (
         <div className="panel rounded-lg border px-4 py-3 text-sm">
           <p className="mb-2 flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
             <TrendingUp className="size-3.5" /> Contract
@@ -73,6 +74,7 @@ export function TotalsPanel({ totals, format, showMargin, approvalsRequired, ter
           <Line label={`Recurring (${termMonths} months)`} value={format.money(recurring)} muted />
           <Line label="Monthly recurring" value={format.money(totals.monthlyRecurringTotal)} />
           <Line label="Annual recurring" value={format.money(totals.annualRecurringTotal)} />
+          {usage !== 0 && <Line label="Usage (estimated)" value={format.money(usage)} muted />}
           <Line label="Total contract value" value={format.money(totals.totalContractValue)} />
           {showMargin && (
             <>

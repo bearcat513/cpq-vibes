@@ -35,13 +35,30 @@ import type {
   InvoiceSummary,
   InvoiceTotals,
 } from "./types";
+import { today } from "./clock";
+
+/* ------------------------------- references ------------------------------- */
+
+/**
+ * What to call an invoice where a person reads it.
+ *
+ * A draft has no number — numbers are taken when an invoice is issued, so a
+ * discarded draft cannot leave a gap in the run — and is stored with a
+ * `DRAFT-<id>` placeholder only because the column is unique. Nobody should
+ * have to read that, so a draft is called "Draft".
+ */
+export const invoiceReference = (invoice: { state: string; number: string }): string =>
+  invoice.state === "draft" || invoice.number.startsWith("DRAFT-") ? "Draft" : invoice.number;
 
 /* --------------------------------- dates -------------------------------- */
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** Today as `YYYY-MM-DD`, which is the only date shape anything here takes. */
-export const today = (now: Date = new Date()): string => now.toISOString().slice(0, 10);
+/**
+ * Today as `YYYY-MM-DD`, which is the only date shape anything here takes —
+ * in the organization's time zone. See ./clock.ts.
+ */
+export { today };
 
 /**
  * Days since the epoch, or null for anything unparseable.

@@ -6,7 +6,8 @@
  * body, so no script on the page can read it or forward it anywhere.
  */
 import { ApiError, asRecord, fail, handler, readJson } from "./http";
-import { clientFor, toApiError } from "./pocketbase";
+import { loadContext } from "./context";
+import { callHook, clientFor, toApiError } from "./pocketbase";
 import {
   clearedSessionCookie,
   isApiKey,
@@ -19,6 +20,9 @@ import {
 
 /** PocketBase's own minimum for the `users` collection. */
 const MIN_PASSWORD = 8;
+
+/** Long enough for any real name, short enough to fit a document's signature line. */
+export const MAX_DISPLAY_NAME = 120;
 
 type Credentials = { email: string; password: string; name: string };
 
@@ -41,34 +45,66 @@ async function authenticate(req: Request, email: string, password: string): Prom
   const client = clientFor();
   const auth = await client.collection("users").authWithPassword(email, password);
 
+  // The organization and role come from the same place every later request
+  // reads them, so the first paint already knows what to hide.
+  const user = await loadContext(auth.token)
+    .then(context => context.user)
+    .catch(() => toSessionUser(auth.record as unknown as Record<string, unknown>));
+
   return Response.json(
-    { user: toSessionUser(auth.record as unknown as Record<string, unknown>) },
+    { user },
     { headers: { "Set-Cookie": sessionCookie(req, auth.token) } },
   );
 }
 
-/** The signed-in user, or null — asks PocketBase, which is what proves it. */
+/**
+ * The signed-in user, with their organization and role, or null.
+ *
+ * Asks PocketBase, which is what proves the credential: an expired, signed-out
+ * or forged token and a revoked or expired key all come back as null.
+ */
 export async function sessionUser(req: Request): Promise<SessionUser | null> {
   const credential = readToken(req);
   if (!credential) return null;
-
   try {
-    if (isApiKey(credential)) {
-      // A key has no token to refresh. The `users` list rule is
-      // `id = @request.auth.id`, so a listing of that collection holds exactly
-      // one record — the account the key belongs to — which is both the answer
-      // and the proof that the key is still good.
-      const list = await clientFor(credential).collection("users").getList(1, 1);
-      const record = list.items[0] as unknown as Record<string, unknown> | undefined;
-      return record ? toSessionUser(record) : null;
-    }
-
-    // A refresh is the only way to know the token has not been revoked.
-    const auth = await clientFor(credential).collection("users").authRefresh();
-    return toSessionUser(auth.record as unknown as Record<string, unknown>);
+    return (await loadContext(credential)).user;
   } catch {
     return null;
   }
+}
+
+/**
+ * Ends the session this request carries — for real.
+ *
+ * Clearing the cookie only stops *this browser* sending the token; a copy of
+ * it would keep working for the rest of the week. So the token is recorded as
+ * signed out in PocketBase first (pb_hooks/lib/sessions.js), and refused from
+ * then on. `?everywhere=1` rotates the account's token key instead, which ends
+ * every session it has.
+ *
+ * Signing out is never refused: a token PocketBase no longer honours is
+ * already as signed out as it gets, and the cookie is cleared either way.
+ */
+async function signOut(req: Request): Promise<Response> {
+  const credential = readToken(req);
+  const everywhere = ["1", "true", "yes"].includes(new URL(req.url).searchParams.get("everywhere") ?? "");
+  let revoked = false;
+
+  if (credential && !isApiKey(credential)) {
+    try {
+      await callHook(credential, everywhere ? "/api/cpq/sessions/revoke-all" : "/api/cpq/sessions/revoke", {
+        method: "POST",
+      });
+      revoked = true;
+    } catch {
+      revoked = false;
+    }
+  }
+
+  return Response.json(
+    { ok: true, revoked, everywhere: everywhere && revoked },
+    { headers: { "Set-Cookie": clearedSessionCookie(req) } },
+  );
 }
 
 export const authRoutes = {
@@ -105,7 +141,7 @@ export const authRoutes = {
   },
 
   "/api/auth/logout": {
-    POST: handler(req => Response.json({ ok: true }, { headers: { "Set-Cookie": clearedSessionCookie(req) } })),
+    POST: handler(signOut),
   },
 
   "/api/auth/me": {
@@ -125,7 +161,29 @@ export const authRoutes = {
     }),
   },
 
-  /** Changing your own password. Everything else about an account is fixed. */
+  /** Your display name — what approvers, members and documents see. */
+  "/api/auth/profile": {
+    PATCH: handler(async req => {
+      const token = requireToken(req);
+      const body = asRecord(await readJson(req));
+      const name = String(body.name ?? "").trim();
+      if (name.length > MAX_DISPLAY_NAME) {
+        throw new ApiError(`A name is ${MAX_DISPLAY_NAME} characters at most.`);
+      }
+
+      const { user } = await loadContext(token);
+      try {
+        // The users collection's own rule lets an account update itself and
+        // nobody else; this server adds nothing to that.
+        await clientFor(token).collection("users").update(user.id, { name });
+      } catch (error) {
+        throw toApiError(error, "Could not change your name");
+      }
+      return Response.json({ user: (await loadContext(token)).user });
+    }),
+  },
+
+  /** Changing your own password. The email is fixed: it is how invitations find you. */
   "/api/auth/password": {
     POST: handler(async req => {
       const token = requireToken(req);
