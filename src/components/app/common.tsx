@@ -147,6 +147,20 @@ export function Field({
   );
 }
 
+/**
+ * A button that sits in a row of `Field`s. The row aligns to the top, so a
+ * hint under one field cannot push its neighbours out of line; this holds the
+ * space a label takes, so the button lands level with the controls.
+ */
+export function FieldAction({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <div className={cn("space-y-1.5", className)}>
+      <span aria-hidden className="block h-3 text-xs leading-none select-none" />
+      {children}
+    </div>
+  );
+}
+
 export function Section({
   title,
   description,

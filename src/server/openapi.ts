@@ -30,6 +30,7 @@ import {
   MAX_TABLE_PAGE_SIZE,
 } from "../lib/dataTable";
 import { MAX_FILTER_LENGTH } from "../lib/filterQuery";
+import { ROLLUP_OPS, SUMMARY_FORMATS } from "../lib/workspace";
 import { FORM_WIDGETS, LOCKED_FIELDS, RECORD_FORMS_COLLECTION, REST_MODES, SERVER_OWNED } from "../lib/recordForm";
 import {
   ACCOUNT_STATUSES,
@@ -53,6 +54,14 @@ import {
 import { MAX_ORG_NAME, PERMISSIONS, ROLES } from "../lib/organization";
 import { MAX_APPROVERS, MAX_CONTACTS, MAX_INVOICE_LINES, MAX_LEDGER_ENTRIES, MAX_TAGS } from "../lib/validate";
 import { MAX_EXPIRY_DAYS, MAX_KEY_NAME_LENGTH, MAX_KEYS } from "./apiKeys";
+import {
+  ATTACHMENT_TARGETS,
+  formatBytes,
+  INLINE_TYPES,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENT_NOTE,
+  MAX_ATTACHMENTS_PER_RECORD,
+} from "../lib/attachments";
 import { MAX_DISPLAY_NAME } from "./auth";
 import { API_KEY_HEADER, API_KEY_PREFIX, SESSION_COOKIE } from "./session";
 
@@ -1425,6 +1434,89 @@ export const OPERATIONS: Operation[] = [
   ...shareOperations("invoices", "an invoice", "invoice"),
   ...shareOperations("proposal-templates", "a template", "template"),
 
+  /* ----------------------------- attachments ---------------------------- */
+  {
+    method: "get",
+    path: "/api/attachments",
+    tag: "Attachments",
+    operationId: "listAttachments",
+    summary: "The files on one customer, quote, invoice or approval",
+    description:
+      "You see an attachment if you can see the record it is on — the organization, anyone the " +
+      "record is shared with, and for a quote the people asked to approve it. An approval's files " +
+      "hang off its quote: `target=approvals&recordId=<quote id>`.",
+    parameters: [
+      { ...queryParam("target", "Which kind of record.", { type: "string", enum: [...ATTACHMENT_TARGETS] }), required: true },
+      { ...queryParam("recordId", "The record's id — for an approval, the quote's.", { type: "string" }), required: true },
+    ],
+    responses: { "200": jsonResponse("Its attachments, newest first.", array(ref("Attachment"))) },
+  },
+  {
+    method: "post",
+    path: "/api/attachments",
+    tag: "Attachments",
+    operationId: "createAttachment",
+    summary: "Upload a file onto a record",
+    description:
+      `\`multipart/form-data\` with \`target\`, \`recordId\`, \`file\` and an optional \`note\`. At most ` +
+      `${formatBytes(MAX_ATTACHMENT_BYTES)} a file and ${MAX_ATTACHMENTS_PER_RECORD} files a record.\n\n` +
+      "You attach where you could change the record — a customer as admin, sales or finance, an " +
+      "invoice as admin or finance, a quote as admin or its owner — whatever its status, so a " +
+      "signed order form can go on an accepted quote. Anyone asked to approve a quote may also " +
+      "attach to its approval, from any organization.\n\n" +
+      "`curl -F target=quotes -F recordId=… -F file=@order.pdf`",
+    requestBody: {
+      required: true,
+      description: "The file, and the record it goes on.",
+      content: {
+        "multipart/form-data": { schema: ref("AttachmentUpload") },
+      },
+    },
+    responses: {
+      "201": jsonResponse("The attachment, as stored.", ref("Attachment")),
+      "403": jsonResponse("Your role cannot attach files to that record.", ref("Error")),
+      "404": responseRef("NotFound"),
+      "413": jsonResponse("The file is too large.", ref("Error")),
+    },
+  },
+  {
+    method: "delete",
+    path: "/api/attachments/{id}",
+    tag: "Attachments",
+    operationId: "deleteAttachment",
+    summary: "Remove an attachment",
+    description: "An admin may remove any; anyone else, what they uploaded. Nothing edits one — remove it and upload again.",
+    parameters: [idParam("attachment")],
+    responses: { "200": jsonResponse("Removed.", ref("Ok")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "get",
+    path: "/api/attachments/{id}/file",
+    tag: "Attachments",
+    operationId: "getAttachmentFile",
+    summary: "Download the file itself",
+    description:
+      `A download, named as it was uploaded. With \`?inline=1\` a ${[...INLINE_TYPES].join(", ")} is shown ` +
+      "in place instead; any other type is a download whatever was asked.",
+    parameters: [
+      idParam("attachment"),
+      queryParam("inline", "`1` to show a PDF or an image in the browser rather than save it.", { type: "string", enum: ["1"] }),
+    ],
+    responses: {
+      "200": {
+        description: "The bytes.",
+        headers: {
+          "Content-Disposition": {
+            description: "`attachment` (or `inline`), with the name it was uploaded as.",
+            schema: { type: "string" },
+          },
+        },
+        content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } },
+      },
+      "404": responseRef("NotFound"),
+    },
+  },
+
   /* ------------------------------ workspace ----------------------------- */
   {
     method: "get",
@@ -1548,6 +1640,80 @@ export const OPERATIONS: Operation[] = [
       "403": jsonResponse("Only an admin may change layouts.", ref("Error")),
       "409": jsonResponse("There is already a layout, or no record to build one from.", ref("Error")),
     },
+  },
+  {
+    method: "get",
+    path: "/api/record-forms/{collection}",
+    tag: "Data table",
+    operationId: "getLayoutConfig",
+    summary: "A collection's form and workspace layouts, stored or default",
+    description:
+      "Both halves of how a collection's records open: the form (`layout`) and the workspace's related " +
+      "lists and summary (`workspace`), with the fields inferred from records you can see, which is " +
+      "what the Customize panel offers. With nothing stored, the defaults — and for customers, quotes " +
+      "and invoices those already wire up the relations between them.",
+    parameters: [tableCollectionParam()],
+    responses: { "200": jsonResponse("The layouts.", ref("LayoutConfig")) },
+  },
+  {
+    method: "put",
+    path: "/api/record-forms/{collection}",
+    tag: "Data table",
+    operationId: "saveLayoutConfig",
+    summary: "{ title, description, layout, workspace } → store both layouts",
+    description:
+      `Creates the collection's \`${RECORD_FORMS_COLLECTION}\` record if there is none. Both layouts are ` +
+      "checked first, and a mistake is refused with a sentence naming where it is — a formula naming a " +
+      "line below it, a roll-up naming a list that does not exist. Admins only, by the collection's rules.",
+    parameters: [tableCollectionParam()],
+    requestBody: jsonBody("Both layouts.", ref("LayoutInput")),
+    responses: {
+      "200": jsonResponse("The layouts, as stored.", ref("LayoutConfig")),
+      "403": jsonResponse("Only an admin may change layouts.", ref("Error")),
+    },
+  },
+  {
+    method: "post",
+    path: "/api/table/{collection}",
+    tag: "Data table",
+    operationId: "createTableRecord",
+    summary: "{ values, link } → create a record through its form",
+    description:
+      "What a related list's **New** sends. `values` is checked against the collection's form the way " +
+      "an edit is — only fields the form offers, each passing its field's check — and `link` holds the " +
+      "values that point the new record back at the one it was started from. Quotes, invoices and " +
+      "ledger rows are never created here. The collection's create rule decides.",
+    parameters: [tableCollectionParam()],
+    requestBody: jsonBody("The new record's values.", ref("RecordCreate")),
+    responses: {
+      "201": jsonResponse("The record, as stored.", { type: "object", additionalProperties: true }),
+      "403": jsonResponse("The collection's rules refused it.", ref("Error")),
+      "409": jsonResponse("Records here are not created through a form.", ref("Error")),
+    },
+  },
+  {
+    method: "get",
+    path: "/api/workspace/{collection}/{id}",
+    tag: "Data table",
+    operationId: "getRecordWorkspace",
+    summary: "A record, its form, its related lists and its summary",
+    description:
+      "Everything the record workspace draws. Each related list's count and each roll-up is read with " +
+      "your own credential, so a total only ever adds up rows you could open. A roll-up reads at most " +
+      "5,000 rows and says so when it stopped short.",
+    parameters: [tableCollectionParam(), idParam("record")],
+    responses: { "200": jsonResponse("The workspace.", ref("RecordWorkspace")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "post",
+    path: "/api/workspace/{collection}/{id}/preview",
+    tag: "Data table",
+    operationId: "previewRecordWorkspace",
+    summary: "{ workspace } → the summary and counts a draft workspace would show",
+    description: "Stores nothing. What the Customize panel's preview reads.",
+    parameters: [tableCollectionParam(), idParam("record")],
+    requestBody: jsonBody("The draft.", { type: "object", properties: { workspace: ref("WorkspaceLayout") }, required: ["workspace"] }),
+    responses: { "200": jsonResponse("The workspace as the draft would draw it.", ref("WorkspaceView")) },
   },
 ];
 
@@ -2430,7 +2596,12 @@ function schemas(): Record<string, Json> {
         "body are ignored: the server totals it.",
       {
         accountId: string_("The customer.", { nullable: true }),
-        quoteId: string_("The quote it was raised from, if any.", { nullable: true }),
+        quoteId: string_(
+          "The quote this invoice bills — its `quote` relation. Left out, the link is kept as it is; " +
+            "`null` removes it. A quote you cannot read is refused; one for another customer, or not " +
+            "accepted, is linked with a warning. Only a draft's link can change.",
+          { nullable: true },
+        ),
         currency: currency(),
         issueDate: date_("Only meaningful once it is issued."),
         paymentTermDays: integer_("Snapshotted from the customer; the due date is the issue date plus this."),
@@ -2542,6 +2713,31 @@ function schemas(): Record<string, Json> {
     }),
     ShareInput: object("Who to share with.", { email: string_("Their address.", { format: "email" }) }, ["email"]),
 
+    /* ----------------------------- attachments ----------------------------- */
+    Attachment: object("A file on a record. The bytes are at `GET /api/attachments/{id}/file`.", {
+      id: id("The attachment's id."),
+      target: enum_(ATTACHMENT_TARGETS, "Which kind of record it is on."),
+      recordId: id("The record's id — for an approval, the quote's."),
+      name: string_("The name it was uploaded with."),
+      size: integer_("Its size in bytes."),
+      mimeType: string_("The type the uploader declared."),
+      note: string_("What it is. Empty when nobody said."),
+      ownerId: id("Who uploaded it."),
+      orgId: id("The organization of the record it is on."),
+      createdAt: timestamp("When it was uploaded."),
+    }),
+
+    AttachmentUpload: object(
+      "An upload, as multipart/form-data.",
+      {
+        target: enum_(ATTACHMENT_TARGETS, "Which kind of record."),
+        recordId: string_("The record's id — for an approval, the quote's."),
+        file: { type: "string", format: "binary", description: "The file." },
+        note: string_("What it is, optionally.", { maxLength: MAX_ATTACHMENT_NOTE }),
+      },
+      ["target", "recordId", "file"],
+    ),
+
     /* ------------------------------ data table ----------------------------- */
     TablePage: object("One page of a collection, as stored.", {
       collection: string_("The collection asked for."),
@@ -2626,6 +2822,97 @@ function schemas(): Record<string, Json> {
       layout: ref("FormLayout"),
     }),
 
+    RecordCreate: object(
+      "A new record.",
+      {
+        values: { type: "object", additionalProperties: true, description: "Field → value, checked against the form." },
+        link: {
+          type: "object",
+          additionalProperties: { type: "string" },
+          description: "Field → value pointing it at the record its related list belongs to.",
+        },
+      },
+      ["values"],
+    ),
+    WorkspaceLayout: object(
+      "A record workspace's related lists and summary. Checked in full on save — see `src/lib/workspace.ts`.",
+      {
+        relatedLists: array(
+          object("A tab of records that point at this one.", {
+            key: string_("Unique; how a roll-up names it."),
+            title: string_("The tab's label."),
+            collection: string_("Where the related records are."),
+            field: string_("Their field holding this record's id — a relation, a text id or a JSON path."),
+            match: array(object("A fixed condition.", { field: string_("A field."), value: string_("Its value.") })),
+            columns: array(string_("A column to show.")),
+            sort: string_("PocketBase sort, e.g. `-created`."),
+            allowCreate: boolean_("Offer **New** in the tab."),
+          }, ["key", "collection", "field"]),
+        ),
+        summary: object("The record summary.", {
+          currencyField: string_("The record field naming the currency money is shown in."),
+          items: array(
+            object("A line: `field`, `rollup`, `formula` or `heading`. Formulas see the lines above them by key.", {
+              kind: enum_(["field", "rollup", "formula", "heading"], "What the line is."),
+              key: string_("Unique; how a formula names it."),
+              label: string_("Shown beside the value."),
+              format: enum_(SUMMARY_FORMATS, "How the value reads."),
+              emphasis: boolean_("The line the panel is about."),
+              field: string_("`field`: the record's field. `rollup`: the related rows' field."),
+              list: string_("`rollup`: the related list's key."),
+              op: enum_(ROLLUP_OPS, "`rollup`: what to do with the rows."),
+              where: string_("`rollup`: a PocketBase filter the rows must also meet."),
+              expression: string_("`formula`: in the formula language, over the keys above it."),
+            }, ["kind", "key"]),
+          ),
+        }),
+      },
+    ),
+    WorkspaceView: object("What a workspace draws beside the record.", {
+      workspace: ref("WorkspaceLayout"),
+      workspaceSource: enum_(["stored", "default"], "Stored, or the built-in default."),
+      workspaceProblem: string_("Why a stored workspace was not used.", { nullable: true }),
+      counts: { type: "object", additionalProperties: { type: "integer", nullable: true }, description: "Rows per related list; null where refused." },
+      summary: object("The worked-out summary.", {
+        currency: string_("The currency money is shown in."),
+        lines: array(
+          object("A line.", {
+            kind: enum_(["heading", "value"], "A heading, or a value."),
+            key: string_("Its key."),
+            label: string_("Its label."),
+            value: { description: "The raw value.", nullable: true },
+            display: string_("As it reads."),
+            note: string_("Why it is missing or partial."),
+          }),
+        ),
+      }),
+    }),
+    RecordWorkspace: {
+      allOf: [ref("RecordWithForm"), ref("WorkspaceView")],
+      description: "A record, its form, and its workspace.",
+    },
+    LayoutInput: object(
+      "Both layouts.",
+      {
+        title: string_("The form's heading."),
+        description: string_("A line under it."),
+        layout: ref("FormLayout"),
+        workspace: ref("WorkspaceLayout"),
+      },
+      ["layout"],
+    ),
+    LayoutConfig: object("A collection's layouts, stored or default.", {
+      collection: string_("The collection."),
+      configId: string_("The `record_forms` record, when there is one.", { nullable: true }),
+      title: string_("The form's heading."),
+      description: string_("A line under it."),
+      layout: ref("FormLayout"),
+      workspace: ref("WorkspaceLayout"),
+      fields: array(object("A field, inferred from records you can see.", { name: string_("Its name."), type: enum_(FIELD_TYPES, "Its type.") })),
+      writable: boolean_("Whether records here are written through a form."),
+      readOnlyReason: string_("Why not.", { nullable: true }),
+    }),
+
     /* ------------------------------ workspace ------------------------------ */
     SeedReport: object("What installing the sample did.", {
       created: {
@@ -2658,6 +2945,7 @@ const TAGS: Json[] = [
   { name: "Quotes", description: "Writing, pricing, approving and revising a quote — and billing it." },
   { name: "Receivables", description: "Invoices, the payments and credits against them, and the aging report." },
   { name: "Documents", description: "Templates, and rendering a quote or an invoice through one." },
+  { name: "Attachments", description: "Files on a customer, a quote, an invoice or an approval — one collection for all four." },
   { name: "Sharing", description: "Letting an account outside your organization read one record." },
   { name: "Workspace", description: "The whole account as one file, and the worked example." },
   { name: "Data table", description: "Any collection's stored records, filtered in PocketBase's own syntax, and a form to edit one." },

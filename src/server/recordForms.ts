@@ -31,12 +31,13 @@ import {
   type RecordFormConfig,
   type RecordWithForm,
 } from "../lib/recordForm";
+import { readWorkspaceLayout } from "../lib/workspace";
 import { ApiError, asRecord } from "./http";
 import { clientFor, toApiError } from "./pocketbase";
 
 const RECORD_ID = /^[A-Za-z0-9_]{1,100}$/;
 
-function checkNames(collection: string, id?: string) {
+export function checkNames(collection: string, id?: string) {
   if (!isCollectionName(collection)) throw new ApiError(`"${collection}" is not a collection name.`);
   if (id !== undefined && !RECORD_ID.test(id)) throw new ApiError(`"${id}" is not a record id.`);
 }
@@ -57,7 +58,7 @@ function explain(error: unknown, collection: string, id: string, doing: "read" |
 }
 
 /** The organization's stored layout for a collection, or null when there is none. */
-async function storedConfig(token: string, collection: string): Promise<{ id: string; raw: TableRecord } | null> {
+export async function storedConfig(token: string, collection: string): Promise<{ id: string; raw: TableRecord } | null> {
   const client = clientFor(token);
   try {
     const list = await client
@@ -113,7 +114,7 @@ export async function formFor(token: string, collection: string, record: TableRe
   };
 }
 
-async function readOne(token: string, collection: string, id: string): Promise<TableRecord> {
+export async function readOne(token: string, collection: string, id: string): Promise<TableRecord> {
   try {
     return stripMeta(await clientFor(token).collection(collection).getOne<TableRecord>(id));
   } catch (error) {
@@ -166,6 +167,11 @@ export async function updateRecord(token: string, collection: string, id: string
     const config = checkFormConfigPatch(patch);
     if (!config.ok) throw new ApiError(config.error);
     patch = config.value;
+    if ("workspace" in patch && patch.workspace !== null && patch.workspace !== "") {
+      const workspace = readWorkspaceLayout(patch.workspace);
+      if (!workspace.ok) throw new ApiError(`The workspace cannot be used: ${workspace.error}`);
+      patch.workspace = workspace.value;
+    }
   }
 
   if (Object.keys(patch).length === 0) return { record: current, form };

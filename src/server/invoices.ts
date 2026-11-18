@@ -50,6 +50,38 @@ import { ApiError } from "./http";
 import { snapshotCustomer } from "./quotes";
 import { effectiveStatus } from "../lib/quoteLifecycle";
 
+/* ------------------------------ the quote link ----------------------------- */
+
+/**
+ * Resolves the quote an invoice says it bills, as the caller.
+ *
+ * The `quote` relation only checks that a record exists; reading it with the
+ * caller's own token is what stops an invoice pointing at a quote they cannot
+ * see. A link is a reference, not a conversion — nothing is copied from the
+ * quote — so the doubtful cases are warned about rather than refused: a
+ * quote for another customer, and one nobody has accepted.
+ */
+async function quoteReference(
+  token: string,
+  quoteId: string | null,
+  accountId: string | null,
+): Promise<{ quoteId: string | null; quoteNumber: string; warnings: string[] }> {
+  if (!quoteId) return { quoteId: null, quoteNumber: "", warnings: [] };
+
+  const quote = await getQuote(token, quoteId);
+  if (!quote) throw new ApiError("That quote does not exist.", 400);
+
+  const warnings: string[] = [];
+  if (accountId && quote.customer.accountId && quote.customer.accountId !== accountId) {
+    warnings.push(`${quote.number} was written for ${quote.customer.name || "another customer"}, not this invoice's customer.`);
+  }
+  const status = effectiveStatus(quote);
+  if (status !== "accepted") {
+    warnings.push(`${quote.number} is ${status.replace("_", " ")}, not accepted.`);
+  }
+  return { quoteId: quote.id, quoteNumber: quote.number, warnings };
+}
+
 /* -------------------------------- assembling ------------------------------ */
 
 /**
@@ -135,10 +167,13 @@ export async function createBlankInvoice(
     );
   }
 
+  const reference = await quoteReference(token, header.quoteId ?? null, account?.id ?? null);
+  warnings.push(...reference.warnings);
+
   return {
     invoice: await insert(token, {
-      quoteId: null,
-      quoteNumber: "",
+      quoteId: reference.quoteId,
+      quoteNumber: reference.quoteNumber,
       customer: snapshotCustomer(account),
       currency,
       state: "draft",
@@ -375,9 +410,18 @@ export async function saveInvoice(
     warnings.push(`Re-addressed to ${account.name}, on their ${account.paymentTerms || `${termDays}-day`} terms.`);
   }
 
+  // Left out of the body, the link stays; named, it is checked again.
+  let link = { quoteId: existing.quoteId, quoteNumber: existing.quoteNumber };
+  if (header.quoteId !== undefined && header.quoteId !== existing.quoteId) {
+    const reference = await quoteReference(token, header.quoteId, customer.accountId ?? null);
+    link = { quoteId: reference.quoteId, quoteNumber: reference.quoteNumber };
+    warnings.push(...reference.warnings);
+  }
+
   return {
     invoice: await save(token, id, {
       ...recordOf(existing),
+      ...link,
       customer,
       currency,
       paymentTermDays: termDays,

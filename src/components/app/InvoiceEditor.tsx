@@ -26,6 +26,7 @@ import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState, Field, InvoiceStatusBadge, Notice, Section, formatters } from "./common";
 import { useAccess } from "./access";
+import { Attachments } from "./Attachments";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { daysOverdue, dueDateFor, invoiceStatus, invoiceTotals, pricedLines, today } from "@/lib/receivable";
@@ -38,6 +39,7 @@ import {
   type Account,
   type CreditReason,
   type Invoice,
+  type QuoteSummary,
   type InvoiceLine,
   type PaymentMethod,
   type ProposalTemplate,
@@ -62,6 +64,8 @@ type Props = {
   onCreated?: (invoice: Invoice) => void;
   onError: (error: unknown) => void;
   confirmed: (message: string) => boolean;
+  /** Opens the quote this invoice bills. */
+  onOpenQuote?: (id: string) => void;
 };
 
 /**
@@ -87,6 +91,7 @@ export function InvoiceEditor({
   onCreated,
   onError,
   confirmed,
+  onOpenQuote,
 }: Props) {
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [loading, setLoading] = useState(invoiceId !== null);
@@ -101,6 +106,9 @@ export function InvoiceEditor({
 
   /* The draft being edited. Only meaningful while the invoice is a draft. */
   const [accountId, setAccountId] = useState("");
+  const [quoteId, setQuoteId] = useState("");
+  /** The chosen customer's quotes, for the Quote picker. */
+  const [customerQuotes, setCustomerQuotes] = useState<QuoteSummary[]>([]);
   const [poNumber, setPoNumber] = useState("");
   const [notes, setNotes] = useState("");
   const [internalNotes, setInternalNotes] = useState("");
@@ -109,6 +117,7 @@ export function InvoiceEditor({
   const adopt = (next: Invoice) => {
     setInvoice(next);
     setAccountId(next.customer.accountId ?? "");
+    setQuoteId(next.quoteId ?? "");
     setPoNumber(next.poNumber);
     setNotes(next.notes);
     setInternalNotes(next.internalNotes);
@@ -154,6 +163,34 @@ export function InvoiceEditor({
     [lines, invoice, currency],
   );
 
+  useEffect(() => {
+    if (!editing || !accountId) {
+      setCustomerQuotes([]);
+      return;
+    }
+    let live = true;
+    void api
+      .accountQuotes(accountId)
+      .then(found => live && setCustomerQuotes(found))
+      .catch(() => live && setCustomerQuotes([]));
+    return () => {
+      live = false;
+    };
+  }, [accountId, editing]);
+
+  // Accepted first — that is what gets invoiced — then newest.
+  const quoteOptions: ComboboxOption[] = useMemo(() => {
+    const options = [...customerQuotes]
+      .filter(quote => quote.status !== "superseded")
+      .sort((a, b) => Number(b.status === "accepted") - Number(a.status === "accepted"))
+      .map(quote => ({ value: quote.id, label: quote.number, hint: quote.name, badge: quote.status.replace("_", " ") }));
+    // The linked quote stays offered even when it is not this customer's.
+    if (quoteId && !options.some(option => option.value === quoteId) && invoice?.quoteId === quoteId) {
+      options.unshift({ value: quoteId, label: invoice.quoteNumber || quoteId, hint: "", badge: "" });
+    }
+    return options;
+  }, [customerQuotes, quoteId, invoice]);
+
   const accountOptions: ComboboxOption[] = useMemo(
     () =>
       [...accounts]
@@ -186,7 +223,7 @@ export function InvoiceEditor({
     }
   };
 
-  const body = () => ({ accountId: accountId || null, poNumber, notes, internalNotes, lines });
+  const body = () => ({ accountId: accountId || null, quoteId: quoteId || null, poNumber, notes, internalNotes, lines });
 
   const save = () =>
     run(async () => {
@@ -381,18 +418,46 @@ export function InvoiceEditor({
 
         {/* ------------------------------ header --------------------------- */}
 
-        <div className="grid gap-3 border-b px-4 py-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-3 border-b px-4 py-3 md:grid-cols-3 xl:grid-cols-5">
           <Field label="Customer">
             {editing ? (
               <Combobox
                 value={accountId}
-                onChange={setAccountId}
+                onChange={next => {
+                  // Another customer's quotes are another list.
+                  if (next !== accountId) setQuoteId("");
+                  setAccountId(next);
+                }}
                 options={accountOptions}
                 placeholder="Choose a customer"
                 aria-label="Customer"
               />
             ) : (
               <p className="flex h-9 items-center text-sm">{invoice!.customer.name || "—"}</p>
+            )}
+          </Field>
+          <Field label="Quote" hint={editing ? "The quote this bills. Optional." : undefined}>
+            {editing ? (
+              <Combobox
+                value={quoteId}
+                onChange={setQuoteId}
+                options={quoteOptions}
+                placeholder={accountId ? "None" : "Choose a customer first"}
+                emptyLabel="None"
+                disabled={!accountId && !quoteId}
+                aria-label="Quote"
+              />
+            ) : invoice?.quoteId && onOpenQuote ? (
+              <Button
+                variant="link"
+                className="h-9 px-0 font-mono text-sm"
+                onClick={() => onOpenQuote(invoice.quoteId!)}
+                title="Open the quote"
+              >
+                {invoice.quoteNumber || "Open quote"}
+              </Button>
+            ) : (
+              <p className="flex h-9 items-center font-mono text-sm">{invoice?.quoteNumber || "—"}</p>
             )}
           </Field>
           <Field label="Their PO number" hint={editing ? "Many will not pay an invoice without one." : undefined}>
@@ -666,6 +731,21 @@ export function InvoiceEditor({
             </Table>
           )}
         </Section>
+      )}
+
+      {/* ----------------------------- attachments ------------------------- */}
+
+      {/* An issued invoice still takes files: a remittance advice, a signed PO. */}
+      {invoice && (
+        <Attachments
+          target="invoices"
+          recordId={invoice.id}
+          canUpload={canWrite}
+          description="The customer's PO, a remittance advice, a proof of delivery."
+          locale={preferences.locale}
+          onError={onError}
+          confirmed={confirmed}
+        />
       )}
 
       {/* ------------------------------ document --------------------------- */}

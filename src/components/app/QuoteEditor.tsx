@@ -8,6 +8,7 @@ import {
   FileText,
   Loader2,
   Plus,
+  Receipt,
   Save,
   Send,
   Share2,
@@ -23,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Field, Notice, Section, StatusBadge, formatters } from "./common";
+import { Attachments } from "./Attachments";
 import { LineConfigurator } from "./LineConfigurator";
 import { ProductPicker } from "./ProductPicker";
 import { QuoteLines } from "./QuoteLines";
@@ -68,6 +70,8 @@ type Props = {
   onShare: (id: string, title: string) => void;
   /** Opens another quote — the revision that superseded this one. */
   onOpenQuote: (id: string) => void;
+  /** An invoice was raised from this quote: open it, and say what the server warned. */
+  onInvoiced: (invoiceId: string, warnings: string[]) => void;
   onError: (error: unknown) => void;
   onNotice: (lines: string[]) => void;
   confirmed: (message: string) => boolean;
@@ -183,6 +187,24 @@ export function QuoteEditor(props: Props) {
   const canRevise = canEdit && Boolean(quote) && quote?.status !== "superseded" && quote?.status !== "accepted";
   const currency = asCurrency(draft.currency);
   const format = formatters(currency, preferences.locale);
+
+  // An accepted quote is a contract, and billing it is finance's (or an
+  // admin's) to do. The server re-checks both: the status in invoiceQuote,
+  // the role in the invoices create rule.
+  const canInvoice = Boolean(quote) && quote?.status === "accepted" && access.can("invoices.write") && access.isOurs(quote!);
+
+  const invoiceIt = async () => {
+    if (!quote) return;
+    setBusy("invoice");
+    try {
+      const raised = await api.invoiceQuote(quote.id);
+      props.onInvoiced(raised.invoice.id, [`Draft invoice raised from ${quote.number}.`, ...raised.warnings]);
+    } catch (error) {
+      props.onError(error);
+    } finally {
+      setBusy("");
+    }
+  };
 
   const byId = useMemo(() => new Map(products.map(product => [product.id, product])), [products]);
   const bySku = useMemo(() => new Map(products.map(product => [product.sku, product])), [products]);
@@ -435,6 +457,12 @@ export function QuoteEditor(props: Props) {
             </Button>
           )}
 
+          {canInvoice && (
+            <Button onClick={() => void invoiceIt()} disabled={Boolean(busy)} title="Raise a draft invoice for this quote">
+              {busy === "invoice" ? <Loader2 className="animate-spin" /> : <Receipt />} Create invoice
+            </Button>
+          )}
+
           {quote && pdfTemplate && (
             <Button variant="outline" asChild title={`Download as PDF — ${pdfTemplate.name}`}>
               <a href={api.documentUrl(quote.id, pdfTemplate.id)}>
@@ -486,7 +514,15 @@ export function QuoteEditor(props: Props) {
       <Notice kind="warning" lines={priced.warnings} />
 
       {quote && quote.approvals.length > 0 && (
-        <ApprovalHistory quote={quote} me={me} onDecided={props.onSaved} onError={props.onError} />
+        <ApprovalHistory
+          quote={quote}
+          me={me}
+          canEdit={canEdit}
+          locale={preferences.locale}
+          onDecided={props.onSaved}
+          onError={props.onError}
+          confirmed={props.confirmed}
+        />
       )}
 
       <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
@@ -669,6 +705,21 @@ export function QuoteEditor(props: Props) {
             </div>
           </Section>
 
+          {/* -------------------------- attachments ------------------------- */}
+
+          {/* Whatever the status: a signed order form belongs on an accepted quote. */}
+          {quote && (
+            <Attachments
+              target="quotes"
+              recordId={quote.id}
+              canUpload={canEdit}
+              description="Order forms, statements of work, the customer's PO. Approvers and anyone it is shared with see them too."
+              locale={preferences.locale}
+              onError={props.onError}
+              confirmed={props.confirmed}
+            />
+          )}
+
           {/* --------------------------- proposal --------------------------- */}
 
           {quote && (
@@ -798,13 +849,20 @@ export function QuoteEditor(props: Props) {
 function ApprovalHistory({
   quote,
   me,
+  canEdit,
+  locale,
   onDecided,
   onError,
+  confirmed,
 }: {
   quote: Quote;
   me: SessionUser;
+  /** Whether this person may edit the quote — and so attach its case for approval. */
+  canEdit: boolean;
+  locale: string;
   onDecided: (quote: Quote) => void;
   onError: (error: unknown) => void;
+  confirmed: (message: string) => boolean;
 }) {
   const [comment, setComment] = useState("");
   const [busy, setBusy] = useState(false);
@@ -816,6 +874,7 @@ function ApprovalHistory({
   // at the level in play; a rejection lands wherever it is addressed.
   const canApprove = actionableFor(quote.approvals, me.email, "approved");
   const canReject = actionableFor(quote.approvals, me.email, "rejected");
+  const isApprover = quote.approvals.some(request => request.approverEmails.includes(me.email.toLowerCase()));
 
   const decide = async (decision: "approved" | "rejected") => {
     setBusy(true);
@@ -895,6 +954,19 @@ function ApprovalHistory({
           );
         })}
       </ul>
+
+      {/* The case for the discount, and the approvers' own evidence — anyone
+          asked may add to it, from whichever organization they are in. */}
+      <Attachments
+        bare
+        target="approvals"
+        recordId={quote.id}
+        title="Supporting files"
+        canUpload={canEdit || isApprover}
+        locale={locale}
+        onError={onError}
+        confirmed={confirmed}
+      />
 
       {(canApprove.length > 0 || canReject.length > 0) && (
         <div className="space-y-2 border-t bg-muted/30 p-4">

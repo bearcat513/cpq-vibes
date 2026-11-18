@@ -1203,7 +1203,13 @@ export const MAX_LEDGER_ENTRIES = 200;
  */
 export type InvoiceHeaderInput = {
   accountId: string | null;
-  quoteId: string | null;
+  /**
+   * The quote this invoice bills, stored in the invoice's `quote` relation.
+   * `undefined` — the key left out of the body — leaves the link as it is, so
+   * a client that never heard of it cannot unlink an invoice by saving it;
+   * `null` (or "") removes it.
+   */
+  quoteId?: string | null;
   currency: ReturnType<typeof asCurrency>;
   issueDate: string;
   paymentTermDays: number;
@@ -1221,7 +1227,7 @@ export function readInvoiceHeader(raw: unknown): Validated<InvoiceHeaderInput> {
 
   return valid({
     accountId: text(input.accountId, 40) || null,
-    quoteId: text(input.quoteId, 40) || null,
+    ...(input.quoteId === undefined ? {} : { quoteId: text(input.quoteId, 40) || null }),
     currency: asCurrency(input.currency),
     // Empty is legal and means "not issued yet"; the server dates it on issue.
     issueDate: isoDate(input.issueDate),

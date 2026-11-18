@@ -24,7 +24,7 @@ import { TabPanel, Tabs, type TabItem } from "@/components/ui/tabs";
 import { ApiKeys } from "./ApiKeys";
 import { useAccess } from "./access";
 import { OrganizationSection } from "./OrganizationSection";
-import { Field, Section } from "./common";
+import { Field, FieldAction, Section } from "./common";
 import { api, type Meta, type SessionUser } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { isRole, ROLE_LABELS } from "@/lib/organization";
@@ -218,16 +218,18 @@ function ProfileSection({
 
   return (
     <Section title="Profile" description="How you appear to the people you work with.">
-      <form onSubmit={submit} className="grid gap-3 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+      <form onSubmit={submit} className="grid gap-3 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-start">
         <Field label="Display name" hint="Shown to members, approvers and in the nav. Empty shows your email.">
           <Input value={name} onChange={event => setName(event.target.value)} maxLength={120} autoComplete="name" />
         </Field>
         <Field label="Email" hint={where}>
           <Input value={me.email} readOnly disabled />
         </Field>
-        <Button type="submit" variant="outline" disabled={busy || name.trim() === me.name}>
-          {busy ? <Loader2 className="animate-spin" /> : <Check />} Save
-        </Button>
+        <FieldAction>
+          <Button type="submit" variant="outline" disabled={busy || name.trim() === me.name}>
+            {busy ? <Loader2 className="animate-spin" /> : <Check />} Save
+          </Button>
+        </FieldAction>
       </form>
     </Section>
   );
@@ -265,7 +267,7 @@ function PasswordSection({
 
   return (
     <Section title="Password" description={email}>
-      <form onSubmit={submit} className="grid gap-3 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+      <form onSubmit={submit} className="grid gap-3 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-start">
         {/* For the password manager: which account this form changes. */}
         <input type="text" name="username" value={email} autoComplete="username" readOnly hidden />
         <Field label="Current password">
@@ -284,9 +286,11 @@ function PasswordSection({
             autoComplete="new-password"
           />
         </Field>
-        <Button type="submit" disabled={busy || newPassword.length < 8 || !currentPassword}>
-          {busy ? <Loader2 className="animate-spin" /> : <Check />} Change
-        </Button>
+        <FieldAction>
+          <Button type="submit" disabled={busy || newPassword.length < 8 || !currentPassword}>
+            {busy ? <Loader2 className="animate-spin" /> : <Check />} Change
+          </Button>
+        </FieldAction>
       </form>
     </Section>
   );

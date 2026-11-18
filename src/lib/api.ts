@@ -5,9 +5,12 @@
  * rides in an httpOnly cookie the page cannot read, which is why there is no
  * token handling anywhere in here.
  */
+import type { Attachment, AttachmentTarget } from "./attachments";
 import type { MemberListing, Membership, Organization, Role } from "./organization";
 import type { TablePage, TableRecord } from "./dataTable";
-import type { RecordFormConfig, RecordWithForm } from "./recordForm";
+import type { FormLayout, RecordFormConfig, RecordWithForm } from "./recordForm";
+import type { WorkspaceLayout, WorkspaceView } from "./workspace";
+import type { FieldInfo } from "./dataTable";
 import type { Preferences } from "./preferences";
 import type { AgingReport } from "./receivable";
 import type { SampleSetName } from "./samples";
@@ -102,6 +105,19 @@ export type SessionUser = {
   role: Role | "";
   /** Every organization it belongs to, for the switcher. */
   memberships: Membership[];
+};
+
+/** A collection's layouts, as `GET /api/record-forms/:collection` returns them. */
+export type LayoutConfig = {
+  collection: string;
+  configId: string | null;
+  title: string;
+  description: string;
+  layout: FormLayout;
+  workspace: WorkspaceLayout;
+  fields: FieldInfo[];
+  writable: boolean;
+  readOnlyReason: string | null;
 };
 
 /** One page of quotes, and how many matched in all. */
@@ -292,6 +308,28 @@ export const api = {
     send<IssuedApiKey>("/api/keys", "POST", payload),
   deleteApiKey: (id: string) => send<{ ok: true }>(`/api/keys/${encodeURIComponent(id)}`, "DELETE"),
 
+  /* ------------------------------ attachments ---------------------------- */
+
+  listAttachments: (target: AttachmentTarget, recordId: string) =>
+    request<Attachment[]>(`/api/attachments?${new URLSearchParams({ target, recordId })}`),
+  /** Multipart, so the browser writes the boundary — no JSON Content-Type here. */
+  uploadAttachment: async (target: AttachmentTarget, recordId: string, file: File, note = "") => {
+    const form = new FormData();
+    form.set("target", target);
+    form.set("recordId", recordId);
+    if (note) form.set("note", note);
+    form.set("file", file, file.name);
+    const response = await fetch("/api/attachments", { method: "POST", body: form });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new ApiError((payload as { error?: string }).error ?? `Upload failed (${response.status})`, response.status);
+    }
+    return payload as Attachment;
+  },
+  deleteAttachment: (id: string) => send<{ ok: true }>(`/api/attachments/${encodeURIComponent(id)}`, "DELETE"),
+  attachmentUrl: (id: string, inline = false) =>
+    `/api/attachments/${encodeURIComponent(id)}/file${inline ? "?inline=1" : ""}`,
+
   /* --------------------------------- docs -------------------------------- */
 
   /** What `/docs` renders, and what Postman and friends import. */
@@ -322,6 +360,30 @@ export const api = {
       values,
       updated,
     }),
+
+  /** A record, its form, and its workspace — related-list counts and the computed summary. */
+  recordWorkspace: (collection: string, id: string, signal?: AbortSignal) =>
+    request<RecordWithForm & WorkspaceView>(
+      `/api/workspace/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
+      { signal },
+    ),
+  /** The summary and counts a draft workspace would show. Stores nothing. */
+  previewWorkspace: (collection: string, id: string, workspace: WorkspaceLayout, signal?: AbortSignal) =>
+    request<WorkspaceView>(`/api/workspace/${encodeURIComponent(collection)}/${encodeURIComponent(id)}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ workspace }),
+      signal,
+    }),
+  /** Both layouts for a collection, stored or default, with its fields. */
+  layoutConfig: (collection: string, signal?: AbortSignal) =>
+    request<LayoutConfig>(`/api/record-forms/${encodeURIComponent(collection)}`, { signal }),
+  saveLayoutConfig: (
+    collection: string,
+    payload: { title: string; description: string; layout: FormLayout; workspace: WorkspaceLayout },
+  ) => send<LayoutConfig>(`/api/record-forms/${encodeURIComponent(collection)}`, "PUT", payload),
+  /** A new record through its collection's form; `link` points it at the record it belongs to. */
+  createTableRecord: (collection: string, values: TableRecord, link: TableRecord) =>
+    send<TableRecord>(`/api/table/${encodeURIComponent(collection)}`, "POST", { values, link }),
 
   /** Store a collection's default form layout in `record_forms`, to edit there. */
   createRecordForm: (collection: string) =>

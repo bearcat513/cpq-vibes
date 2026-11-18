@@ -139,6 +139,7 @@ export const SERVER_OWNED: Record<string, string> = {
   invoices: "An invoice's totals and numbering are kept by the server — edit it in Receivables.",
   payments: "A payment is part of an invoice's balance — record or remove it in Receivables.",
   credits: "A credit is part of an invoice's balance — record or remove it in Receivables.",
+  sys_attachment: "An attachment is a file on a record — add or remove it from that record's Attachments panel.",
 };
 
 /**
@@ -271,6 +272,14 @@ const BUILT_IN_LAYOUTS: Record<string, FormLayout> = {
               `{"sections": [{"title", "columns": 1|2, "fields": ["name", {"name", "label", "widget", "readOnly", ` +
               `"required", "span", "help", "options", "min", "max"}]}], "rest": "hidden"|"readOnly"}. ` +
               `Widgets: ${FORM_WIDGETS.join(", ")}. Checked before it is saved.`,
+          },
+          {
+            name: "workspace",
+            widget: "json",
+            rows: 14,
+            help:
+              `The record workspace: {"relatedLists": [...], "summary": {"currencyField", "items": [...]}} — see ` +
+              `src/lib/workspace.ts. Easier from the workspace's own Customize panel. Checked before it is saved.`,
           },
         ],
       },

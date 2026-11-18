@@ -138,6 +138,7 @@ export function AccountsView({
           onOpenQuote={onOpenQuote}
           onOpenReceivables={onOpenReceivables}
           onError={onError}
+          confirmed={confirmed}
         />
         {editor}
       </>

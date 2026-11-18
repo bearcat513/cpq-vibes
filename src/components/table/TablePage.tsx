@@ -31,7 +31,7 @@ import {
 import { cn } from "@/lib/utils";
 import { DataTable } from "./DataTable";
 import { QueryBuilder } from "./QueryBuilder";
-import { RecordForm } from "./RecordForm";
+import { RecordWorkspace } from "./RecordWorkspace";
 
 /**
  * `/table?table_name=<collection>&query=<filter>` — one collection, filtered.
@@ -320,6 +320,23 @@ export function TablePage() {
     );
   }
 
+  // A record opens full page — its workspace — rather than in a panel over the table.
+  if (openId && isCollectionName(collection)) {
+    return (
+      <div className="slab min-h-dvh">
+        {header}
+        <RecordWorkspace
+          key={`${collection}/${openId}`}
+          collection={collection}
+          id={openId}
+          canEditLayout={can(user?.role, "forms.write")}
+          onBack={closeRecord}
+          onSaved={recordSaved}
+        />
+      </div>
+    );
+  }
+
   const conditions = mode === "builder" ? countConditions(group) : 0;
   const shownError = isCollectionName(collection)
     ? error
@@ -475,16 +492,6 @@ export function TablePage() {
         )}
       </main>
 
-      {openId && isCollectionName(collection) && (
-        <RecordForm
-          key={`${collection}/${openId}`}
-          collection={collection}
-          id={openId}
-          canEditLayout={can(user?.role, "forms.write")}
-          onClose={closeRecord}
-          onSaved={recordSaved}
-        />
-      )}
     </div>
   );
 }

@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useForm } from "@tanstack/react-form";
-import { AlertCircle, ExternalLink, LayoutTemplate, Loader2, Lock, RefreshCw, RotateCcw, X } from "lucide-react";
+import { AlertCircle, ChevronRight, ExternalLink, LayoutTemplate, Loader2, Lock, RefreshCw, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Sheet } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
@@ -24,110 +23,18 @@ import { cn } from "@/lib/utils";
 import { nativeSelect } from "./QueryBuilder";
 
 /**
- * One record, in the panel a click on its row opens.
+ * The record form: one record's fields, laid out by its collection's
+ * `record_forms` row or built from the record, held by TanStack Form. Each
+ * field runs its check from `src/lib/recordForm.ts` — the same check the
+ * server runs again on save — and only the fields that moved are sent.
  *
- * The layout comes with the record (`GET /api/table/:collection/:id`): the
- * organization's from `record_forms`, or one built from the record's own
- * fields. TanStack Form holds the values and runs each field's check from
- * `src/lib/recordForm.ts` — the same check the server runs again on save —
- * and only the fields that moved are sent.
- *
- * It is a `Sheet`, like every editor in the app: the table stays visible
- * beside it, and the form gets the window's full height.
+ * The details pane of the record workspace (`RecordWorkspace.tsx`), and the
+ * form a related list's "New" opens.
  */
-
-type Props = {
-  collection: string;
-  id: string;
-  /** Whether to offer changing the layout — an admin. PocketBase decides either way. */
-  canEditLayout: boolean;
-  onClose: () => void;
-  onSaved: (record: TableRecord) => void;
-};
-
-export function RecordForm({ collection, id, canEditLayout, onClose, onSaved }: Props) {
-  const [loaded, setLoaded] = useState<RecordWithForm | null>(null);
-  const [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
-  /** Whether the open form has unsaved changes — asked before closing. */
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setError("");
-    api
-      .tableRecord(collection, id, controller.signal)
-      .then(setLoaded)
-      .catch(reason => {
-        if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "The record could not be read.");
-      });
-    return () => controller.abort();
-  }, [collection, id, attempt]);
-
-  const close = () => {
-    if (dirty && !window.confirm("Discard your changes to this record?")) return;
-    onClose();
-  };
-
-  const title = loaded ? loaded.form.title : collection;
-  const formId = `record-form-${id}`;
-
-  return (
-    <Sheet
-      title={title}
-      description={loaded?.form.description || `${collection} · ${id}`}
-      onClose={close}
-      className="sm:w-[42%]"
-      footer={
-        loaded ? (
-          <FormFooter formId={formId} writable={loaded.form.writable} onClose={close} />
-        ) : (
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-        )
-      }
-    >
-      {error ? (
-        <div className="space-y-3">
-          <p role="alert" className="flex items-start gap-2 rounded-md border border-alert/40 bg-alert/10 px-3 py-2 text-sm text-alert">
-            <AlertCircle className="mt-0.5 size-4 shrink-0" />
-            {error}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => setAttempt(n => n + 1)}>
-            <RefreshCw />
-            Try again
-          </Button>
-        </div>
-      ) : !loaded ? (
-        <p className="flex items-center gap-2 py-10 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          Reading the record…
-        </p>
-      ) : (
-        <RecordFormBody
-          // A saved record starts a fresh form from what was stored.
-          key={`${String(loaded.record.id)}:${String(loaded.record.updated ?? "")}:${loaded.form.configId ?? ""}`}
-          formId={formId}
-          collection={collection}
-          id={id}
-          loaded={loaded}
-          canEditLayout={canEditLayout}
-          onDirtyChange={setDirty}
-          onReload={() => setAttempt(n => n + 1)}
-          onSaved={next => {
-            setLoaded(next);
-            onSaved(next.record);
-          }}
-        />
-      )}
-    </Sheet>
-  );
-}
 
 /* --------------------------------- the form -------------------------------- */
 
-function RecordFormBody({
+export function RecordFormBody({
   formId,
   collection,
   id,
@@ -136,6 +43,9 @@ function RecordFormBody({
   onDirtyChange,
   onReload,
   onSaved,
+  submit,
+  hideLayoutNotice,
+  collapsible,
 }: {
   formId: string;
   collection: string;
@@ -145,12 +55,34 @@ function RecordFormBody({
   onDirtyChange: (dirty: boolean) => void;
   onReload: () => void;
   onSaved: (next: RecordWithForm) => void;
+  /**
+   * Sends the change. An edit by default; a new record passes its own, which
+   * receives every field that moved from blank.
+   */
+  submit?: (patch: TableRecord, updated: string | null) => Promise<RecordWithForm>;
+  /** The workspace says where its layout comes from itself. */
+  hideLayoutNotice?: boolean;
+  /**
+   * Sections fold, and the bookkeeping ones start folded — so a record's
+   * related lists are not a long scroll below its ids and stamps.
+   */
+  collapsible?: boolean;
 }) {
   const { record, form: layout } = loaded;
   const sections = useMemo(() => resolveSections(layout, record), [layout, record]);
   const editable = useMemo(() => editableFields(layout, record), [layout, record]);
   const defaultValues = useMemo(() => initialValues(sections, record), [sections, record]);
   const [saveError, setSaveError] = useState<{ message: string; conflict: boolean } | null>(null);
+  const [folded, setFolded] = useState<Set<number>>(
+    () => new Set(collapsible ? sections.flatMap((section, index) => (FOLDED_BY_DEFAULT.has(section.title) ? [index] : [])) : []),
+  );
+  const toggle = (index: number) =>
+    setFolded(current => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
 
   const form = useForm({
     defaultValues: defaultValues as FormValues,
@@ -161,10 +93,11 @@ function RecordFormBody({
         setSaveError({ message: Object.values(built.errors)[0]!, conflict: false });
         return;
       }
-      if (Object.keys(built.patch).length === 0) return;
+      // Nothing moved is nothing to save — except for a new record, which exists once sent.
+      if (Object.keys(built.patch).length === 0 && !submit) return;
       try {
         const updated = typeof record.updated === "string" ? record.updated : null;
-        onSaved(await api.updateTableRecord(collection, id, built.patch, updated));
+        onSaved(await (submit ?? ((patch, stamp) => api.updateTableRecord(collection, id, patch, stamp)))(built.patch, updated));
         onDirtyChange(false);
       } catch (reason) {
         const message = reason instanceof Error ? reason.message : "The change could not be saved.";
@@ -202,7 +135,7 @@ function RecordFormBody({
         {dirty => <DirtyReporter dirty={dirty} onChange={onDirtyChange} />}
       </form.Subscribe>
 
-      <LayoutNotice loaded={loaded} collection={collection} canEditLayout={canEditLayout} />
+      {!hideLayoutNotice && <LayoutNotice loaded={loaded} collection={collection} canEditLayout={canEditLayout} />}
 
       {sections.map((section, index) => (
         <fieldset
@@ -212,13 +145,33 @@ function RecordFormBody({
           {(section.title || section.description) && (
             <legend className="sr-only">{section.title || `Section ${index + 1}`}</legend>
           )}
-          {(section.title || section.description) && (
-            <div className="seam border-b px-3 py-2">
-              {section.title && <h3 className="font-display text-sm font-semibold">{section.title}</h3>}
-              {section.description && <p className="text-xs text-muted-foreground">{section.description}</p>}
-            </div>
-          )}
-          <div className={cn("grid gap-3 p-3", section.columns === 2 && "@md:grid-cols-2")}>
+          {(section.title || section.description) &&
+            (collapsible ? (
+              <button
+                type="button"
+                onClick={() => toggle(index)}
+                aria-expanded={!folded.has(index)}
+                className={cn("flex w-full items-center gap-2 px-3 py-2 text-left", !folded.has(index) && "seam border-b")}
+              >
+                <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground transition-transform", !folded.has(index) && "rotate-90")} />
+                <span className="min-w-0 flex-1">
+                  {section.title && <span className="block font-display text-sm font-semibold">{section.title}</span>}
+                  {section.description && <span className="block text-xs text-muted-foreground">{section.description}</span>}
+                </span>
+                {folded.has(index) && (
+                  <span className="text-[11px] text-muted-foreground tabular-nums">
+                    {section.fields.length} {section.fields.length === 1 ? "field" : "fields"}
+                  </span>
+                )}
+              </button>
+            ) : (
+              <div className="seam border-b px-3 py-2">
+                {section.title && <h3 className="font-display text-sm font-semibold">{section.title}</h3>}
+                {section.description && <p className="text-xs text-muted-foreground">{section.description}</p>}
+              </div>
+            ))}
+          {/* Folded, not unmounted: a field's value and its check stay with the form. */}
+          <div className={cn("grid gap-3 p-3", section.columns === 2 && "@md:grid-cols-2", folded.has(index) && "hidden")}>
             {section.fields.map(field => (
               <form.Field
                 key={field.name}
@@ -279,6 +232,9 @@ function RecordFormBody({
   );
 }
 
+/** The sections of ids, stamps and leftovers — open on request, not by default. */
+const FOLDED_BY_DEFAULT = new Set(["Record", "Other fields"]);
+
 const unchanged = (a: FormValue, b: FormValue | undefined) => JSON.stringify(a) === JSON.stringify(b);
 
 /** Lifts TanStack Form's dirty flag out to the panel, which asks before closing. */
@@ -288,7 +244,7 @@ function DirtyReporter({ dirty, onChange }: { dirty: boolean; onChange: (dirty: 
 }
 
 /** Save and reset, outside the scroll area — tied to the form by its id. */
-function FormFooter({ formId, writable, onClose }: { formId: string; writable: boolean; onClose: () => void }) {
+export function FormFooter({ formId, writable, onClose }: { formId: string; writable: boolean; onClose: () => void }) {
   return (
     <>
       <p className="mr-auto hidden text-[11px] text-muted-foreground sm:block">
@@ -467,7 +423,7 @@ function Widget({ field, inputId, value, invalid, onChange, onBlur }: WidgetProp
           rows={field.rows}
           spellCheck={field.widget !== "json"}
           onChange={event => onChange(event.target.value)}
-          className={cn(field.widget === "json" && "max-h-96 font-mono text-xs", field.readOnly && "bg-muted/40 text-muted-foreground")}
+          className={cn(field.widget === "json" && "max-h-64 font-mono text-xs", field.readOnly && "bg-muted/40 text-muted-foreground")}
         />
       );
     case "select": {

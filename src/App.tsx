@@ -630,6 +630,10 @@ export function App() {
       onBack={() => setOpenQuote(undefined)}
       onShare={(id, title) => setSharing({ kind: "quotes", id, title })}
       onOpenQuote={id => void openQuoteById(id)}
+      onInvoiced={(id, warnings) => {
+        go("receivables", { openId: id });
+        if (warnings.length) notice(warnings);
+      }}
       onError={fail}
       onNotice={notice}
       confirmed={confirmed}
@@ -667,6 +671,8 @@ export function App() {
       preferences={preferences}
       initialCreate={intent.create}
       initialStatus={intent.status as InvoiceStatus | undefined}
+      initialOpenId={intent.openId}
+      onOpenQuote={id => void openQuoteById(id)}
       onError={fail}
       onNotice={notice}
       confirmed={confirmed}

@@ -77,6 +77,15 @@ import {
   quoteRows,
 } from "./server/export";
 import { createApiKey, deleteApiKey, listApiKeys, readKeyInput } from "./server/apiKeys";
+import {
+  attachmentFile,
+  createAttachment,
+  deleteAttachment,
+  listAttachments,
+  readRecordId,
+  readTarget,
+  readUpload,
+} from "./server/attachments";
 import { ApiError, asRecord, fail, formatParam, handler, intParam, query, readJson } from "./server/http";
 import { buildOpenApiDocument, endpointIndex, OPENAPI_PATH } from "./server/openapi";
 import { readPreferences, writePreferences } from "./server/preferences";
@@ -107,6 +116,14 @@ import {
 import { installSample } from "./server/seed";
 import { listTable, readTableRequest } from "./server/table";
 import { createRecordForm, readRecord, readRecordUpdate, updateRecord } from "./server/recordForms";
+import {
+  createRecord,
+  previewWorkspace,
+  readLayoutConfig,
+  readRecordCreate,
+  readWorkspace,
+  saveLayoutConfig,
+} from "./server/workspace";
 import { DEFAULT_TABLE_PAGE_SIZE, readSort } from "./lib/dataTable";
 import { SAMPLE_SETS, type SampleSetName } from "./lib/samples";
 import { API_KEY_HEADER, API_KEY_PREFIX, requireSessionToken, requireToken } from "./server/session";
@@ -1400,6 +1417,38 @@ const server = serve({
     "/api/proposal-templates/:id": proposalTemplates.record,
     "/api/proposal-templates/:id/shares": shareRoutes("proposal-templates"),
 
+    /* ------------------------------ attachments -------------------------- */
+
+    /**
+     * Files on a customer, a quote, an invoice or an approval — one
+     * collection, `sys_attachment`, for all four. Who may see and add them is
+     * decided by its rules; see src/server/attachments.ts.
+     */
+    "/api/attachments": {
+      GET: guarded(async (token, req) => {
+        const params = query(req);
+        return Response.json(
+          await listAttachments(token, readTarget(params.get("target")), readRecordId(params.get("recordId"))),
+        );
+      }),
+      POST: guarded(async (token, req) =>
+        Response.json(await createAttachment(token, await readUpload(req)), { status: 201 }),
+      ),
+    },
+
+    "/api/attachments/:id": {
+      DELETE: guarded<{ params: { id: string } }>(async (token, req) =>
+        (await deleteAttachment(token, req.params.id)) ? Response.json({ ok: true }) : fail("Attachment not found.", 404),
+      ),
+    },
+
+    /** The file itself. `?inline=1` shows a PDF or an image in place; anything else downloads. */
+    "/api/attachments/:id/file": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) =>
+        (await attachmentFile(token, req.params.id, query(req).has("inline"))) ?? fail("Attachment not found.", 404),
+      ),
+    },
+
     /* --------------------------- workspace, sample ----------------------- */
 
     /**
@@ -1485,6 +1534,10 @@ const server = serve({
         });
         return Response.json(await listTable(token, req.params.collection, request));
       }),
+      /** A new record through the collection's form — what a related list's "New" sends. */
+      POST: guarded<{ params: { collection: string } }>(async (token, req) =>
+        Response.json(await createRecord(token, req.params.collection, readRecordCreate(await readJson(req))), { status: 201 }),
+      ),
     },
 
     /**
@@ -1504,8 +1557,33 @@ const server = serve({
 
     /** Store a collection's default form layout in `record_forms`, to be edited there. */
     "/api/record-forms/:collection": {
+      /** Both layouts — the form and the workspace — stored or default, with the fields to choose from. */
+      GET: guarded<{ params: { collection: string } }>(async (token, req) =>
+        Response.json(await readLayoutConfig(token, req.params.collection)),
+      ),
       POST: guarded<{ params: { collection: string } }>(async (token, req) =>
         Response.json(await createRecordForm(token, req.params.collection), { status: 201 }),
+      ),
+      /** Store both layouts, created if missing. What the workspace's Customize panel saves. */
+      PUT: guarded<{ params: { collection: string } }>(async (token, req) =>
+        Response.json(await saveLayoutConfig(token, req.params.collection, await readJson(req))),
+      ),
+    },
+
+    /**
+     * The record workspace: the record and its form, its related lists' counts
+     * and its summary, worked out as the caller. See src/server/workspace.ts.
+     */
+    "/api/workspace/:collection/:id": {
+      GET: guarded<{ params: { collection: string; id: string } }>(async (token, req) =>
+        Response.json(await readWorkspace(token, req.params.collection, req.params.id)),
+      ),
+    },
+
+    /** The same page drawn from a draft workspace, for the editor's preview. Stores nothing. */
+    "/api/workspace/:collection/:id/preview": {
+      POST: guarded<{ params: { collection: string; id: string } }>(async (token, req) =>
+        Response.json(await previewWorkspace(token, req.params.collection, req.params.id, await readJson(req))),
       ),
     },
 

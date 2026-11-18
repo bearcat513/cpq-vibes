@@ -149,6 +149,7 @@ describe("a customer's own page", () => {
         onOpenQuote={noop}
         onOpenReceivables={noop}
         onError={noop}
+        confirmed={() => true}
       />,
     );
 

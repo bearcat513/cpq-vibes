@@ -283,7 +283,10 @@ stakes are sharper: a client that could set its own balance could mark its own d
   `invoiceQuote` bills a sent or accepted quote for its whole contract value, with the quote
   discount, any adjustment and shipping as their own lines, and warns rather than hides it when the
   total lands a penny off the quote's. Billing a subscription period by period is a billing
-  schedule — the obvious next layer, and deliberately not here
+  schedule — the obvious next layer, and deliberately not here. The quote editor offers it as
+  *Create invoice* on an accepted quote. Any draft can also name its quote (`quoteId`, the
+  invoice's `quote` relation): omitted from a save it is kept, `null` unlinks it, and the quote is
+  read as the caller, so one they cannot see is refused (`quoteReference`)
 - `src/server/db.ts` — the collections. Every call takes a token and is async
 - `src/server/share.ts` — proxies to PocketBase's `/api/cpq/...` hook routes: sharing, approver
   stamping, and the directory (`GET /api/directory`, id/email/name only, **members of your own
@@ -294,6 +297,17 @@ stakes are sharper: a client that could set its own balance could mark its own d
 - `src/server/apiKeys.ts` — listing and revoking are ordinary record calls the collection's own
   rules allow; only issuing proxies to a hook, because only issuing has to hash a secret and hand
   the raw value back once
+- `src/lib/attachments.ts` / `src/server/attachments.ts` / `components/app/Attachments.tsx` — files
+  on a customer, quote, invoice or approval, all in **one `sys_attachment` collection** keyed by
+  `target` + `recordId` rather than a file field per collection. An approval attachment's
+  `recordId` is the *quote's* id (requests are re-minted on every reprice). **You see an attachment
+  if you can see its record** — the rules in `1750000012_attachments.js` join through
+  `@collection.<name>:alias` to repeat each target's audience — and you attach where you could
+  edit the record, plus any approver on the approval, from any org. `rules/attachments.js` stamps
+  `org` from the **record**, not the uploader (so it is not in `OWNED`), takes name and size from
+  the upload itself, caps files per record, and deletes a record's files when the record goes. The
+  file field is `protected`; bytes are served only through `GET /api/attachments/:id/file`, which
+  mints a file token as the caller and serves anything not in `INLINE_TYPES` as a sandboxed download
 - `src/server/openapi.ts` — the document, and the only list of endpoints. See above
 - `src/lib/openapiDoc.ts` / `markdown.ts` / `highlight.ts` / `curl.ts` — what `/docs` is built from,
   all pure: reading a document, the little Markdown a description carries, colouring JSON, and
@@ -406,6 +420,21 @@ the server refuses any field the form does not offer as editable, re-runs each f
 refuses a write whose `updated` stamp is stale (409). That narrows the route; the collection's rules
 still decide. **Quotes, invoices, payments and credits are never written there** (`SERVER_OWNED`),
 because a raw write would skip pricing and totals. Neither are `LOCKED_FIELDS` (owner, org, sharedWith…).
+
+**A row opens the record workspace** (`components/table/RecordWorkspace.tsx`), full page, in three
+panes: the details form (`RecordFormBody`, its bookkeeping sections folded), **related lists** (tabs
+of the records whose link field holds this record's id — `RelatedLists.tsx`) and a **summary**
+column (`SummaryPane.tsx`). Its layout is the `workspace` JSON on the same `record_forms` row as the
+form, checked by `readWorkspaceLayout` in `src/lib/workspace.ts`, which also holds the built-in
+defaults for accounts, quotes and invoices. A summary line is a field (a JSON path), a **roll-up**
+(count/sum/avg/min/max over a related list, optionally filtered) or a **formula** over the keys
+above it — and a formula with a blank input is blank, never a zero. The server works the summary out
+(`src/server/workspace.ts`, `GET /api/workspace/:collection/:id`), reading every related row as the
+caller and stopping at `MAX_ROLLUP_ROWS`, which the line then says. *Customize*
+(`WorkspaceEditor.tsx`, admins) edits form and workspace together and previews the draft through
+`POST …/preview`; `PUT /api/record-forms/:collection` saves both. *New* in a tab creates through
+`POST /api/table/:collection` with the link prefilled — never in a `SERVER_OWNED` collection — and
+the files tab uploads to `sys_attachment` instead.
 
 **Forms are panels, previews are modals.** Every editor opens in `components/ui/sheet.tsx` — a
 right-hand, full-height panel. Only things meant to be read (a rendered proposal, a PDF) use

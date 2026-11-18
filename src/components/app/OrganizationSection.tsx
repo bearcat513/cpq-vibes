@@ -6,7 +6,7 @@ import { Combobox } from "@/components/ui/combobox";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
-import { Field, Section } from "./common";
+import { Field, FieldAction, Section } from "./common";
 import { useAccess } from "./access";
 import { api, type SessionUser } from "@/lib/api";
 import { timeZones } from "@/lib/clock";
@@ -141,7 +141,7 @@ export function OrganizationSection({ me, onSessionChanged, onError, onNotice, c
       description="Records belong to the organization. What each member may change is decided by their role."
     >
       {/* ---------------------------- settings ---------------------------- */}
-      <form onSubmit={saveSettings} className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+      <form onSubmit={saveSettings} className="grid gap-4 p-4 sm:grid-cols-[1fr_1fr_auto] sm:items-start">
         <Field label="Name">
           <Input value={name} onChange={event => setName(event.target.value)} maxLength={MAX_ORG_NAME} disabled={!admin} />
         </Field>
@@ -160,9 +160,11 @@ export function OrganizationSection({ me, onSessionChanged, onError, onNotice, c
           />
         </Field>
         {admin && (
-          <Button type="submit" variant="outline" disabled={busy === "settings" || !name.trim()}>
-            {busy === "settings" && <Loader2 className="animate-spin" />} Save
-          </Button>
+          <FieldAction>
+            <Button type="submit" variant="outline" disabled={busy === "settings" || !name.trim()}>
+              {busy === "settings" && <Loader2 className="animate-spin" />} Save
+            </Button>
+          </FieldAction>
         )}
       </form>
 
@@ -275,8 +277,16 @@ export function OrganizationSection({ me, onSessionChanged, onError, onNotice, c
       </div>
 
       {admin && (
-        <form onSubmit={invite} className="grid gap-3 border-t p-4 sm:grid-cols-[1fr_9rem_auto] sm:items-end">
-          <Field label="Add a member" hint="An address with an account joins now; any other is invited and joins on sign-up.">
+        <form onSubmit={invite} className="grid gap-3 border-t p-4 sm:grid-cols-[1fr_9rem_auto] sm:items-start">
+          <Field
+            label="Add a member"
+            hint={
+              <>
+                An address with an account joins now; any other is invited and joins on sign-up.{" "}
+                <span className="text-foreground/70">{ROLE_LABELS[inviteRole]}:</span> {ROLE_DESCRIPTIONS[inviteRole]}
+              </>
+            }
+          >
             <Input
               type="email"
               value={inviteEmail}
@@ -298,10 +308,11 @@ export function OrganizationSection({ me, onSessionChanged, onError, onNotice, c
               </SelectContent>
             </Select>
           </Field>
-          <Button type="submit" disabled={busy === "invite" || !inviteEmail.trim()}>
-            {busy === "invite" ? <Loader2 className="animate-spin" /> : <UserPlus />} Add
-          </Button>
-          <p className="text-xs text-muted-foreground sm:col-span-3">{ROLE_DESCRIPTIONS[inviteRole]}</p>
+          <FieldAction>
+            <Button type="submit" disabled={busy === "invite" || !inviteEmail.trim()}>
+              {busy === "invite" ? <Loader2 className="animate-spin" /> : <UserPlus />} Add
+            </Button>
+          </FieldAction>
         </form>
       )}
 
@@ -328,19 +339,20 @@ export function OrganizationSection({ me, onSessionChanged, onError, onNotice, c
           </div>
         )}
 
-        <form onSubmit={create} className="flex flex-wrap items-end gap-2">
+        <form onSubmit={create} className="grid gap-3 sm:grid-cols-[minmax(0,20rem)_auto] sm:items-start">
           <Field label="Start another organization" hint="You become its admin and move into it.">
             <Input
               value={newOrg}
               onChange={event => setNewOrg(event.target.value)}
               maxLength={MAX_ORG_NAME}
               placeholder="Organization name"
-              className="w-64"
             />
           </Field>
-          <Button type="submit" variant="outline" disabled={busy === "create" || !newOrg.trim()}>
-            {busy === "create" ? <Loader2 className="animate-spin" /> : <Plus />} Create
-          </Button>
+          <FieldAction>
+            <Button type="submit" variant="outline" disabled={busy === "create" || !newOrg.trim()}>
+              {busy === "create" ? <Loader2 className="animate-spin" /> : <Plus />} Create
+            </Button>
+          </FieldAction>
         </form>
       </div>
     </Section>

@@ -43,6 +43,9 @@ type Props = {
   initialCreate?: boolean;
   /** Arrive filtered to one condition: the dashboard's "overdue" goes here. */
   initialStatus?: InvoiceStatus;
+  /** Arrive with one invoice open — the one a quote was just converted into. */
+  initialOpenId?: string;
+  onOpenQuote?: (id: string) => void;
 };
 
 /**
@@ -68,10 +71,12 @@ export function ReceivablesView({
   confirmed,
   initialCreate,
   initialStatus,
+  initialOpenId,
+  onOpenQuote,
 }: Props) {
   const canWrite = useAccess().can("invoices.write");
   const [invoices, setInvoices] = useState<InvoiceSummary[] | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(initialOpenId ?? null);
   const [creating, setCreating] = useState(Boolean(initialCreate) && canWrite);
 
   const [search, setSearch] = useState("");
@@ -147,6 +152,7 @@ export function ReceivablesView({
         onChanged={afterChange}
         onError={onError}
         confirmed={confirmed}
+        onOpenQuote={onOpenQuote}
       />
     );
   }

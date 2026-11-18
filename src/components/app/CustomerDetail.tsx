@@ -32,6 +32,7 @@ import {
   type QuoteSummary,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { Attachments } from "./Attachments";
 
 type Props = {
   account: Account;
@@ -43,6 +44,7 @@ type Props = {
   /** Takes the reader to the receivables screen, where an invoice can be acted on. */
   onOpenReceivables: () => void;
   onError: (error: unknown) => void;
+  confirmed: (message: string) => boolean;
 };
 
 /**
@@ -68,6 +70,7 @@ export function CustomerDetail({
   onOpenQuote,
   onOpenReceivables,
   onError,
+  confirmed,
 }: Props) {
   const canWrite = useAccess().can("accounts.write");
   const [quotes, setQuotes] = useState<QuoteSummary[] | null>(null);
@@ -340,6 +343,16 @@ export function CustomerDetail({
           </ul>
         )}
       </Section>
+
+      <Attachments
+        target="accounts"
+        recordId={account.id}
+        canUpload={canWrite}
+        description="Contracts, tax certificates, a W-9 — what belongs to the customer rather than to one deal."
+        locale={preferences.locale}
+        onError={onError}
+        confirmed={confirmed}
+      />
 
       <Section
         title="Quote history"

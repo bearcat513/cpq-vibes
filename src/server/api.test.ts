@@ -691,6 +691,41 @@ describe("receivables", () => {
     expect(raised.warnings).toEqual([]);
   });
 
+  signedIn("an invoice's quote is a relation: kept when a save leaves it out, changed or removed when named", async () => {
+    const other = await acceptedQuoteFor("Another deal");
+    const draft = (await post("/api/invoices", { accountId, quoteId: other.id })).invoice;
+    expect(draft.quoteId).toBe(other.id);
+    expect(draft.quoteNumber).toBe(other.number);
+
+    // A client that never heard of the link cannot unlink it by saving.
+    const kept = await put(`/api/invoices/${draft.id}`, { accountId, poNumber: "PO-1" });
+    expect(kept.invoice.quoteId).toBe(other.id);
+
+    // Naming one that is not accepted links it, and says so.
+    const open = (await post("/api/quotes", quoteBody({ name: "Still a draft" }))).quote;
+    const relinked = await put(`/api/invoices/${draft.id}`, { accountId, quoteId: open.id });
+    expect(relinked.invoice.quoteId).toBe(open.id);
+    expect(relinked.warnings.join(" ")).toContain("not accepted");
+
+    // null removes it; a quote that does not exist is refused.
+    expect((await put(`/api/invoices/${draft.id}`, { accountId, quoteId: null })).invoice.quoteId).toBeNull();
+    const missing = await api(`/api/invoices/${draft.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ accountId, quoteId: "nosuchquote0000" }),
+    });
+    expect(missing.status).toBe(400);
+
+    // Nor can anybody point an invoice at a quote they cannot read.
+    const bobs = await api("/api/invoices", {
+      method: "POST",
+      body: JSON.stringify({ quoteId: other.id }),
+      cookie: bobCookie,
+    });
+    expect(bobs.status).toBe(400);
+
+    await api(`/api/invoices/${draft.id}`, { method: "DELETE" });
+  });
+
   signedIn("the totals in a request body are ignored, the same as a quote's", async () => {
     const lying = await put(`/api/invoices/${invoiceId}`, {
       accountId,
@@ -1253,6 +1288,139 @@ async function bobToken(): Promise<string> {
 
 /* --------------------------------- sharing ------------------------------- */
 
+/* ------------------------------ attachments ------------------------------ */
+
+describe("attachments", () => {
+  /** A multipart upload — no JSON Content-Type, so fetch writes the boundary. */
+  const upload = (fields: Record<string, string>, file: File | null, session = cookie) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.set(key, value);
+    if (file) form.set("file", file, file.name);
+    return fetch(`${BASE}/api/attachments`, { method: "POST", body: form, headers: { cookie: session } });
+  };
+  const textFile = (name: string, text: string, type = "text/plain") => new File([text], name, { type });
+
+  let quoteId = "";
+  let attachmentId = "";
+
+  signedIn("a file goes onto a quote, with its own name, size and type", async () => {
+    quoteId = (await post("/api/quotes", quoteBody({ name: "With a PO" }))).quote.id;
+
+    const response = await upload({ target: "quotes", recordId: quoteId, note: "Signed" }, textFile("order form.txt", "PO 4471"));
+    expect(response.status).toBe(201);
+    const stored = await response.json();
+    expect(stored).toMatchObject({ target: "quotes", recordId: quoteId, name: "order form.txt", size: 7, note: "Signed" });
+    expect(stored.mimeType).toStartWith("text/plain");
+    attachmentId = stored.id;
+
+    const listed = await json(`/api/attachments?target=quotes&recordId=${quoteId}`);
+    expect(listed.map((one: any) => one.id)).toEqual([attachmentId]);
+    // A quote's files are not its approval's, nor anybody else's record's.
+    expect(await json(`/api/attachments?target=approvals&recordId=${quoteId}`)).toEqual([]);
+  });
+
+  signedIn("the bytes come back as a download, as the caller", async () => {
+    const response = await api(`/api/attachments/${attachmentId}/file`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("PO 4471");
+    expect(response.headers.get("content-disposition")).toStartWith("attachment;");
+    expect(response.headers.get("content-disposition")).toContain("order%20form.txt");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  });
+
+  signedIn("an HTML file is never shown in place, whatever is asked", async () => {
+    const stored = await (
+      await upload({ target: "quotes", recordId: quoteId }, textFile("page.html", "<script>alert(1)</script>", "text/html"))
+    ).json();
+    const response = await api(`/api/attachments/${stored.id}/file?inline=1`);
+    expect(response.headers.get("content-disposition")).toStartWith("attachment;");
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    expect(response.headers.get("content-security-policy")).toContain("sandbox");
+    await api(`/api/attachments/${stored.id}`, { method: "DELETE" });
+  });
+
+  signedIn("somebody outside the organization sees none of it", async () => {
+    expect((await api(`/api/attachments?target=quotes&recordId=${quoteId}`, { cookie: bobCookie })).status).toBe(200);
+    expect(await json(`/api/attachments?target=quotes&recordId=${quoteId}`, { cookie: bobCookie })).toEqual([]);
+    expect((await api(`/api/attachments/${attachmentId}/file`, { cookie: bobCookie })).status).toBe(404);
+    expect((await upload({ target: "quotes", recordId: quoteId }, textFile("x.txt", "x"), bobCookie)).status).toBe(404);
+    expect((await api(`/api/attachments/${attachmentId}`, { method: "DELETE", cookie: bobCookie })).status).toBe(404);
+  });
+
+  signedIn("a file goes on a customer and an invoice too", async () => {
+    const onAccount = await upload({ target: "accounts", recordId: accountId }, textFile("w9.txt", "W-9"));
+    expect(onAccount.status).toBe(201);
+
+    const invoice = await post("/api/invoices", { accountId });
+    const invoiceId = invoice.invoice?.id ?? invoice.id;
+    const onInvoice = await upload({ target: "invoices", recordId: invoiceId }, textFile("remittance.txt", "paid"));
+    expect(onInvoice.status).toBe(201);
+
+    // Discarding the draft takes its files with it: nothing points at a ghost.
+    await api(`/api/invoices/${invoiceId}`, { method: "DELETE" });
+    expect(await json(`/api/attachments?target=invoices&recordId=${invoiceId}`)).toEqual([]);
+  });
+
+  signedIn("a record that does not exist, and a target that is not one, are refused", async () => {
+    expect((await upload({ target: "quotes", recordId: "nosuchquote0000" }, textFile("a.txt", "a"))).status).toBe(404);
+    expect((await upload({ target: "products", recordId: platformId }, textFile("a.txt", "a"))).status).toBe(400);
+    expect((await upload({ target: "quotes", recordId: quoteId }, null)).status).toBe(400);
+    expect((await upload({ target: "quotes", recordId: quoteId }, textFile("empty.txt", ""))).status).toBe(400);
+  });
+
+  signedIn("an approver from another organization reads, and adds to, the approval's files", async () => {
+    const ruleId = (
+      await post("/api/approval-rules", {
+        name: "Attachments test",
+        scope: "quote",
+        metric: "discountPercent",
+        comparator: ">",
+        threshold: 40,
+        level: 1,
+        approvers: [BOB],
+      })
+    ).id;
+
+    const created = await post("/api/quotes", quoteBody({ name: "Needs a case" }, { discountPercent: 45 }));
+    const id = created.quote.id;
+    const evidence = await (await upload({ target: "approvals", recordId: id }, textFile("case.txt", "competitor at 40%"))).json();
+    const internal = await (await upload({ target: "quotes", recordId: id }, textFile("internal.txt", "ours"))).json();
+    expect((await post(`/api/quotes/${id}/submit`, {})).quote.status).toBe("in_review");
+
+    // Bob was asked: he sees the case, and the quote's own files, because he sees the quote.
+    const seen = await json(`/api/attachments?target=approvals&recordId=${id}`, { cookie: bobCookie });
+    expect(seen.map((one: any) => one.id)).toEqual([evidence.id]);
+    expect((await json(`/api/attachments?target=quotes&recordId=${id}`, { cookie: bobCookie })).map((one: any) => one.id)).toEqual([
+      internal.id,
+    ]);
+    expect(await (await api(`/api/attachments/${evidence.id}/file`, { cookie: bobCookie })).text()).toBe("competitor at 40%");
+
+    // He may add to the approval — and it is filed under Alice's organization, where she sees it.
+    const his = await upload({ target: "approvals", recordId: id }, textFile("note.txt", "ok if 2-year"), bobCookie);
+    expect(his.status).toBe(201);
+    const hisFile = await his.json();
+    expect(hisFile.orgId).toBe(evidence.orgId);
+    expect((await json(`/api/attachments?target=approvals&recordId=${id}`)).map((one: any) => one.id)).toContain(hisFile.id);
+
+    // But not to the quote itself, and not remove what Alice put there.
+    expect((await upload({ target: "quotes", recordId: id }, textFile("x.txt", "x"), bobCookie)).status).toBe(403);
+    expect((await api(`/api/attachments/${evidence.id}`, { method: "DELETE", cookie: bobCookie })).status).toBe(404);
+    // His own, he may.
+    expect((await api(`/api/attachments/${hisFile.id}`, { method: "DELETE", cookie: bobCookie })).status).toBe(200);
+
+    await api(`/api/approval-rules/${ruleId}`, { method: "DELETE" });
+  });
+
+  signedIn("deleting a quote takes its files, and its approval's, with it", async () => {
+    const id = (await post("/api/quotes", quoteBody({ name: "Short-lived" }))).quote.id;
+    await upload({ target: "quotes", recordId: id }, textFile("a.txt", "a"));
+    await upload({ target: "approvals", recordId: id }, textFile("b.txt", "b"));
+    expect((await api(`/api/quotes/${id}`, { method: "DELETE" })).status).toBe(200);
+    expect(await json(`/api/attachments?target=quotes&recordId=${id}`)).toEqual([]);
+    expect(await json(`/api/attachments?target=approvals&recordId=${id}`)).toEqual([]);
+  });
+});
+
 /* -------------------------------- api keys ------------------------------- */
 
 describe("an API key", () => {
@@ -1546,6 +1714,115 @@ describe("the data table", () => {
     // Another organization neither sees this layout nor gets it.
     expect((await json("/api/table/record_forms", { cookie: bobCookie })).totalItems).toBe(0);
     expect((await patchRecord(`/api/table/record_forms/${config.id}`, { values: { title: "x" } }, { cookie: bobCookie })).status).toBe(404);
+  });
+});
+
+describe("the record workspace", () => {
+  const send = (method: string, path: string, payload: unknown, init?: RequestInit & { cookie?: string }) =>
+    api(path, { ...init, method, body: JSON.stringify(payload) });
+
+  signedIn("an invoice opens with its ledger as tabs, and a summary worked out from it", async () => {
+    const created = await post("/api/quotes", quoteBody({ name: "Workspace" }));
+    await post(`/api/quotes/${created.quote.id}/submit`, {});
+    await post(`/api/quotes/${created.quote.id}/status`, { status: "sent" });
+    await post(`/api/quotes/${created.quote.id}/status`, { status: "accepted" });
+    const invoice = (await post(`/api/quotes/${created.quote.id}/invoice`, {})).invoice;
+    await post(`/api/invoices/${invoice.id}/issue`, {});
+    await post(`/api/invoices/${invoice.id}/payments`, { amount: 100, receivedOn: "2026-01-10", method: "bank" });
+    await post(`/api/invoices/${invoice.id}/payments`, { amount: 50, receivedOn: "2026-01-11", method: "bank" });
+
+    const page = await json(`/api/workspace/invoices/${invoice.id}`);
+    expect(page.record.id).toBe(invoice.id);
+    expect(page.workspaceSource).toBe("default");
+    expect(page.workspace.relatedLists.map((list: any) => list.key)).toEqual(["payments", "credits", "files"]);
+    expect(page.counts).toMatchObject({ payments: 2, credits: 0, files: 0 });
+
+    const line = (key: string) => page.summary.lines.find((entry: any) => entry.key === key);
+    expect(line("paid").value).toBe(150);
+    expect(line("credited").value).toBe(0);
+    expect(line("balanceDue").value).toBe(invoice.totals.total - 150);
+    expect(line("balanceDue").emphasis).toBe(true);
+
+    // The quote it bills lists it, and says what is left to bill.
+    const quotePage = await json(`/api/workspace/quotes/${created.quote.id}`);
+    expect(quotePage.counts.invoices).toBe(1);
+    expect(quotePage.summary.lines.find((entry: any) => entry.key === "toBill").value).toBe(0);
+
+    // Somebody in another organization gets neither the record nor a count of anything behind it.
+    expect((await api(`/api/workspace/invoices/${invoice.id}`, { cookie: bobCookie })).status).toBe(404);
+  });
+
+  signedIn("a draft previews without being stored; a broken one is refused with where it broke", async () => {
+    const workspace = {
+      relatedLists: [{ key: "quotes", collection: "quotes", field: "header.customer.accountId" }],
+      summary: {
+        items: [
+          { kind: "rollup", key: "n", label: "Quotes", list: "quotes", op: "count" },
+          { kind: "formula", key: "twice", label: "Twice", expression: "n * 2" },
+        ],
+      },
+    };
+    const preview = await (await send("POST", `/api/workspace/accounts/${accountId}/preview`, { workspace })).json();
+    const n = preview.summary.lines[0].value;
+    expect(n).toBeGreaterThan(0);
+    expect(preview.summary.lines[1].value).toBe(n * 2);
+
+    const broken = await send("POST", `/api/workspace/accounts/${accountId}/preview`, {
+      workspace: { ...workspace, summary: { items: [{ kind: "formula", key: "x", expression: "later + 1" }] } },
+    });
+    expect(broken.status).toBe(400);
+    expect((await broken.json()).error).toContain("later");
+
+    expect((await json(`/api/workspace/accounts/${accountId}`)).workspaceSource).not.toBe("stored");
+  });
+
+  signedIn("both layouts are stored together, read back, and drawn", async () => {
+    const before = await json("/api/record-forms/accounts");
+    expect(before.fields.map((field: any) => field.name)).toContain("currency");
+
+    const saved = await send("PUT", "/api/record-forms/accounts", {
+      title: "Customer",
+      description: "",
+      layout: { sections: [{ title: "Basics", fields: ["name", "currency"] }], rest: "hidden" },
+      workspace: {
+        relatedLists: [{ key: "files", collection: "sys_attachment", field: "recordId", match: [{ field: "target", value: "accounts" }], allowCreate: true }],
+        summary: { items: [{ kind: "field", key: "cur", label: "Currency", field: "currency", format: "text" }] },
+      },
+    });
+    expect(saved.status).toBe(200);
+    const config = await saved.json();
+    expect(config.configId).toBeTruthy();
+    expect(config.workspace.relatedLists[0].key).toBe("files");
+
+    const page = await json(`/api/workspace/accounts/${accountId}`);
+    expect(page.workspaceSource).toBe("stored");
+    expect(page.summary.lines).toMatchObject([{ key: "cur", value: "USD" }]);
+    expect(page.form.layout.sections[0].fields.map((field: any) => field.name)).toEqual(["name", "currency"]);
+
+    const refused = await send("PUT", "/api/record-forms/accounts", {
+      layout: { sections: [] },
+      workspace: { summary: { items: [{ kind: "rollup", key: "x", list: "missing", op: "count" }] } },
+    });
+    expect(refused.status).toBe(400);
+  });
+
+  signedIn("New in a related list creates through the form, pointing back at the record", async () => {
+    const response = await send("POST", "/api/table/accounts", { values: { name: "Made in a tab", currency: "EUR" }, link: {} });
+    expect(response.status).toBe(201);
+    const created = await response.json();
+    expect(created).toMatchObject({ name: "Made in a tab", currency: "EUR" });
+    // Stamped by the hooks, not the request.
+    expect(created.org).toBeTruthy();
+
+    // Only what the form offers is written; the link may not reach for what PocketBase stamps.
+    expect((await send("POST", "/api/table/accounts", { values: { name: "x", currency: "USD", details: {} } })).status).toBe(400);
+    expect((await send("POST", "/api/table/accounts", { values: { name: "x", currency: "USD" }, link: { owner: "someone" } })).status).toBe(400);
+
+    // The ledger, and anything else the server totals, is never made through a form.
+    expect((await send("POST", "/api/table/payments", { values: {}, link: { invoice: "x" } })).status).toBe(409);
+    expect((await send("POST", "/api/table/quotes", { values: {} })).status).toBe(409);
+
+    await api(`/api/accounts/${created.id}`, { method: "DELETE" });
   });
 });
 
