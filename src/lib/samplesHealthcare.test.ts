@@ -8,9 +8,12 @@ import { evaluateApprovals } from "./approvals";
 import { CATALOG_FILE_KIND, parseCatalogFile } from "./catalogFile";
 import { priceQuote, type PriceableLine } from "./pricing";
 import type { PriceBook, PricingRule, Product } from "./types";
-import { readAccount, readApprovalRule, readPriceBook, readPricingRule, readProduct } from "./validate";
+import { readAccount, readApprovalRule, readLead, readOpportunity, readPriceBook, readPricingRule, readProduct } from "./validate";
 import {
   HEALTHCARE_ACCOUNTS,
+  HEALTHCARE_INVOICES,
+  HEALTHCARE_LEADS,
+  HEALTHCARE_OPPORTUNITIES,
   HEALTHCARE_PRICE_BOOKS,
   HEALTHCARE_PRICING_RULES,
   HEALTHCARE_PRODUCTS,
@@ -68,6 +71,9 @@ const LAKESHORE = "Lakeshore - Q4 2026 Consolidation";
 const PRAIRIE = "Prairie View - eClinicalWorks archive";
 const BLUFF = "Bluff County - MEDITECH archive";
 const CEDAR = "Cedar Valley - Managed Care Oversight";
+const HARBORVIEW = "Harborview - Epic post-merger archive";
+const SUMMIT = "Summit Ridge - athenahealth and Greenway archive";
+const PRAIRIE_WARM = "Prairie View - Warm storage expansion";
 
 describe("the catalogue", () => {
   test("every row of the workbook's Products sheet is here", () => {
@@ -142,6 +148,8 @@ describe("the quotes", () => {
     expect(lineOf(LAKESHORE, "HST-HOT").listUnitPrice).toBe(325);
     expect(lineOf(PRAIRIE, "SUP-STD").unitPrice).toBe(0.16);
     expect(lineOf(LAKESHORE, "SVC-EXT-STD").listUnitPrice).toBe(19_500);
+    expect(lineOf(HARBORVIEW, "SUP-PRM").unitPrice).toBe(0.2);
+    expect(lineOf(HARBORVIEW, "SVC-MIG").unitPrice).toBe(31_500);
   });
 
   test("the automatic discounts land", () => {
@@ -151,6 +159,10 @@ describe("the quotes", () => {
     expect(lineOf(LAKESHORE, "SVC-EXT-STD").unitPrice).toBe(17_160);
     // The $15,000 credit, exactly.
     expect(lineOf(RIVERBEND, "ARC-TBR-CPSI").discountAmount).toBe(15_000);
+    // 25+ TB of warm storage.
+    expect(lineOf(PRAIRIE_WARM, "HST-WRM").unitPrice).toBe(99);
+    // The 11-50 TB rate and the 5-year term, on a second customer.
+    expect(lineOf(HARBORVIEW, "HST-HOT").unitPrice).toBe(253);
   });
 
   test("a recurring line can run shorter than the quote", () => {
@@ -178,9 +190,73 @@ describe("the quotes", () => {
     expect(required(RIVERBEND)).toEqual([]);
     expect(required(PRAIRIE)).toEqual([]);
     expect(required(CEDAR)).toEqual([]);
+    expect(required(SUMMIT)).toEqual([]);
+    // VP only: the contract rates and the term discount add up past 5%, walked to sent.
+    expect(required(HARBORVIEW)).toEqual([1]);
+    // A draft, but the automatic warm-storage volume discount is a discount too:
+    // submitting it will ask the VP.
+    expect(required(PRAIRIE_WARM)).toEqual([1]);
     // VP only, and left waiting.
     expect(new Set(required(BLUFF))).toEqual(new Set([1]));
     // VP then CRO, walked to approved.
     expect(new Set(required(LAKESHORE))).toEqual(new Set([1, 2]));
+  });
+});
+
+describe("the pipeline and the receivables", () => {
+  const accountNames = new Set(HEALTHCARE_ACCOUNTS.map(account => account.name));
+  const opportunityNames = new Set(HEALTHCARE_OPPORTUNITIES.map(one => one.name));
+
+  test("every quote's customer is a sample customer, and its deal is one of theirs", () => {
+    for (const quote of HEALTHCARE_QUOTES) {
+      expect(accountNames.has(quote.accountName)).toBe(true);
+      if (!quote.opportunityName) continue;
+      const deal = HEALTHCARE_OPPORTUNITIES.find(one => one.name === quote.opportunityName);
+      expect(`${quote.name} → ${deal?.accountName ?? ""}`).toBe(`${quote.name} → ${quote.accountName}`);
+    }
+  });
+
+  test("names are unique, so a second install can find what the first made", () => {
+    expect(opportunityNames.size).toBe(HEALTHCARE_OPPORTUNITIES.length);
+    expect(new Set(HEALTHCARE_QUOTES.map(quote => quote.name)).size).toBe(HEALTHCARE_QUOTES.length);
+    const converted = HEALTHCARE_LEADS.flatMap(lead => (lead.convert ? [lead.convert.opportunityName] : []));
+    for (const name of converted) expect(opportunityNames.has(name)).toBe(false);
+  });
+
+  test("every opportunity and lead passes the validators the API uses", () => {
+    for (const deal of HEALTHCARE_OPPORTUNITIES) {
+      expect(accountNames.has(deal.accountName)).toBe(true);
+      const parsed = readOpportunity({ ...deal, accountId: "acc", amount: deal.amount ?? 0, closeDate: "2026-01-01" });
+      expect(parsed.ok).toBe(true);
+    }
+    for (const lead of HEALTHCARE_LEADS) {
+      const { convert, ...fields } = lead;
+      expect(readLead(fields).ok).toBe(true);
+      if (convert) expect(accountNames.has(convert.accountName)).toBe(true);
+    }
+  });
+
+  test("the pipeline has a deal at every stage, and a loss to give it a win rate", () => {
+    const stages = new Set(HEALTHCARE_OPPORTUNITIES.map(one => one.stage));
+    for (const stage of ["prospecting", "qualification", "proposal", "negotiation", "closed_won", "closed_lost"] as const) {
+      expect(stages.has(stage)).toBe(true);
+    }
+    const lost = HEALTHCARE_OPPORTUNITIES.find(one => one.stage === "closed_lost")!;
+    expect(lost.lossReason).toBeTruthy();
+    expect(lost.amount).toBeGreaterThan(0);
+  });
+
+  test("an invoice raised from a quote bills one that will have been sent or accepted", () => {
+    for (const invoice of HEALTHCARE_INVOICES) {
+      expect(accountNames.has(invoice.accountName)).toBe(true);
+      expect((invoice.credit?.fraction ?? 0) + invoice.paidFraction).toBeLessThanOrEqual(1);
+      if (!invoice.quoteName) {
+        expect(invoice.lines.length).toBeGreaterThan(0);
+        continue;
+      }
+      const quote = HEALTHCARE_QUOTES.find(one => one.name === invoice.quoteName)!;
+      expect(quote.accountName).toBe(invoice.accountName);
+      expect(["sent", "accepted"]).toContain(quote.stage ?? "draft");
+    }
   });
 });

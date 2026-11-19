@@ -141,6 +141,8 @@ export const SERVER_OWNED: Record<string, string> = {
   invoice_lines: "An invoice line is totalled with its invoice — edit it in Receivables.",
   payments: "A payment is part of an invoice's balance — record or remove it in Receivables.",
   credits: "A credit is part of an invoice's balance — record or remove it in Receivables.",
+  leads: "A lead is converted by the server, which locks it afterwards — edit it on the Leads screen.",
+  opportunities: "An opportunity's close stamp and probability are kept by the server — edit it on the Opportunities screen.",
   sys_attachment: "An attachment is a file on a record — add or remove it from that record's Attachments panel.",
 };
 

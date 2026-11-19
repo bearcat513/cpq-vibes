@@ -35,6 +35,16 @@ import { MAX_PDF_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_BODY_LENGTH, MAX_TEMPLATE_NA
 import { DEFAULT_MARGINS, PAGE_SIZES } from "./pdf";
 import { FONT_FAMILIES, type FontFamily } from "./pdfFonts";
 import {
+  EDITABLE_LEAD_STATUSES,
+  LEAD_SOURCES,
+  OPPORTUNITY_STAGES,
+  probabilityFor,
+  type Lead,
+  type LeadSource,
+  type Opportunity,
+  type OpportunityStage,
+} from "./pipeline";
+import {
   DEFAULT_PAGE,
   defaultStyle,
   defaultLineColumns,
@@ -724,6 +734,155 @@ export function readAccount(raw: unknown): Validated<AccountInput> {
   });
 }
 
+/* -------------------------------- pipeline ------------------------------- */
+
+/** What an edit may set on a lead. The conversion fields are the server's. */
+export type LeadInput = Omit<
+  Lead,
+  | "id"
+  | "ownerId"
+  | "orgId"
+  | "createdAt"
+  | "updatedAt"
+  | "convertedAt"
+  | "convertedAccountId"
+  | "convertedContactId"
+  | "convertedOpportunityId"
+>;
+
+/**
+ * A lead needs somebody to call: a person or a company. `converted` is
+ * refused rather than clamped — it is reached by converting, which creates
+ * the records it points at, and a lead marked converted by hand points at
+ * nothing.
+ */
+export function readLead(raw: unknown): Validated<LeadInput> {
+  const input = asRecord(raw);
+
+  const name = text(input.name, 200);
+  const company = text(input.company, 200);
+  if (!name && !company) return invalid("A lead needs a name or a company.");
+
+  if (input.status === "converted") {
+    return invalid("A lead is converted by POST /api/leads/:id/convert, which creates the customer it becomes.");
+  }
+  if (input.currency !== undefined && !isCurrency(input.currency)) {
+    return invalid(`"${String(input.currency)}" is not a currency (${CURRENCIES.join(", ")}).`);
+  }
+
+  const address = email(input.email);
+  if (address && !address.includes("@")) return invalid(`"${address}" is not an email address.`);
+
+  return valid({
+    name,
+    company,
+    title: text(input.title, 120),
+    email: address,
+    phone: text(input.phone, 60),
+    website: text(input.website, 300),
+    industry: text(input.industry, 120),
+    source: oneOf<LeadSource>(input.source, LEAD_SOURCES, "other"),
+    status: oneOf(input.status, EDITABLE_LEAD_STATUSES, "new"),
+    estimatedAmount: atLeastZero(number(input.estimatedAmount, 0)),
+    currency: asCurrency(input.currency),
+    notes: text(input.notes, 5_000),
+  });
+}
+
+/** What a caller sets on an opportunity. `accountName`, `closedAt` and the lead link are the server's. */
+export type OpportunityInput = Omit<
+  Opportunity,
+  "id" | "accountName" | "leadId" | "closedAt" | "ownerId" | "orgId" | "createdAt" | "updatedAt"
+>;
+
+/**
+ * An opportunity is always with a customer — that is what a quote written
+ * for it is addressed to. A closed stage fixes the probability (won 100, lost
+ * 0), and a loss reason is kept only on a lost deal.
+ */
+export function readOpportunity(raw: unknown): Validated<OpportunityInput> {
+  const input = asRecord(raw);
+
+  const name = text(input.name, 200);
+  if (!name) return invalid("An opportunity needs a name.");
+  const accountId = text(input.accountId, 40);
+  if (!accountId) return invalid("An opportunity needs a customer (`accountId`).");
+
+  if (input.stage !== undefined && !OPPORTUNITY_STAGES.includes(input.stage as OpportunityStage)) {
+    return invalid(`"stage" must be one of ${OPPORTUNITY_STAGES.join(", ")}.`);
+  }
+  if (input.currency !== undefined && !isCurrency(input.currency)) {
+    return invalid(`"${String(input.currency)}" is not a currency (${CURRENCIES.join(", ")}).`);
+  }
+
+  const stage = oneOf<OpportunityStage>(input.stage, OPPORTUNITY_STAGES, "prospecting");
+  const requested = input.probability === undefined || input.probability === null || input.probability === ""
+    ? null
+    : number(input.probability, Number.NaN);
+
+  return valid({
+    name,
+    accountId,
+    contactId: text(input.contactId, 60),
+    stage,
+    amount: atLeastZero(number(input.amount, 0)),
+    currency: asCurrency(input.currency),
+    probability: probabilityFor(stage, requested),
+    closeDate: isoDate(input.closeDate),
+    source: input.source ? oneOf<LeadSource>(input.source, LEAD_SOURCES, "other") : "",
+    nextStep: text(input.nextStep, 500),
+    lossReason: stage === "closed_lost" ? text(input.lossReason, 500) : "",
+    notes: text(input.notes, 5_000),
+  });
+}
+
+/**
+ * What converting a lead should make.
+ *
+ * `accountId` names a customer that already exists; without it, one is
+ * created from the lead. The person is added to that customer as a contact
+ * (always, for a new one; `addContact: false` skips it for an existing one),
+ * and an opportunity is opened unless `createOpportunity` is false.
+ */
+export type LeadConversionInput = {
+  accountId: string | null;
+  addContact: boolean;
+  createOpportunity: boolean;
+  opportunity: {
+    /** "" takes `defaultOpportunityName`. */
+    name: string;
+    /** null takes the lead's estimate. */
+    amount: number | null;
+    closeDate: string;
+    stage: OpportunityStage;
+  };
+};
+
+export function readLeadConversion(raw: unknown): Validated<LeadConversionInput> {
+  const input = asRecord(raw);
+  const opportunity = asRecord(input.opportunity);
+
+  if (opportunity.stage !== undefined && !OPPORTUNITY_STAGES.includes(opportunity.stage as OpportunityStage)) {
+    return invalid(`"opportunity.stage" must be one of ${OPPORTUNITY_STAGES.join(", ")}.`);
+  }
+  const stage = oneOf<OpportunityStage>(opportunity.stage, OPPORTUNITY_STAGES, "qualification");
+
+  return valid({
+    accountId: text(input.accountId, 40) || null,
+    addContact: flag(input.addContact, true),
+    createOpportunity: flag(input.createOpportunity, true),
+    opportunity: {
+      name: text(opportunity.name, 200),
+      amount:
+        opportunity.amount === undefined || opportunity.amount === null || opportunity.amount === ""
+          ? null
+          : atLeastZero(number(opportunity.amount, 0)),
+      closeDate: isoDate(opportunity.closeDate),
+      stage,
+    },
+  });
+}
+
 /* --------------------------- proposal templates -------------------------- */
 
 export type ProposalTemplateInput = Omit<ProposalTemplate, "id" | "ownerId" | "orgId" | "sharedWith" | "createdAt" | "updatedAt">;
@@ -1158,6 +1317,13 @@ export function readQuoteLines(raw: unknown): Validated<QuoteLineInput[]> {
 export type QuoteHeaderInput = {
   name: string;
   accountId: string | null;
+  /**
+   * The opportunity this quote is written for, in the quote's `opportunity`
+   * relation. Like an invoice's `quoteId`: `undefined` — the key left out —
+   * keeps the link as it is, so the editor never unlinks a quote by saving
+   * it; `null` (or "") removes it.
+   */
+  opportunityId?: string | null;
   priceBookId: string;
   currency: ReturnType<typeof asCurrency>;
   termMonths: number;
@@ -1182,6 +1348,7 @@ export function readQuoteHeader(raw: unknown): Validated<QuoteHeaderInput> {
   return valid({
     name,
     accountId: text(input.accountId, 40) || null,
+    ...(input.opportunityId === undefined ? {} : { opportunityId: text(input.opportunityId, 40) || null }),
     priceBookId: text(input.priceBookId, 40),
     currency: asCurrency(input.currency),
     // 0 is legal and means "one-time charges only".

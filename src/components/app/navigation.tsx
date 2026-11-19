@@ -17,6 +17,8 @@ import {
   Settings,
   ShieldCheck,
   Table2,
+  Target,
+  UserPlus,
   type LucideIcon,
 } from "lucide-react";
 import type { Binding } from "@/lib/commands";
@@ -25,6 +27,8 @@ import type { Permission } from "@/lib/organization";
 
 export type View =
   | "home"
+  | "leads"
+  | "opportunities"
   | "quotes"
   | "approvals"
   | "receivables"
@@ -45,6 +49,8 @@ export type ViewInfo = {
 
 export const VIEWS: Record<View, ViewInfo> = {
   home: { label: "Home", Icon: Home, go: "h", description: "What needs you, and where to start" },
+  leads: { label: "Leads", Icon: UserPlus, go: "l", description: "People who might buy, before they are customers" },
+  opportunities: { label: "Opportunities", Icon: Target, go: "o", description: "Deals in the pipeline, and the quotes written for them" },
   quotes: { label: "Quotes", Icon: ScrollText, go: "q", description: "Every quote in the organization" },
   approvals: { label: "Approvals", Icon: ShieldCheck, go: "a", description: "Quotes waiting for your decision" },
   receivables: { label: "Receivables", Icon: Receipt, go: "i", description: "Invoices, payments and aging" },
@@ -56,7 +62,7 @@ export const VIEWS: Record<View, ViewInfo> = {
 };
 
 /** The sidebar, top to bottom. Settings sits at its foot, beside your name. */
-export const NAV_ORDER: View[] = ["home", "quotes", "approvals", "receivables", "catalog", "rules", "customers", "templates"];
+export const NAV_ORDER: View[] = ["home", "leads", "opportunities", "quotes", "approvals", "receivables", "catalog", "rules", "customers", "templates"];
 
 /**
  * The phone's tab bar: the four screens a day on the road is spent in. The
@@ -78,7 +84,7 @@ export const DATA_TABLE = {
   description: "Any collection's records, with a filter builder",
 } as const;
 
-export type CreateKind = "quote" | "customer" | "invoice" | "product";
+export type CreateKind = "quote" | "customer" | "lead" | "opportunity" | "invoice" | "product";
 
 export type CreateInfo = {
   label: string;
@@ -94,11 +100,13 @@ export type CreateInfo = {
 export const CREATES: Record<CreateKind, CreateInfo> = {
   quote: { label: "New quote", Icon: ScrollText, key: "q", permission: "quotes.create", view: "quotes" },
   customer: { label: "New customer", Icon: Building2, key: "c", permission: "accounts.write", view: "customers" },
+  lead: { label: "New lead", Icon: UserPlus, key: "l", permission: "leads.write", view: "leads" },
+  opportunity: { label: "New opportunity", Icon: Target, key: "o", permission: "opportunities.create", view: "opportunities" },
   invoice: { label: "New invoice", Icon: Receipt, key: "i", permission: "invoices.write", view: "receivables" },
   product: { label: "New product", Icon: Package, key: "p", permission: "catalogue.write", view: "catalog" },
 };
 
-export const CREATE_ORDER: CreateKind[] = ["quote", "customer", "invoice", "product"];
+export const CREATE_ORDER: CreateKind[] = ["quote", "customer", "lead", "opportunity", "invoice", "product"];
 
 /* ------------------------------- shortcuts ------------------------------- */
 

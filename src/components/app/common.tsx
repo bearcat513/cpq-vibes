@@ -19,6 +19,12 @@ import {
   type InvoiceStatus,
   type QuoteStatus,
 } from "@/lib/types";
+import {
+  LEAD_STATUS_LABELS,
+  OPPORTUNITY_STAGE_LABELS,
+  type LeadStatus,
+  type OpportunityStage,
+} from "@/lib/pipeline";
 import { cn } from "@/lib/utils";
 
 /* -------------------------------- status --------------------------------- */
@@ -70,6 +76,41 @@ const ACCOUNT_STATUS_TONE: Record<AccountStatus, "neutral" | "pending" | "succes
 
 export function AccountStatusBadge({ status }: { status: AccountStatus }) {
   return <Badge tone={ACCOUNT_STATUS_TONE[status] ?? "neutral"}>{ACCOUNT_STATUS_LABELS[status] ?? status}</Badge>;
+}
+
+/**
+ * Where a lead stands. Info blue for one nobody has picked up, amber for one
+ * being worked, green once it is worth converting; a converted one is an
+ * outline — history, not a task.
+ */
+const LEAD_STATUS_TONE: Record<LeadStatus, "neutral" | "info" | "pending" | "success" | "outline"> = {
+  new: "info",
+  working: "pending",
+  qualified: "success",
+  unqualified: "neutral",
+  converted: "outline",
+};
+
+export function LeadStatusBadge({ status }: { status: LeadStatus }) {
+  return <Badge tone={LEAD_STATUS_TONE[status] ?? "neutral"}>{LEAD_STATUS_LABELS[status] ?? status}</Badge>;
+}
+
+/**
+ * An opportunity's stage, toned like a quote: amber for the stages someone is
+ * waiting on an answer in, green for won, red for lost — a lost deal is the
+ * same kind of news as a declined quote.
+ */
+const STAGE_TONE: Record<OpportunityStage, "neutral" | "info" | "pending" | "success" | "danger"> = {
+  prospecting: "neutral",
+  qualification: "info",
+  proposal: "pending",
+  negotiation: "pending",
+  closed_won: "success",
+  closed_lost: "danger",
+};
+
+export function StageBadge({ stage }: { stage: OpportunityStage }) {
+  return <Badge tone={STAGE_TONE[stage] ?? "neutral"}>{OPPORTUNITY_STAGE_LABELS[stage] ?? stage}</Badge>;
 }
 
 /**
@@ -251,4 +292,20 @@ export function Notice({ kind, lines, className }: { kind: NoticeKind; lines: st
 /** A number that should read as money even before it has been formatted. */
 export function Money({ value, format, muted }: { value: number; format: Formatter; muted?: boolean }) {
   return <span className={cn("tabular-nums", muted && "text-muted-foreground")}>{format.money(value)}</span>;
+}
+
+/** One of a row of filters over a list, with how many it would show. */
+export function FilterChip({ label, count, on, onClick }: { label: string; count: number; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+        on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:bg-accent",
+      )}
+    >
+      {label} <span className="tabular-nums opacity-70">{count}</span>
+    </button>
+  );
 }

@@ -26,8 +26,8 @@ export const ROLE_LABELS: Record<Role, string> = {
 };
 
 export const ROLE_DESCRIPTIONS: Record<Role, string> = {
-  admin: "Everything: members, the catalogue, pricing and approval policy, templates, quotes and receivables.",
-  sales: "Customers, and their own quotes. Reads everything else.",
+  admin: "Everything: members, the catalogue, pricing and approval policy, templates, the pipeline, quotes and receivables.",
+  sales: "Customers, leads, and their own opportunities and quotes. Reads everything else.",
   finance: "Customers, invoices, payments and credits. Reads everything else.",
   viewer: "Reads everything and changes nothing. Can still approve a quote they are named on.",
 };
@@ -43,6 +43,11 @@ export type Permission =
   | "quotes.create"
   /** Any quote in the organization, not only one's own. */
   | "quotes.manageAll"
+  /** Any lead in the organization: leads are a pool that gets worked, not owned. */
+  | "leads.write"
+  | "opportunities.create"
+  /** Any opportunity in the organization, not only one's own. */
+  | "opportunities.manageAll"
   | "invoices.write"
   | "org.manage"
   /** Installing a worked example writes every collection at once. */
@@ -58,6 +63,9 @@ export const PERMISSIONS: Record<Permission, readonly Role[]> = {
   "accounts.delete": ["admin", "sales"],
   "quotes.create": ["admin", "sales"],
   "quotes.manageAll": ["admin"],
+  "leads.write": ["admin", "sales"],
+  "opportunities.create": ["admin", "sales"],
+  "opportunities.manageAll": ["admin"],
   "invoices.write": ["admin", "finance"],
   "org.manage": ["admin"],
   "samples.install": ["admin"],
@@ -83,6 +91,20 @@ export function canEditQuote(
   if (!role || !quote.orgId || quote.orgId !== me.orgId) return false;
   if (can(role, "quotes.manageAll")) return true;
   return can(role, "quotes.create") && quote.ownerId === me.id;
+}
+
+/**
+ * Whether `role` may edit or delete one opportunity — the same shape as a
+ * quote: an admin any in the organization, a sales member their own.
+ */
+export function canEditOpportunity(
+  role: Role | "" | null | undefined,
+  opportunity: { ownerId?: string; orgId?: string },
+  me: { id: string; orgId?: string },
+): boolean {
+  if (!role || !opportunity.orgId || opportunity.orgId !== me.orgId) return false;
+  if (can(role, "opportunities.manageAll")) return true;
+  return can(role, "opportunities.create") && opportunity.ownerId === me.id;
 }
 
 /* ------------------------------- the record -------------------------------- */

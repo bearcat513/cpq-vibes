@@ -71,6 +71,10 @@ Everything else — pricing, documents, export — is plain TypeScript in
 │   │   ├── apiKeys.ts           # list, revoke, and a proxy to the hook that issues
 │   │   ├── share.ts             # proxies to the privileged sharing routes
 │   │   ├── table.ts             # any collection, listed through the caller's credential
+│   │   ├── recordForms.ts       # the record form: one layout, the server's check of a write
+│   │   ├── workspace.ts         # related lists and summaries, read as the caller
+│   │   ├── attachments.ts       # files on records: upload, and a download route per file
+│   │   ├── <feature>.ts         # orchestration a route needs beyond one storage call
 │   │   ├── openapi.ts           # the OpenAPI document and the endpoint index
 │   │   └── *.test.ts            # server tests, incl. the end-to-end API test
 │   │
@@ -82,13 +86,15 @@ Everything else — pricing, documents, export — is plain TypeScript in
 │   │   ├── commands.ts          # the keyboard-shortcut matcher
 │   │   ├── openapiDoc.ts        # parsing the OpenAPI document for the docs page
 │   │   ├── preferences.ts       # normalizers: one shape, whoever wrote it
+│   │   ├── validate.ts          # every untrusted input, read into a typed value or a sentence
+│   │   ├── recordForm.ts  workspace.ts  # layouts as data, checked; summaries computed purely
 │   │   └── *.test.ts
 │   │
 │   └── components/
 │       ├── ui/                  # button, input, sheet, dialog, combobox… copied in, owned by us
 │       ├── app/                 # the application's own screens, panels and frame
 │       ├── docs/                # the API reference page's components
-│       ├── table/               # the record browser's components
+│       ├── table/               # the record browser: table, filter, form, workspace, editor
 │       └── *.test.tsx           # component tests, rendered to static markup
 │
 └── docker/
@@ -386,6 +392,35 @@ A rule can only read `@request.auth.<field>`, so the user record carries a **den
 - **The last admin cannot be removed or demoted**, and a new account joins every organization that
   invited its address, or gets one of its own as admin.
 
+### A parent and its children, in one batch
+
+Keep a column for what the database queries on and one JSON field for a nested object the app reads
+whole — until the nested thing is something people look for on its own (a line, a contact, an
+address). Then it becomes a collection with a required, cascading relation to its parent, and the
+parent and its children are written in **one PocketBase batch** (`pb.createBatch()`), so a record is
+never stored with half its children. Enable batches in a migration (`settings.batch.enabled`, and a
+`maxRequests` sized to the largest graph the validator allows), match children on a stable id of
+their own so an unchanged one is not rewritten, and cap their number in `lib/` so the batch limit and
+the validator cannot disagree. A child's access rules join through the relation
+(`quote.org = @request.auth.org`) rather than repeating the parent's.
+
+The same batch makes a multi-record action atomic: a lead's conversion writes a customer, a
+contact, an opportunity and the lead's own `converted` stamp together, or nothing.
+
+**A state the rules must hold reads the stored record.** An update rule sees the stored values as
+plain fields and the request's as `@request.body.*`, so "a converted lead is fixed" is
+`status != "converted"` in the update rule — no request can talk its way past it.
+
+### One collection for a polymorphic link
+
+When several kinds of record grow the same thing — files, comments, tags — give it **one
+collection keyed by `target` + `recordId`** rather than a field on each. One upload route, one
+download route, one panel, one set of rules. The rules repeat each target's audience by joining
+through `@collection.<name>:alias`, so you see an attachment exactly when you can see its record.
+A file field is `protected`, and bytes are served only through an app route that mints a file token
+as the caller and serves anything a browser could execute as a download — a file shown inline from
+your origin runs with your origin's cookies.
+
 ### Numbers from counters
 
 A human-facing sequence number (a quote's, an invoice's) comes from a `counters` collection with
@@ -472,7 +507,7 @@ const elem = document.getElementById("root")!;
 | `components/ui/` | `button`, `input`, `select`, `sheet`, `dialog`, `combobox`, `tabs`, `kbd`, `portal` — generic, copied in, styled with `cva` + `cn()` | Would it be the same in an unrelated product? |
 | `components/app/` | `Chrome`, `Dashboard`, `Launcher`, `SettingsPanel`, `ApiKeys`, `ShareDialog`, the screens — this product | Does it name a domain concept? |
 | `components/docs/` | `DocsPage`, `OperationCard`, `SchemaView`, `MethodBadge`, `CodeBlock` | Does it render the API document? |
-| `components/table/` | The record browser: the table, the filter builder, the record form | Does it render stored records? |
+| `components/table/` | The record browser: the table, the filter builder, the record form, the record workspace (related lists, summary) and its layout editor | Does it render stored records? |
 
 ### One table for the frame
 
@@ -612,10 +647,14 @@ The order that avoids rework:
 7. **The document** → `src/server/openapi.ts`: paths, schemas, limits *imported* from step 1.
    `/api` and `/docs` update themselves.
 8. **The client** → `src/lib/api.ts`, then the panel in `src/components/app/` — in a `Sheet`, and
-   a screen added to `navigation.tsx` if it is one.
-9. **Tests** → the unit test from step 1, plus a leg in the end-to-end test proving the access rules
-   for each role.
-10. **`.env.example`** if it added a variable, **README** if it added a user-visible capability.
+   a screen added to `navigation.tsx` (its `g` key, and a `CREATES` entry with its permission if it
+   can be started) if it is one.
+9. **The record browser** → if the server owns some of its fields, add the collection to
+   `SERVER_OWNED` so `/table` cannot write past the server; if it has records pointing at it, give
+   it a built-in workspace layout (related lists, summary).
+10. **Tests** → the unit test from step 1, plus a leg in the end-to-end test proving the access rules
+   for each role — including a write straight to the database, past the app server.
+11. **`.env.example`** if it added a variable, **README** if it added a user-visible capability.
 
 ## 14. Conventions at a glance
 
@@ -644,6 +683,9 @@ The order that avoids rework:
 - Limits are defined once in `lib/` and imported by the validator, the document, and the UI.
 - `lib/` imports nothing environment-specific. If it needs `process.env`, it belongs in `server/`.
 - A schema change is a migration file, not a dashboard edit.
+- A record and its children are written in one batch; nothing is stored half-written.
+- Never add two currencies together. A total over records in several currencies is one row per
+  currency.
 - `/api/*` catches unknown endpoints before `/*` serves the SPA.
 - Comments explain **why**, especially where the obvious choice is the wrong one.
 

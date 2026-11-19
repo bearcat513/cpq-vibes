@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AccountsView } from "@/components/app/AccountsView";
+import { LeadsView } from "@/components/app/LeadsView";
+import { OpportunitiesView } from "@/components/app/OpportunitiesView";
 import { ApprovalsQueue } from "@/components/app/ApprovalsQueue";
 import { AuthPanel } from "@/components/app/AuthPanel";
 import { CatalogView } from "@/components/app/CatalogView";
@@ -652,6 +654,29 @@ export function App() {
       onCreate={create}
       onOpenSettings={openSettings}
       onError={fail}
+    />
+  ) : view === "leads" ? (
+    <LeadsView
+      accounts={accounts}
+      preferences={preferences}
+      initialCreate={intent.create}
+      initialOpenId={intent.openId}
+      onChanged={refresh}
+      onError={fail}
+      onOpenCustomer={id => go("customers", { openId: id })}
+      onOpenOpportunity={id => go("opportunities", { openId: id })}
+      confirmed={confirmed}
+    />
+  ) : view === "opportunities" ? (
+    <OpportunitiesView
+      accounts={accounts}
+      preferences={preferences}
+      initialCreate={intent.create}
+      initialOpenId={intent.openId}
+      onError={fail}
+      onOpenQuote={id => void openQuoteById(id)}
+      onOpenCustomer={id => go("customers", { openId: id })}
+      confirmed={confirmed}
     />
   ) : view === "quotes" ? (
     <QuoteList

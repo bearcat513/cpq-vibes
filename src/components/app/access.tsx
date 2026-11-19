@@ -9,7 +9,7 @@
  */
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type { SessionUser } from "@/lib/api";
-import { can, canEditQuote, type Permission, type Role } from "@/lib/organization";
+import { can, canEditOpportunity, canEditQuote, type Permission, type Role } from "@/lib/organization";
 
 export type Access = {
   userId: string;
@@ -18,6 +18,8 @@ export type Access = {
   can: (permission: Permission) => boolean;
   /** Whether this account may edit, submit, revise or delete one quote. */
   canEditQuote: (quote: { ownerId?: string; orgId?: string }) => boolean;
+  /** The same for an opportunity: its owner in sales, or any admin. */
+  canEditOpportunity: (opportunity: { ownerId?: string; orgId?: string }) => boolean;
   /** The record is the organization's — as opposed to shared in from outside it. */
   isOurs: (record: { orgId?: string }) => boolean;
 };
@@ -28,6 +30,7 @@ const NOBODY: Access = {
   role: "",
   can: () => false,
   canEditQuote: () => false,
+  canEditOpportunity: () => false,
   isOurs: () => false,
 };
 
@@ -42,6 +45,7 @@ export function AccessProvider({ me, children }: { me: SessionUser; children: Re
       role: me.role,
       can: permission => can(me.role, permission),
       canEditQuote: quote => canEditQuote(me.role, quote, { id: me.id, orgId }),
+      canEditOpportunity: opportunity => canEditOpportunity(me.role, opportunity, { id: me.id, orgId }),
       isOurs: record => Boolean(orgId) && record.orgId === orgId,
     };
   }, [me.id, me.org?.id, me.role]);

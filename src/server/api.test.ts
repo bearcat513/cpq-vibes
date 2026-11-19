@@ -2458,20 +2458,51 @@ describe("the worked example", () => {
 
     const first = await post("/api/sample?set=healthcare", {}, { cookie: hana });
     expect(first.created.products).toBe(42);
-    expect(first.created.priceBooks).toBe(4);
-    expect(first.created.accounts).toBe(5);
-    expect(first.created.quotes).toBe(5);
-    expect(first.notes.filter((note: string) => note.includes("stopped short"))).toEqual([]);
+    expect(first.created.priceBooks).toBe(5);
+    expect(first.created.accounts).toBe(7);
+    expect(first.created.quotes).toBe(8);
+    expect(first.created.opportunities).toBe(9);
+    expect(first.created.leads).toBe(6);
+    expect(first.created.conversions).toBe(1);
+    expect(first.created.invoices).toBe(5);
+    expect(first.notes.filter((note: string) => note.includes("stopped short") || note.includes("not converted"))).toEqual([]);
 
     const quotes = await json("/api/quotes?limit=0", { cookie: hana });
-    const statuses = Object.fromEntries(quotes.map((quote: any) => [quote.name.split(" - ")[0], quote.status]));
+    const statuses = Object.fromEntries(quotes.map((quote: any) => [quote.name, quote.status]));
     expect(statuses).toEqual({
-      Riverbend: "accepted",
-      Lakeshore: "approved",
-      "Prairie View": "sent",
-      "Bluff County": "in_review",
-      "Cedar Valley": "draft",
+      "Riverbend - TruBridge sunset and A/R wind down": "accepted",
+      "Lakeshore - Q4 2026 Consolidation": "approved",
+      "Prairie View - eClinicalWorks archive": "sent",
+      "Bluff County - MEDITECH archive": "in_review",
+      "Cedar Valley - Managed Care Oversight": "draft",
+      "Harborview - Epic post-merger archive": "sent",
+      "Summit Ridge - athenahealth and Greenway archive": "accepted",
+      "Prairie View - Warm storage expansion": "draft",
     });
+    // Every quote is written for a deal.
+    expect(quotes.every((quote: any) => quote.opportunityId)).toBe(true);
+
+    // A deal with no amount of its own is worth its quote; the converted lead opened one more.
+    const deals = await json("/api/opportunities", { cookie: hana });
+    expect(deals).toHaveLength(10);
+    const won = deals.find((deal: any) => deal.name === "Summit Ridge - Ambulatory archive consolidation");
+    const summit = quotes.find((quote: any) => quote.name.startsWith("Summit Ridge"));
+    expect(won.amount).toBe(summit.totals.grandTotal);
+    expect(won.probability).toBe(100);
+    expect(deals.some((deal: any) => deal.name === "Lakeshore - Release of Information" && deal.leadId)).toBe(true);
+
+    const leads = await json("/api/leads", { cookie: hana });
+    expect(leads.filter((lead: any) => lead.status === "converted")).toHaveLength(1);
+
+    // The receivables book: one billed from Riverbend's accepted quote, and a credit in 90+.
+    const invoices = await json("/api/invoices", { cookie: hana });
+    expect(invoices).toHaveLength(5);
+    expect(invoices.every((one: any) => one.state === "issued")).toBe(true);
+    const riverbendQuote = quotes.find((quote: any) => quote.name.startsWith("Riverbend"));
+    expect(invoices.find((one: any) => one.quoteId === riverbendQuote.id)?.poNumber).toBe("RHS-PO-40117");
+    expect(invoices.some((one: any) => one.totals.creditedAmount > 0)).toBe(true);
+    const aged = await json("/api/receivables/aging?currency=USD", { cookie: hana });
+    expect(aged.buckets["90+"].count).toBe(1);
 
     // A customer with a contract book is priced from it without the quote naming it.
     const riverbend = quotes.find((quote: any) => quote.name.startsWith("Riverbend"));
@@ -2480,9 +2511,13 @@ describe("the worked example", () => {
 
     const second = await post("/api/sample?set=healthcare", {}, { cookie: hana });
     expect(second.created.quotes ?? 0).toBe(0);
-    expect(second.skipped.quotes).toBe(5);
+    expect(second.skipped.quotes).toBe(8);
     expect(second.skipped.products).toBe(42);
-  });
+    expect(second.created.opportunities ?? 0).toBe(0);
+    expect(second.created.leads ?? 0).toBe(0);
+    expect(second.created.invoices ?? 0).toBe(0);
+    expect(second.skipped.invoices).toBe(5);
+  }, 60_000);
 
   signedIn("an unknown set is refused", async () => {
     const ivo = await register(`ivo-${suffix}@example.com`);
@@ -2517,6 +2552,220 @@ describe("the worked example", () => {
     expect(again.created.invoices ?? 0).toBe(0);
     expect(again.skipped.invoices).toBe(3);
     expect(await json("/api/invoices", { cookie: erin })).toHaveLength(3);
+  });
+});
+
+/* ------------------------------- the pipeline ----------------------------- */
+
+describe("leads and opportunities", () => {
+  const LEAD = {
+    name: "Priya Raman",
+    company: `Northwind ${suffix}`,
+    title: "Head of Ops",
+    email: `priya-${suffix}@northwind.example.com`,
+    source: "referral",
+    status: "working",
+    estimatedAmount: 24000,
+    currency: "USD",
+  };
+
+  let opportunityId = "";
+  let convertedAccountId = "";
+
+  signedIn("a lead is created unconverted, whatever the body says", async () => {
+    const response = await api("/api/leads", { method: "POST", body: JSON.stringify({ ...LEAD, status: "converted" }) });
+    expect(response.status).toBe(400);
+
+    const lead = await post("/api/leads", LEAD);
+    expect(lead.id).toStartWith("led_");
+    expect(lead.status).toBe("working");
+    expect(lead.convertedAccountId).toBe("");
+
+    // Straight at PocketBase: the ownership hook clears what the body tried.
+    const raw = await fetch(`${pocketbase.url}/api/collections/leads/records`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: decodeURIComponent(cookie.split("=")[1] ?? "") },
+      body: JSON.stringify({ name: "Sneaky", status: "converted", convertedAccount: accountId }),
+    });
+    expect(raw.status).toBe(200);
+    const stored = await raw.json();
+    expect(stored.status).toBe("new");
+    expect(stored.convertedAccount).toBe("");
+  });
+
+  signedIn("converting makes a customer, its contact and a deal in one go", async () => {
+    const lead = await post("/api/leads", LEAD);
+    const response = await api(`/api/leads/${lead.id}/convert`, { method: "POST", body: JSON.stringify({ opportunity: { closeDate: "2027-01-31" } }) });
+    expect(response.status).toBe(201);
+    const result = await response.json();
+
+    expect(result.account.name).toBe(LEAD.company);
+    expect(result.account.status).toBe("prospect");
+    expect(result.account.contacts).toHaveLength(1);
+    expect(result.account.contacts[0]).toMatchObject({ name: "Priya Raman", email: LEAD.email, primary: true });
+
+    expect(result.opportunity).toMatchObject({
+      name: `${LEAD.company} — new business`,
+      accountId: result.account.id,
+      accountName: LEAD.company,
+      contactId: result.account.contacts[0].id,
+      stage: "qualification",
+      probability: 25,
+      amount: 24000,
+      currency: "USD",
+      closeDate: "2027-01-31",
+      source: "referral",
+      leadId: lead.id,
+    });
+
+    expect(result.lead).toMatchObject({
+      status: "converted",
+      convertedAccountId: result.account.id,
+      convertedContactId: result.account.contacts[0].id,
+      convertedOpportunityId: result.opportunity.id,
+    });
+    expect(result.lead.convertedAt).not.toBe("");
+    opportunityId = result.opportunity.id;
+    convertedAccountId = result.account.id;
+
+    // Once is all.
+    expect((await api(`/api/leads/${lead.id}/convert`, { method: "POST", body: "{}" })).status).toBe(409);
+  });
+
+  signedIn("a converted lead is history: this server and PocketBase both refuse an edit", async () => {
+    const lead = await post("/api/leads", LEAD);
+    await post(`/api/leads/${lead.id}/convert`, { createOpportunity: false });
+
+    const edited = await api(`/api/leads/${lead.id}`, { method: "PUT", body: JSON.stringify({ ...LEAD, name: "Renamed" }) });
+    expect(edited.status).toBe(409);
+
+    const raw = await fetch(`${pocketbase.url}/api/collections/leads/records/${lead.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: decodeURIComponent(cookie.split("=")[1] ?? "") },
+      body: JSON.stringify({ name: "Renamed", status: "working" }),
+    });
+    expect(raw.status).toBe(404);
+    expect((await json(`/api/leads/${lead.id}`)).name).toBe("Priya Raman");
+  });
+
+  signedIn("converting onto an existing customer adds the person once", async () => {
+    const first = await post("/api/leads", { ...LEAD, name: "Sam Lee", email: `sam-${suffix}@harbour.example.com` });
+    const converted = await post(`/api/leads/${first.id}/convert`, { accountId, opportunity: { name: "Harbour add-on", amount: 5000 } });
+    expect(converted.account.id).toBe(accountId);
+    const sam = converted.account.contacts.find((contact: any) => contact.name === "Sam Lee");
+    expect(sam).toBeDefined();
+    expect(sam.primary).toBe(false);
+    expect(converted.opportunity).toMatchObject({ name: "Harbour add-on", amount: 5000, accountId, contactId: sam.id });
+
+    // The same address again: no second Sam, and the deal is with the one already there.
+    const again = await post("/api/leads", { ...LEAD, name: "Sam Lee", email: `sam-${suffix}@harbour.example.com` });
+    const second = await post(`/api/leads/${again.id}/convert`, { accountId });
+    expect(second.account.contacts.filter((contact: any) => contact.name === "Sam Lee")).toHaveLength(1);
+    expect(second.opportunity.contactId).toBe(sam.id);
+    expect(second.lead.convertedContactId).toBe("");
+  });
+
+  signedIn("a lead's estimate is never carried into another currency", async () => {
+    const eur = await post("/api/leads", { ...LEAD, name: "Ana", email: "", currency: "EUR", estimatedAmount: 9000 });
+    const converted = await post(`/api/leads/${eur.id}/convert`, { accountId });
+    expect(converted.opportunity.currency).toBe("USD");
+    expect(converted.opportunity.amount).toBe(0);
+  });
+
+  signedIn("closing a deal fixes its probability and stamps when; reopening clears it", async () => {
+    const opportunity = await json(`/api/opportunities/${opportunityId}`);
+    const { id, accountName, leadId, closedAt, ownerId, orgId, createdAt, updatedAt, ...input } = opportunity;
+
+    const won = await put(`/api/opportunities/${opportunityId}`, { ...input, stage: "closed_won", probability: 30, closeDate: "" });
+    expect(won.probability).toBe(100);
+    expect(won.closedAt).not.toBe("");
+    expect(won.closeDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    const stillWon = await put(`/api/opportunities/${opportunityId}`, { ...input, stage: "closed_won", nextStep: "Kick-off" });
+    expect(stillWon.closedAt).toBe(won.closedAt);
+
+    // A closed deal is not quoted again.
+    expect((await api(`/api/opportunities/${opportunityId}/quotes`, { method: "POST" })).status).toBe(409);
+
+    const reopened = await put(`/api/opportunities/${opportunityId}`, { ...input, stage: "negotiation", probability: 60 });
+    expect(reopened.closedAt).toBe("");
+    expect(reopened.probability).toBe(60);
+  });
+
+  signedIn("an opportunity is with a customer you can read, and a contact of theirs", async () => {
+    const bobs = await post("/api/accounts", { name: "Bob's customer", currency: "USD" }, { cookie: bobCookie });
+    expect((await api("/api/opportunities", { method: "POST", body: JSON.stringify({ name: "Poach", accountId: bobs.id }) })).status).toBe(404);
+
+    const response = await api("/api/opportunities", {
+      method: "POST",
+      body: JSON.stringify({ name: "Wrong contact", accountId: convertedAccountId, contactId: "con_nobody" }),
+    });
+    expect(response.status).toBe(400);
+
+    // And nobody outside the organization sees one.
+    expect((await api(`/api/opportunities/${opportunityId}`, { cookie: bobCookie })).status).toBe(404);
+    expect((await json("/api/leads", { cookie: bobCookie })).map((lead: any) => lead.company)).not.toContain(LEAD.company);
+  });
+
+  signedIn("a deal generates quotes for its customer, and keeps them through a revision", async () => {
+    const created = await api(`/api/opportunities/${opportunityId}/quotes`, { method: "POST" });
+    expect(created.status).toBe(201);
+    const { quote } = await created.json();
+    expect(quote.opportunityId).toBe(opportunityId);
+    expect(quote.customer.accountId).toBe(convertedAccountId);
+    expect(quote.customer.contactName).toBe("Priya Raman");
+    expect(quote.number).toMatch(/^Q-\d{4}-\d{4}$/);
+    expect(quote.lines).toHaveLength(0);
+
+    // A save that never mentions it keeps the link…
+    const saved = await put(`/api/quotes/${quote.id}`, quoteBody({ name: "Northwind platform", accountId: convertedAccountId }));
+    expect(saved.quote.opportunityId).toBe(opportunityId);
+
+    // …the customer cannot be moved out from under it…
+    const moved = await api(`/api/quotes/${quote.id}`, { method: "PUT", body: JSON.stringify(quoteBody({ accountId })) });
+    expect(moved.status).toBe(400);
+
+    // …and a revision is the same deal.
+    await post(`/api/quotes/${quote.id}/submit`, {});
+    await post(`/api/quotes/${quote.id}/status`, { status: "sent" });
+    const revised = await post(`/api/quotes/${quote.id}/revise`, {});
+    expect(revised.quote.opportunityId).toBe(opportunityId);
+
+    const listed = await json(`/api/opportunities/${opportunityId}/quotes`);
+    expect(listed.map((row: any) => row.id).sort()).toEqual([quote.id, revised.quote.id].sort());
+    expect(listed.find((row: any) => row.id === quote.id).status).toBe("superseded");
+  });
+
+  signedIn("POST /api/quotes may name a deal: it takes the deal's customer, and refuses another", async () => {
+    const taken = await post("/api/quotes", quoteBody({ accountId: null, opportunityId }));
+    expect(taken.quote.customer.accountId).toBe(convertedAccountId);
+    expect(taken.quote.opportunityId).toBe(opportunityId);
+
+    const refused = await api("/api/quotes", { method: "POST", body: JSON.stringify(quoteBody({ accountId, opportunityId })) });
+    expect(refused.status).toBe(400);
+
+    // Unlinking is null, and then the customer is free to change.
+    const unlinked = await put(`/api/quotes/${taken.quote.id}`, quoteBody({ accountId, opportunityId: null }));
+    expect(unlinked.quote.opportunityId).toBeNull();
+    expect(unlinked.quote.customer.accountId).toBe(accountId);
+  });
+
+  signedIn("deleting a deal keeps its quotes, unlinked", async () => {
+    const opportunity = await post("/api/opportunities", { name: "Short-lived", accountId: convertedAccountId, amount: 100 });
+    const { quote } = await post(`/api/opportunities/${opportunity.id}/quotes`, {});
+    expect((await api(`/api/opportunities/${opportunity.id}`, { method: "DELETE" })).status).toBe(200);
+    const kept = await json(`/api/quotes/${quote.id}`);
+    expect(kept.id).toBe(quote.id);
+    expect(kept.opportunityId).toBeNull();
+  });
+
+  signedIn("the list filters by customer and by stage", async () => {
+    const forCustomer = await json(`/api/opportunities?accountId=${convertedAccountId}`);
+    expect(forCustomer.length).toBeGreaterThan(0);
+    expect(forCustomer.every((row: any) => row.accountId === convertedAccountId)).toBe(true);
+    const negotiating = await json("/api/opportunities?stage=negotiation");
+    expect(negotiating.map((row: any) => row.id)).toContain(opportunityId);
+    expect((await api("/api/opportunities?stage=won")).status).toBe(400);
   });
 });
 
@@ -2606,6 +2855,37 @@ describe("organizations and roles", () => {
     expect(await status("/api/accounts", "POST", { name: `By sales ${suffix}`, currency: "USD" }, "sales")).toBe(201);
     expect(await status("/api/accounts", "POST", { name: `By finance ${suffix}`, currency: "USD" }, "finance")).toBe(201);
     expect(await status("/api/accounts", "POST", { name: `By viewer ${suffix}`, currency: "USD" }, "viewer")).toBeGreaterThanOrEqual(400);
+  });
+
+  signedIn("sales works leads and its own deals; finance and viewers only read them", async () => {
+    const lead = { name: "Role check", company: `Roles ${suffix}`, currency: "USD" };
+    expect(await status("/api/leads", "POST", lead, "sales")).toBe(201);
+    for (const role of ["finance", "viewer"]) {
+      expect(await status("/api/leads", "POST", lead, role)).toBeGreaterThanOrEqual(400);
+      const leads = await json("/api/leads", as(role));
+      expect(leads.map((row: any) => row.company)).toContain(lead.company);
+    }
+
+    // A viewer's conversion is refused before anything is written.
+    const pending = await post("/api/leads", { ...lead, name: "Unconverted" });
+    expect((await api(`/api/leads/${pending.id}/convert`, { method: "POST", body: "{}", cookie: sessions.viewer })).status).toBe(403);
+    expect((await json(`/api/leads/${pending.id}`)).status).toBe("new");
+
+    const deal = { name: "Sam's deal", accountId, amount: 1000 };
+    const theirs = await post("/api/opportunities", deal, as("sales"));
+    const alices = await post("/api/opportunities", { ...deal, name: "Alice's deal" });
+    expect(await status(`/api/opportunities/${theirs.id}`, "PUT", { ...deal, stage: "proposal" }, "sales")).toBe(200);
+    expect(await status(`/api/opportunities/${alices.id}`, "PUT", { ...deal, name: "Taken" }, "sales")).toBe(403);
+    expect(await status(`/api/opportunities/${theirs.id}`, "PUT", { ...deal, name: "Reassigned" }, "admin")).toBe(200);
+    for (const role of ["finance", "viewer"]) {
+      expect(await status("/api/opportunities", "POST", deal, role)).toBeGreaterThanOrEqual(400);
+      expect(await status(`/api/opportunities/${theirs.id}`, "PUT", deal, role)).toBe(403);
+    }
+
+    // Anybody who may write a quote may quote a deal — the quote is theirs, not the deal owner's.
+    const quoted = await api(`/api/opportunities/${alices.id}/quotes`, { method: "POST", cookie: sessions.sales });
+    expect(quoted.status).toBe(201);
+    expect((await api(`/api/opportunities/${alices.id}/quotes`, { method: "POST", cookie: sessions.finance })).status).toBe(403);
   });
 
   signedIn("a sales member writes their own quotes, and only an admin writes anybody's", async () => {

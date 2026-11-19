@@ -52,6 +52,14 @@ import {
   TIER_KINDS,
 } from "../lib/types";
 import { MAX_ORG_NAME, PERMISSIONS, ROLES } from "../lib/organization";
+import {
+  EDITABLE_LEAD_STATUSES,
+  LEAD_SOURCES,
+  LEAD_STATUSES,
+  OPPORTUNITY_STAGES,
+  DEFAULT_CLOSE_DAYS,
+  STAGE_PROBABILITY,
+} from "../lib/pipeline";
 import { MAX_APPROVERS, MAX_CONTACTS, MAX_INVOICE_LINES, MAX_LEDGER_ENTRIES, MAX_TAGS } from "../lib/validate";
 import { MAX_EXPIRY_DAYS, MAX_KEY_NAME_LENGTH, MAX_KEYS } from "./apiKeys";
 import {
@@ -563,6 +571,161 @@ export const OPERATIONS: Operation[] = [
     summary: "One customer's invoices",
     parameters: [idParam("customer")],
     responses: { "200": jsonResponse("That customer's invoices, with their ledgers.", array(ref("InvoiceSummary"))) },
+  },
+
+  /* ------------------------------- pipeline ------------------------------ */
+  {
+    method: "get",
+    path: "/api/leads",
+    tag: "Pipeline",
+    operationId: "listLeads",
+    summary: "List leads, newest first",
+    parameters: [queryParam("status", "Only leads in this status.", { type: "string", enum: [...LEAD_STATUSES] })],
+    responses: { "200": jsonResponse("The organization's leads.", array(ref("Lead"))) },
+  },
+  {
+    method: "post",
+    path: "/api/leads",
+    tag: "Pipeline",
+    operationId: "createLead",
+    summary: "Create a lead",
+    description: "Admin and sales. A lead is created unconverted, whatever the body says.",
+    requestBody: jsonBody("The lead.", ref("LeadInput")),
+    responses: { "201": jsonResponse("The lead, as stored.", ref("Lead")) },
+  },
+  {
+    method: "get",
+    path: "/api/leads/{id}",
+    tag: "Pipeline",
+    operationId: "getLead",
+    summary: "Read one lead",
+    parameters: [idParam("lead")],
+    responses: { "200": jsonResponse("The lead.", ref("Lead")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "put",
+    path: "/api/leads/{id}",
+    tag: "Pipeline",
+    operationId: "updateLead",
+    summary: "Replace one lead",
+    description: "A converted lead is history: the collection rule refuses the edit, and this answers 409 saying so.",
+    parameters: [idParam("lead")],
+    requestBody: jsonBody("The lead, whole.", ref("LeadInput")),
+    responses: {
+      "200": jsonResponse("The lead, as stored.", ref("Lead")),
+      "404": responseRef("NotFound"),
+      "409": jsonResponse("The lead has been converted.", ref("Error")),
+    },
+  },
+  {
+    method: "delete",
+    path: "/api/leads/{id}",
+    tag: "Pipeline",
+    operationId: "deleteLead",
+    summary: "Delete one lead",
+    description: "What a converted lead became — its customer and opportunity — is left as it is.",
+    parameters: [idParam("lead")],
+    responses: { "200": jsonResponse("Deleted.", ref("Ok")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "post",
+    path: "/api/leads/{id}/convert",
+    tag: "Pipeline",
+    operationId: "convertLead",
+    summary: "Convert a lead into a customer and an opportunity",
+    description:
+      "Creates a customer from the lead — or uses the one `accountId` names — adds the lead's person to it " +
+      "as a contact, opens an opportunity for it, and marks the lead converted with links to all three. One " +
+      "PocketBase batch: it all happens or none of it does. Needs `leads.write`, plus `accounts.write` for a " +
+      "new customer and `opportunities.create` for the opportunity, checked before anything is written.",
+    parameters: [idParam("lead")],
+    requestBody: jsonBody("What to make of it. Every key is optional.", ref("LeadConversionInput")),
+    responses: {
+      "201": jsonResponse("The lead, and what it became.", ref("LeadConversion")),
+      "404": responseRef("NotFound"),
+      "409": jsonResponse("The lead has already been converted.", ref("Error")),
+    },
+  },
+  {
+    method: "get",
+    path: "/api/opportunities",
+    tag: "Pipeline",
+    operationId: "listOpportunities",
+    summary: "List opportunities, by close date",
+    parameters: [
+      queryParam("accountId", "Only this customer's.", { type: "string" }),
+      queryParam("stage", "Only those in this stage.", { type: "string", enum: [...OPPORTUNITY_STAGES] }),
+    ],
+    responses: { "200": jsonResponse("The organization's opportunities.", array(ref("Opportunity"))) },
+  },
+  {
+    method: "post",
+    path: "/api/opportunities",
+    tag: "Pipeline",
+    operationId: "createOpportunity",
+    summary: "Create an opportunity",
+    description: "Admin and sales. The customer has to be one you can read, and the contact one of theirs.",
+    requestBody: jsonBody("The opportunity.", ref("OpportunityInput")),
+    responses: { "201": jsonResponse("The opportunity, as stored.", ref("Opportunity")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "get",
+    path: "/api/opportunities/{id}",
+    tag: "Pipeline",
+    operationId: "getOpportunity",
+    summary: "Read one opportunity",
+    parameters: [idParam("opportunity")],
+    responses: { "200": jsonResponse("The opportunity.", ref("Opportunity")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "put",
+    path: "/api/opportunities/{id}",
+    tag: "Pipeline",
+    operationId: "updateOpportunity",
+    summary: "Replace one opportunity",
+    description: "Its owner, if they are in sales, or any admin — the same as a quote.",
+    parameters: [idParam("opportunity")],
+    requestBody: jsonBody("The opportunity, whole.", ref("OpportunityInput")),
+    responses: {
+      "200": jsonResponse("The opportunity, as stored.", ref("Opportunity")),
+      "403": jsonResponse("Somebody else's opportunity, and you are not an admin.", ref("Error")),
+      "404": responseRef("NotFound"),
+    },
+  },
+  {
+    method: "delete",
+    path: "/api/opportunities/{id}",
+    tag: "Pipeline",
+    operationId: "deleteOpportunity",
+    summary: "Delete one opportunity",
+    description: "Its quotes are kept, and simply stop naming it.",
+    parameters: [idParam("opportunity")],
+    responses: { "200": jsonResponse("Deleted.", ref("Ok")), "404": responseRef("NotFound") },
+  },
+  {
+    method: "get",
+    path: "/api/opportunities/{id}/quotes",
+    tag: "Pipeline",
+    operationId: "listOpportunityQuotes",
+    summary: "Every quote written for one opportunity, newest first",
+    parameters: [idParam("opportunity")],
+    responses: { "200": jsonResponse("Its quotes, revisions included.", array(ref("QuoteSummary"))), "404": responseRef("NotFound") },
+  },
+  {
+    method: "post",
+    path: "/api/opportunities/{id}/quotes",
+    tag: "Pipeline",
+    operationId: "quoteOpportunity",
+    summary: "Start a quote for an opportunity",
+    description:
+      "A draft with no lines, for the opportunity's customer and in its currency, named after it and linked " +
+      "to it — numbered and stored exactly as `POST /api/quotes` would. A closed opportunity is refused.",
+    parameters: [idParam("opportunity")],
+    responses: {
+      "201": jsonResponse("The new quote.", ref("SavedQuote")),
+      "404": responseRef("NotFound"),
+      "409": jsonResponse("The opportunity is closed.", ref("Error")),
+    },
   },
 
   /* ------------------------------ catalogue ----------------------------- */
@@ -1909,6 +2072,7 @@ function schemas(): Record<string, Json> {
       "The revision that replaced this one. While it is set, this version cannot be sent, accepted or invoiced.",
       { nullable: true },
     ),
+    opportunityId: string_("The opportunity it is written for. Carried onto a revision.", { nullable: true }),
     customer: ref("CustomerSnapshot"),
     priceBookId: id("The book it was priced from."),
     currency: currency(),
@@ -2181,6 +2345,96 @@ function schemas(): Record<string, Json> {
         "collections — `accounts`, its `contacts`, and the `sys_physical_location` records its two addresses " +
         "point at — and written in one transaction.",
     },
+
+    /* ------------------------------- pipeline ----------------------------- */
+    LeadInput: object(
+      "A lead, as a caller writes it. Needs a name or a company.",
+      {
+        name: string_("The person."),
+        company: string_("Where they work. A customer made from the lead is named after it."),
+        title: string_("Their job title."),
+        email: string_("Email.", { format: "email" }),
+        phone: string_("Phone."),
+        website: string_("The company's site."),
+        industry: string_("Free text."),
+        source: enum_(LEAD_SOURCES, "Where it came from."),
+        status: enum_(EDITABLE_LEAD_STATUSES, "Where it stands. `converted` is reached only by converting."),
+        estimatedAmount: money("What it might be worth. Seeds the opportunity when converted in the same currency."),
+        currency: currency(),
+        notes: string_("Internal notes."),
+      },
+    ),
+    Lead: {
+      allOf: [
+        object("Stored fields.", {
+          id: id("The lead's id."),
+          status: enum_(LEAD_STATUSES, "Where it stands."),
+          convertedAt: timestamp("When it was converted. Empty until then."),
+          convertedAccountId: string_("The customer it became, or was added to."),
+          convertedContactId: string_("The contact it became on that customer. Empty when none was added."),
+          convertedOpportunityId: string_("The opportunity converting it opened. Empty when none was."),
+          ...ownership,
+        }),
+        ref("LeadInput"),
+      ],
+      description: "Somebody who might buy. A converted lead cannot be edited, only read or deleted.",
+    },
+    OpportunityInput: object(
+      "An opportunity, as a caller writes it.",
+      {
+        name: string_("What the deal is called."),
+        accountId: string_("The customer. Required — a deal is with somebody."),
+        contactId: string_("One of that customer's contacts, or empty."),
+        stage: enum_(OPPORTUNITY_STAGES, "Where it stands."),
+        amount: money("Expected contract value."),
+        currency: currency(),
+        probability: percent(
+          "Chance of closing. Left out, it is the stage's default (" +
+            OPPORTUNITY_STAGES.map(stage => `${stage} ${STAGE_PROBABILITY[stage]}`).join(", ") +
+            "); a closed stage fixes it at 100 or 0 whatever is sent.",
+        ),
+        closeDate: date_("When it is expected to close. A deal closed with none is dated today."),
+        source: { ...enum_(LEAD_SOURCES, "Where it came from, or empty."), nullable: true },
+        nextStep: string_("What happens next."),
+        lossReason: string_("Why it was lost. Kept only on a `closed_lost` deal."),
+        notes: string_("Internal notes."),
+      },
+      ["name", "accountId"],
+    ),
+    Opportunity: {
+      allOf: [
+        object("Stored and derived fields.", {
+          id: id("The opportunity's id."),
+          accountName: string_("The customer's name, read with it."),
+          leadId: string_("The lead it was converted from, or empty."),
+          closedAt: timestamp("When it entered a closed stage. Set by the server; cleared if it is reopened."),
+          ...ownership,
+        }),
+        ref("OpportunityInput"),
+      ],
+      description:
+        "A deal with one customer, which quotes are written for. Weighted amount is `amount × probability / 100`, " +
+        "and no total of them ever adds two currencies.",
+    },
+    LeadConversionInput: object("What converting a lead should make.", {
+      accountId: string_("An existing customer to convert onto. Left out, one is created from the lead.", { nullable: true }),
+      addContact: boolean_(
+        "Add the lead's person to an existing customer as a contact — skipped if somebody there already has " +
+          "their email. Always done for a new customer. Defaults to true.",
+      ),
+      createOpportunity: boolean_("Open an opportunity. Defaults to true."),
+      opportunity: object("The opportunity, when one is opened.", {
+        name: string_('Defaults to "<customer> — new business".'),
+        amount: money("Defaults to the lead's estimate, if it is in the customer's currency; otherwise 0."),
+        closeDate: date_(`Defaults to ${DEFAULT_CLOSE_DAYS} days from today.`),
+        stage: enum_(OPPORTUNITY_STAGES, "Defaults to `qualification`."),
+      }),
+    }),
+    LeadConversion: object("A converted lead, and what it became.", {
+      lead: ref("Lead"),
+      account: ref("Account"),
+      opportunity: { allOf: [ref("Opportunity")], nullable: true, description: "Null when none was opened." },
+    }),
 
     /* ------------------------------ catalogue ----------------------------- */
     ProductOption: object("One choice inside an option group.", {
@@ -2462,6 +2716,11 @@ function schemas(): Record<string, Json> {
       {
         name: string_("What the quote is called."),
         accountId: string_("The customer. `null` for a quote addressed to nobody yet.", { nullable: true }),
+        opportunityId: string_(
+          "The opportunity it is written for, which must be for the same customer — a new quote naming no " +
+            "customer takes the opportunity's. Left out, a save keeps the link it has; `null` removes it.",
+          { nullable: true },
+        ),
         priceBookId: string_("Which book to price from. Empty uses the default."),
         currency: currency(),
         termMonths: integer_("Default subscription length for recurring lines that name none."),
@@ -2953,6 +3212,7 @@ const TAGS: Json[] = [
   { name: "Organizations", description: "Where records belong, who is in it, and what each role may change." },
   { name: "Preferences", description: "Per-account defaults, stored on the account rather than the browser." },
   { name: "Customers", description: "Accounts, the people in them, and their quote and invoice history." },
+  { name: "Pipeline", description: "Leads, converting them, and the opportunities quotes are written for." },
   { name: "Catalogue", description: "Products with their options and bundles, price books, and the catalogue file." },
   { name: "Rules", description: "Pricing rules, the approval ladder, and the formula language behind both." },
   { name: "Quotes", description: "Writing, pricing, approving and revising a quote — and billing it." },

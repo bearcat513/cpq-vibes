@@ -123,7 +123,7 @@ objects. It is the *only* place a record type is named.
 
 | Export | Quote (`proposal.ts`) | Invoice (`invoiceDocument.ts`) |
 | --- | --- | --- |
-| `TOKENS` | `PROPOSAL_TOKENS` — 31 scalars | `INVOICE_TOKENS` — 28 scalars |
+| `TOKENS` | `PROPOSAL_TOKENS` — 32 scalars | `INVOICE_TOKENS` — 28 scalars |
 | `LINE_TOKENS` | 13 (`line.options`, `line.term`, `line.billing`…) | 9 (`line.taxPercent`, `line.taxAmount`…) |
 | `…Source` | `quoteSource()` | `invoiceSource()` |
 | `…PdfSource` | `quotePdfSource()` | `invoicePdfSource()` |
@@ -134,11 +134,17 @@ Each `TokenDescription` is `{ token, description }` — the description is the s
 shows beside the token, and the list is the contract: a template can reach exactly these values and
 nothing else.
 
-### Two conventions worth copying
+### Conventions worth copying
 
+- **Estimates are labelled as estimates.** A usage line is quoted at the quantity the customer
+  expects; `{{totals.usage}}` and the PDF totals row `usageTotal` ("Usage (estimated)") print it on
+  its own, because it is in the net total but not in contract value.
 - **Spell the shared halves identically.** `customer.*` and `seller.*` are character-for-character
   the same in both vocabularies, so one letterhead, address panel or signature block works in either
   kind of template.
+- **A draft prints as one.** An invoice is numbered when it is issued, so a draft's stored number is
+  a placeholder (`DRAFT-<id>`); `{{invoice.number}}` renders it as `DRAFT`, and the PDF's document title
+  says "Draft", rather than printing an internal id to a customer.
 - **Derive at render time what is derived everywhere else.** `{{invoice.status}}` is computed as the
   document renders, never read off the record — an invoice printed the morning after it falls due
   says "Overdue" because the date says so. `{{totals.balance}}` is printed as held, including
@@ -347,15 +353,16 @@ same letterhead, same block language, and only the meaning of a token differs.
 | `kind` | text | `quote` \| `invoice`; blank reads as `quote` |
 | `format` | text | `html` \| `markdown` \| `text` \| `pdf` |
 | `body` | text | max 3,000,000 — prose or canonical JSON |
-| `owner` | relation | indexed; set server-side |
-| `sharedWith` | relation[] | a shared template renders like your own |
+| `owner` | relation | indexed; who made it, set server-side |
+| `org` | relation | the organization it belongs to, set server-side and never moved |
+| `sharedWith` | relation[] | someone outside the organization; a shared template renders like your own |
 | `created` / `updated` | autodate | list is sorted `-updated` |
 
 The body is one text column rather than a JSON column, which matters in this stack: in PocketBase's
 JSVM a JSON field arrives as a byte array, so reading one, mutating it and saving runs without error
 and writes nothing. Backfills are done in SQL and tested as statements.
 
-### Schema history, as three migrations
+### Schema history, as four migrations
 
 1. **Create** — name, format, body (200,000), owner, sharedWith, owner index.
 2. **Widen for branding** — `body.max` → 3,000,000 so a template can carry its own pictures. The down
@@ -363,10 +370,14 @@ and writes nothing. Backfills are done in SQL and tested as statements.
 3. **Add `kind`** — plus `UPDATE proposal_templates SET kind = 'quote' WHERE kind IS NULL OR
    trim(kind) = ''`. Backfilled rather than left empty: a column that means something only by
    omission is one somebody will eventually read the wrong way round.
+4. **Organizations** — an `org` relation stamped from the owner's organization, and the rules
+   rewritten around it: everyone in the organization reads, admins write. Not a template change as
+   such; every owned collection got the same treatment.
 
-Access control lives in the database's own rules, not in the app server — templates are owned,
-shareable records like any other. Saving a template someone shared with you creates *your* copy,
-named "… (my copy)".
+Access control lives in the database's own rules, not in the app server — templates belong to an
+organization like any other record: every member reads them and renders with them, and only an
+admin creates, edits or deletes one. Sharing reaches someone outside it, read-only. Saving a
+template someone shared with you creates *your organization's* copy, named "… (my copy)".
 
 ---
 
@@ -374,9 +385,9 @@ named "… (my copy)".
 
 | Method & path | Does |
 | --- | --- |
-| `GET /api/proposal-templates` | Yours and those shared with you, both kinds |
-| `POST /api/proposal-templates` | Create; body is validated and normalised |
-| `GET\|PUT\|DELETE …/{id}` | Read / replace / delete (owner only for the last two) |
+| `GET /api/proposal-templates` | Your organization's and those shared with you, both kinds |
+| `POST /api/proposal-templates` | Create (admins); body is validated and normalised |
+| `GET\|PUT\|DELETE …/{id}` | Read / replace / delete (admins only for the last two) |
 | `…/{id}/shares` | Share and unshare |
 | `GET /api/quotes/{id}/document` | `?templateId=` `&inline` |
 | `GET /api/invoices/{id}/document` | Same shape, invoice vocabulary |
@@ -445,17 +456,17 @@ and a PDF block editor (blocks on the left, the document on the right).
 | File | LOC | Move as-is? | Depends on |
 | --- | ---: | --- | --- |
 | `lib/pdf.ts` | 980 | yes, verbatim | `pdfFonts`, `image` |
-| `lib/pdfFonts.ts` | 392 | yes, verbatim | — |
+| `lib/pdfFonts.ts` | 396 | yes, verbatim | — |
 | `lib/image.ts` | 430 | yes, verbatim | — |
 | `lib/imageFile.ts` | 202 | yes, verbatim (browser) | `image` |
 | `lib/money.ts` | 144 | yes, or swap for yours | currency list |
 | `lib/document.ts` | 278 | yes, minus the `Address` import | `types` |
-| `lib/pdfTemplate.ts` | 1,368 | partly — renderer verbatim; field unions & sources are yours | vocabularies |
-| `lib/proposal.ts` | 213 | no — rewrite per record | `Quote` |
-| `lib/invoiceDocument.ts` | 233 | no — rewrite per record | `Invoice`, `receivable` |
-| `lib/validate.ts` | ~350 of 1,311 | partly — extract the template half | `pdfTemplate` |
+| `lib/pdfTemplate.ts` | 1,371 | partly — renderer verbatim; field unions & sources are yours | vocabularies |
+| `lib/proposal.ts` | 216 | no — rewrite per record | `Quote` |
+| `lib/invoiceDocument.ts` | 234 | no — rewrite per record | `Invoice`, `receivable` |
+| `lib/validate.ts` | ~350 of 1,495 | partly — extract the template half | `pdfTemplate` |
 | `components/PdfTemplateEditor.tsx` | 1,162 | partly — port with your UI kit | `pdfTemplate` |
-| `components/TemplatesView.tsx` | 455 | partly — port with your UI kit | all of the above |
+| `components/TemplatesView.tsx` | 482 | partly — port with your UI kit | all of the above |
 | `components/ImagePicker.tsx` | 129 | partly — port with your UI kit | `imageFile` |
 
 Roughly **2,300 lines port untouched** (writer, fonts, images, text renderer). About **450 lines are

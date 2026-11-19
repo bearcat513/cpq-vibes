@@ -1,6 +1,7 @@
 # CPQ
 
-Configure, price and quote. Build a catalogue of what you sell — with options, rules, volume tiers
+Configure, price and quote. Track the pipeline that comes before a quote — leads, converted into
+customers and opportunities. Build a catalogue of what you sell — with options, rules, volume tiers
 and bundles — put price books and commercial policy around it, and turn that into quotes that price
 themselves, route for approval when they should, and render into a document you can send. When one
 is won, bill it: invoices, payments, credits and an aging report, with every balance worked out
@@ -32,6 +33,36 @@ always reads as paid. Motion is machine motion, under half a second and always `
 nothing moves for anyone who has asked it not to.
 
 ## What it does
+
+### Pipeline
+
+Before there is a quote there is somebody who might want one. The pipeline has two records:
+
+- A **lead** is a person and/or a company you have not qualified yet — contact details, where they
+  came from (web, referral, event, outbound, partner…), a status (`new`, `working`, `qualified`,
+  `unqualified`) and an estimated value. Leads are a pool the whole sales team works, not one rep's.
+- An **opportunity** is a deal with a customer: a stage (`prospecting` → `qualification` →
+  `proposal` → `negotiation` → `closed_won` / `closed_lost`), an amount, a probability, an expected
+  close date, a next step and a contact. It is owned like a quote — a rep edits their own, an admin
+  any.
+
+**Converting a lead** does four things at once, or none of them: it creates the customer (or uses
+one you pick — the screen suggests a customer whose name matches the lead's company), adds the
+person as its contact (skipped if someone at that customer already has their email), opens an
+opportunity, and marks the lead `converted` with links to what it became. A converted lead is
+read-only, and the database refuses an edit to one as well as the server.
+
+**An opportunity generates quotes.** *New quote* on an opportunity starts a draft for its customer,
+in its currency, linked to it; the opportunity lists every quote written against it. A linked quote
+keeps the link through edits and revisions, its customer must be the opportunity's, and the quote
+editor shows the link with an *Unlink* button. Deleting an opportunity keeps its quotes.
+
+**Probability follows the stage** until the deal closes: each open stage has a default you can
+change, and a closed stage fixes it — won is 100%, lost is 0% — and records when it closed.
+Reopening clears that. The opportunities screen leads with the open pipeline, its weighted value,
+what has been won and the win rate, **one row per currency** — never added together. A lead's
+estimate is never carried into another currency either: converted onto a customer that bills in
+something else, the opportunity starts at 0 rather than at a number in the wrong money.
 
 ### Configure
 
@@ -241,11 +272,14 @@ sitting in a queue nobody needs to look at.
 A **customer** is an account with people in it: a list of contacts, one of them *primary* — who a
 quote is addressed to, and whose name and address the quote snapshots — plus a lifecycle status
 (`prospect`, `customer`, `inactive`), free-text tags, payment terms, a tax position, and a billing
-address. The shipping address follows the billing one until you say it differs.
+address. The shipping address follows the billing one until you say it differs. Contacts and
+addresses are records of their own rather than a blob on the account, so they can be listed,
+linked and searched; a customer, its contacts and its addresses are still saved together, in one
+write that lands whole or not at all.
 
 The customers screen is a list you can search, filter by status or tag, and sort, until you pick
 one. Then it is that customer's page: their contacts, every quote ever written for them (not just
-the latest page), their invoices, and a roll-up — open pipeline, won, win rate. **It never adds two
+the latest page), their invoices, their files, and a roll-up — open pipeline, won, win rate. **It never adds two
 currencies.** A quote written in something other than the account's currency is counted and
 labelled, never summed into a figure that would then be confidently wrong.
 
@@ -293,6 +327,19 @@ deliberately not here.
 **Receivables** lists invoices by status, and the **aging report** buckets what is owed into
 current, 1–30, 31–60, 61–90 and 90+ days overdue — by the balance, not the total, and never across
 two currencies.
+
+### Files
+
+A customer, a quote, an invoice or an approval can carry **attachments** — the signed PO, the
+customer's own spec, the remittance advice, the screenshot an approver wants to see. Files go in one
+`sys_attachment` collection for every kind of record rather than a file field on each, up to 25 MB a
+file and 50 files a record.
+
+**You see a file if you can see its record**, and you attach where you could edit the record — plus,
+on an approval, anyone asked to approve it, from whichever organization. A file is never served
+straight from the database: the download route reads it as you, and anything a browser could run
+(HTML, SVG, scripts) is only ever handed out as a download, never shown in place. Deleting a record
+deletes its files.
 
 ### Documents
 
@@ -441,15 +488,18 @@ An empty CPQ is not explorable: you cannot see what a volume tier does without a
 one, or what an approval ladder does without a discount deep enough to climb it. **Install the
 sample** in Settings adds eight products (a configurable platform with editions and add-ons, usage
 and services lines, and a bundle whose components carry the price), two price books with floors,
-three pricing rules, a five-rung approval ladder, two customers, seven proposal templates, and a
-quote built to trip the ladder. The templates are the documentation for the document format:
+three pricing rules, a five-rung approval ladder, two customers, ten templates (seven for quotes,
+three for invoices), and a quote built to trip the ladder. The templates are the documentation for the document format:
 between them they use every block, the letterhead, the whole customer-facing totals list and both
 kinds of image, and **Start from an example** on the Templates screen opens any of them as a draft
 to take apart.
 
 **Install the healthcare sample** beside it adds a second example built from the workbook in
-`tools/`: 42 data-archiving products, a list price book and three customer contract books, five
-fictional customers, and five quotes left at every stage from draft to accepted. Its prices are the
+`tools/`: 42 data-archiving products, a list price book and four customer contract books, seven
+fictional customers, and eight quotes left at every stage from draft to accepted — each written for
+an opportunity, in a pipeline with a deal at every stage (one of them lost) and six leads, one
+already converted. Five invoices, one billed from an accepted quote, spread its receivables across
+the aging, with a payment, a part payment and a credit among them. Its prices are the
 workbook's illustrative ones; its costs, and the subsystem prices the workbook leaves out, are
 invented and marked in `src/lib/samplesHealthcare.ts`. Install it in an empty account: pricing and
 approval rules apply to the whole workspace, so the first sample's would apply to its quotes too.
@@ -508,8 +558,8 @@ templates alongside them. Arrow keys move, Enter opens, Escape clears and then c
 | --- | --- |
 | Ctrl/⌘ K, `/` | Open the launcher |
 | `?` | List every shortcut |
-| `g` then a letter | Go to a screen: `g h` Home, `g q` Quotes, `g a` Approvals, `g i` Receivables, `g p` Catalogue, `g r` Rules, `g c` Customers, `g t` Templates, `g s` Settings |
-| `n` then a letter | Start one: `n q` quote, `n c` customer, `n i` invoice, `n p` product — if your role may |
+| `g` then a letter | Go to a screen: `g h` Home, `g l` Leads, `g o` Opportunities, `g q` Quotes, `g a` Approvals, `g i` Receivables, `g p` Catalogue, `g r` Rules, `g c` Customers, `g t` Templates, `g s` Settings |
+| `n` then a letter | Start one: `n q` quote, `n c` customer, `n l` lead, `n o` opportunity, `n i` invoice, `n p` product — if your role may |
 | `[` | Collapse or expand the navigation |
 
 Shortcuts wait while you are typing in a field and while a panel or dialog is open, so a half-filled
@@ -575,9 +625,22 @@ record — in the data table, since `record_forms` is a collection like any othe
 The server resolves the same layout the form was drawn from, refuses any field it does not offer as
 editable, re-runs each field's check, and refuses a save whose record changed underneath it (409).
 That narrows what the form writes and grants nothing; the collection's rules still decide.
-**Quotes, invoices, payments and credits are read-only here**, because a raw write would skip the
-pricing and totals the server owns, and so are `owner`, `org` and the other fields PocketBase or a
-hook sets.
+**Quotes, invoices, their lines, payments, credits, leads and opportunities are read-only here**,
+because a raw write would skip what the server works out for them — pricing, totals, a lead's
+conversion, a deal's probability and close date — and so are `owner`, `org` and the other fields
+PocketBase or a hook sets.
+
+**A row opens the record workspace**, a full page in three panes: the record form, **related
+lists** (tabs of the records that point at this one — a customer's contacts, quotes, invoices,
+opportunities and files; an opportunity's quotes) and a **summary** column of numbers about it. A
+summary line is a field, a **roll-up** (count, sum, average, minimum or maximum over a related list,
+optionally filtered) or a **formula** over the lines above it — and a formula with a blank input is
+blank, never a zero. The server works the summary out, reading every related row as you, so it adds
+up only what you could see, and says so when it stops at 5,000 rows. Customers, quotes, invoices and
+opportunities come with a layout built in; an admin changes any of them with *Customize*, which
+edits the form and the workspace together and previews the draft against the record on screen. *New*
+in a tab creates a related record with the link already filled in, except in a collection only the
+server writes.
 
 ## Running it
 
@@ -621,8 +684,8 @@ app.
 bun test
 ```
 
-The library tests — pricing, the formula language, configuration, approvals, proposals, the file
-formats — are pure and run in milliseconds. `src/server/api.test.ts` is end-to-end against a real
+The library tests — pricing, the formula language, configuration, approvals, the pipeline,
+proposals, the file formats — are pure and run in milliseconds. `src/server/api.test.ts` is end-to-end against a real
 Bun server talking to a real PocketBase in a throwaway container built from `docker/`, so the route
 table, the storage layer, the collection rules and the hooks are all exercised for real. Without
 Docker those tests skip and everything else still runs.
@@ -635,8 +698,8 @@ member may *change* is decided by their **role**:
 
 | Role | May change |
 | --- | --- |
-| `admin` | Everything: the catalogue, price books, pricing and approval rules, templates, the organization and its members, and any quote |
-| `sales` | Customers, and their own quotes — create, edit, submit, send, revise, share, delete |
+| `admin` | Everything: the catalogue, price books, pricing and approval rules, templates, the organization and its members, and any quote or opportunity |
+| `sales` | Customers, leads (any of them — they are a pool), and their own opportunities and quotes — create, edit, submit, send, revise, share, delete |
 | `finance` | Customers (not deleting them), and receivables: invoices, payments, credits |
 | `viewer` | Nothing. Reads everything, which is what a manager, an auditor or a new hire needs |
 
@@ -699,9 +762,9 @@ them into its organization.
 
 ## Storage
 
-Everything lives in PocketBase, in seventeen collections created by `docker/pb_migrations/` — the
-eleven that hold the work, five that hold the organization around it, and one that lays out the
-record browser:
+Everything lives in PocketBase, in collections created by `docker/pb_migrations/` — those that
+hold the work, those that hold the organization around it, and one that lays out the record
+browser:
 
 | Collection | Holds |
 | --- | --- |
@@ -709,24 +772,34 @@ record browser:
 | `price_books` | Per-customer prices and floors, entries stored whole |
 | `pricing_rules` | Formula-driven price adjustments |
 | `approval_rules` | Who has to look at what, and when |
-| `accounts` | Customers, with their currency, terms and tax position |
-| `quotes` | Lines, totals and approvals, stored as priced |
+| `leads` | People and companies not yet qualified. A converted one names the customer, contact and opportunity it became |
+| `opportunities` | Deals: a customer, a stage, an amount, a probability and a close date. Quotes name theirs in an `opportunity` relation |
+| `accounts` | Customers: status, tags, currency, terms, credit limit and tax position, each a column |
+| `contacts` | A customer's people, ordered, one of them primary. Deleted with the customer. An auth collection nobody can sign in to |
+| `sys_physical_location` | Addresses. A customer's billing and shipping relations may name one record, which is what "ship to billing" is |
+| `quotes` | The header, totals and approvals, stored as priced |
+| `quote_lines` | One row per line of a quote, every scalar a column, the nested parts (options, tier, applied rules) in a `detail` JSON |
 | `proposal_templates` | Document bodies for quotes and invoices (a `kind` says which) — text with `{{token}}` placeholders, or a PDF document description with its style and branding inside it |
-| `invoices` | What a customer owes: lines and line totals, `state`, `dueDate`. No `status` and no `balance` — both are derived on every read. Numbered when issued, not when drafted, so a discarded draft leaves no gap |
+| `invoices` | What a customer owes: line totals, `state`, `dueDate`. No `status` and no `balance` — both are derived on every read. Numbered when issued, not when drafted, so a discarded draft leaves no gap |
+| `invoice_lines` | One row per line of an invoice. Writable only while the invoice is a draft |
 | `payments` | Cash received. One row per payment, belonging to one invoice, so banking two at once cannot lose either |
 | `credits` | Amounts credited or written off, the same way |
+| `sys_attachment` | Files on a customer, quote, invoice or approval, keyed by `target` and `recordId`. Read by whoever can read the record |
 | `api_keys` | A SHA-256 per key, hidden, with its name, expiry, last use and the organization it was issued in. Never the key |
 | `organizations` | Where records belong: a name and its settings (the time zone) |
 | `memberships` | Who is in which organization, as what role |
 | `invitations` | Addresses invited to an organization and not yet registered |
 | `counters` | The next quote and invoice number, per organization, kind and year. No user can read or write one |
 | `revoked_tokens` | The hash of each signed-out session token, until it would have expired anyway |
-| `record_forms` | The record browser's form layout, one per collection per organization. Everyone reads, admins write |
+| `record_forms` | The record browser's form and workspace layout, one per collection per organization. Everyone reads, admins write |
 
 Each collection has real columns for what the *database* has to do something with — find by SKU,
 sort by name, filter by status, match an approver — and one JSON field for the nested domain object
 the app reads whole. Spreading option groups across thirty PocketBase fields would buy no query
-anything performs and cost a migration every time the domain grew a feature.
+anything performs and cost a migration every time the domain grew a feature. Where a nested thing
+*is* something people look for on its own — a line, a contact, an address — it is a collection of
+its own, and the parent and its children are written in one PocketBase batch, so a quote is never
+stored with half its lines.
 
 Ids stay the readable `prd_…` / `pb_…` / `qte_…` strings the API and the UI use; the migration
 widens PocketBase's fixed-length id field to allow them. Preferences get no collection: they are one
@@ -753,7 +826,7 @@ and handing the raw value back once — and resolves an incoming one to its owne
 every rule above apply to a key unchanged.
 
 The data is in the `pb_data` Docker volume. `docker compose down` keeps it; `docker compose down -v`
-deletes it. A stored quote is capped at 4 MB of line items.
+deletes it. A quote may have at most 1,000 lines and an invoice 500.
 
 ## API
 

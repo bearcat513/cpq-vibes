@@ -49,6 +49,9 @@ const OWNED = [
   // by their quote or invoice, in the collection rules.
   "quote_lines",
   "invoice_lines",
+  // The pipeline — see 1750000017_leads_opportunities.js.
+  "leads",
+  "opportunities",
 ];
 
 /** Quotes are updated under rules/approvals.js instead. */
@@ -74,6 +77,13 @@ module.exports.register = () => {
       if (fields.getByName("approvers")) e.record.set("approvers", []);
       // Set by revising, on the quote being revised — never on a new one.
       if (fields.getByName("supersededBy")) e.record.set("supersededBy", "");
+
+      // A lead is born unconverted: converting is an update, made after the
+      // records it points at exist (src/server/pipeline.ts).
+      if (e.record.collection().name === "leads") {
+        if (e.record.getString("status") === "converted") e.record.set("status", "new");
+        ["convertedAt", "convertedAccount", "convertedContact", "convertedOpportunity"].forEach(field => e.record.set(field, ""));
+      }
 
       if (e.record.collection().name === "invoices") {
         if (!e.record.id) {

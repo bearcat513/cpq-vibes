@@ -19,6 +19,7 @@
  */
 import { normalizePreferences } from "../lib/preferences";
 import { ACCOUNT_STATUSES, CONTACT_ROLES, EMPTY_ADDRESS, emptyCustomer } from "../lib/types";
+import { LEAD_SOURCES, LEAD_STATUSES, OPPORTUNITY_STAGES, type Lead, type Opportunity } from "../lib/pipeline";
 import { ADDRESS_PARTS, isBlankAddress } from "../lib/locations";
 import type {
   Account,
@@ -50,6 +51,8 @@ import { MAX_INVOICE_LINES, MAX_QUOTE_LINES, readPaymentTermDays } from "../lib/
 import type {
   AccountInput,
   CreditInput,
+  LeadInput,
+  OpportunityInput,
   PaymentInput,
   ApprovalRuleInput,
   PriceBookInput,
@@ -423,6 +426,7 @@ function toQuote(row: Record_, lines: PricedLine[]): Quote {
     version: Number(row.version ?? 1),
     supersedesId: relationId(row.supersedes) || null,
     supersededById: relationId(row.supersededBy) || null,
+    opportunityId: relationId(row.opportunity) || null,
     // Spread over the empty snapshot rather than trusting what is stored: a
     // quote written before shipping addresses existed has a header with
     // fewer keys, and everything downstream reads the fields unguarded.
@@ -757,6 +761,186 @@ export const updateAccount = (token: string, id: string, input: AccountInput): P
 
 export const deleteAccount = (token: string, id: string) => remove(token, "accounts", id);
 
+/* -------------------------------- pipeline ------------------------------- */
+
+const enumOr = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
+  (allowed as readonly string[]).includes(String(value)) ? (value as T) : fallback;
+
+/** A date column, as the ISO day the domain speaks. */
+const dayOf = (value: unknown): string => toIso(value).slice(0, 10);
+
+function toLead(row: Record_): Lead {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    company: String(row.company ?? ""),
+    title: String(row.title ?? ""),
+    email: String(row.email ?? ""),
+    phone: String(row.phone ?? ""),
+    website: String(row.website ?? ""),
+    industry: String(row.industry ?? ""),
+    source: enumOr(row.source, LEAD_SOURCES, "other"),
+    status: enumOr(row.status, LEAD_STATUSES, "new"),
+    estimatedAmount: Number(row.estimatedAmount ?? 0),
+    currency: asCurrency(row.currency),
+    notes: String(row.notes ?? ""),
+    convertedAt: toIso(row.convertedAt),
+    convertedAccountId: relationId(row.convertedAccount),
+    convertedContactId: String(row.convertedContact ?? ""),
+    convertedOpportunityId: relationId(row.convertedOpportunity),
+    ...ownership(row),
+    ...stamps(row),
+  };
+}
+
+const leadBody = (input: LeadInput): Record_ => ({ ...input });
+
+export const listLeads = async (token: string): Promise<Lead[]> =>
+  (await readMany(token, "leads", { limit: 0, sort: "-created" })).map(toLead);
+
+export async function getLead(token: string, id: string): Promise<Lead | null> {
+  const row = await readOne(token, "leads", id);
+  return row ? toLead(row) : null;
+}
+
+export async function createLead(token: string, input: LeadInput): Promise<Lead> {
+  const row = await write(token, "leads", null, { id: newId("led"), ...leadBody(input) }, "Could not save the lead");
+  return toLead(row!);
+}
+
+/** `null` for a lead that is missing, not yours, or already converted — the update rule refuses all three alike. */
+export async function updateLead(token: string, id: string, input: LeadInput): Promise<Lead | null> {
+  const row = await write(token, "leads", id, leadBody(input), "Could not update the lead");
+  return row ? toLead(row) : null;
+}
+
+export const deleteLead = (token: string, id: string) => remove(token, "leads", id);
+
+/** The customer's name comes along, so a list never reads accounts one by one. */
+const OPPORTUNITY_EXPAND = "account";
+
+function toOpportunity(row: Record_): Opportunity {
+  const account = ((row.expand ?? {}) as Record_).account as Record_ | undefined;
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    accountId: relationId(row.account),
+    accountName: String(account?.name ?? ""),
+    contactId: String(row.contact ?? ""),
+    stage: enumOr(row.stage, OPPORTUNITY_STAGES, "prospecting"),
+    amount: Number(row.amount ?? 0),
+    currency: asCurrency(row.currency),
+    probability: Number(row.probability ?? 0),
+    closeDate: dayOf(row.closeDate),
+    source: row.source ? enumOr(row.source, LEAD_SOURCES, "other") : "",
+    nextStep: String(row.nextStep ?? ""),
+    lossReason: String(row.lossReason ?? ""),
+    notes: String(row.notes ?? ""),
+    leadId: relationId(row.lead),
+    closedAt: toIso(row.closedAt),
+    ...ownership(row),
+    ...stamps(row),
+  };
+}
+
+export type OpportunityRecordInput = OpportunityInput & { closedAt: string; leadId?: string };
+
+const opportunityBody = ({ accountId, contactId, closedAt, leadId, ...rest }: OpportunityRecordInput): Record_ => ({
+  ...rest,
+  account: accountId,
+  contact: contactId,
+  closedAt,
+  ...(leadId !== undefined ? { lead: leadId } : {}),
+});
+
+export async function listOpportunities(token: string, filter: { accountId?: string } = {}): Promise<Opportunity[]> {
+  const rows = await readMany(token, "opportunities", {
+    limit: 0,
+    sort: "closeDate,name",
+    expand: OPPORTUNITY_EXPAND,
+    ...(filter.accountId ? { filter: `account = "${filter.accountId.replace(/"/g, "")}"` } : {}),
+  });
+  return rows.map(toOpportunity);
+}
+
+export async function getOpportunity(token: string, id: string): Promise<Opportunity | null> {
+  const row = await readOne(token, "opportunities", id, { expand: OPPORTUNITY_EXPAND });
+  return row ? toOpportunity(row) : null;
+}
+
+export async function createOpportunity(token: string, input: OpportunityRecordInput): Promise<Opportunity> {
+  const id = newId("opp");
+  await write(token, "opportunities", null, { id, ...opportunityBody(input) }, "Could not save the opportunity");
+  return (await getOpportunity(token, id))!;
+}
+
+export async function updateOpportunity(token: string, id: string, input: OpportunityRecordInput): Promise<Opportunity | null> {
+  const row = await write(token, "opportunities", id, opportunityBody(input), "Could not update the opportunity");
+  return row ? getOpportunity(token, id) : null;
+}
+
+export const deleteOpportunity = (token: string, id: string) => remove(token, "opportunities", id);
+
+/**
+ * What converting a lead writes, decided by src/server/pipeline.ts. Exactly
+ * one of `newAccount` and `existingAccountId` is set.
+ */
+export type LeadConversionPlan = {
+  leadId: string;
+  newAccount: AccountInput | null;
+  existingAccountId: string | null;
+  /** The person, added to the account at `position`. */
+  contact: { contact: AccountContact; position: number } | null;
+  opportunity: OpportunityRecordInput | null;
+  convertedAt: string;
+};
+
+export type LeadConversionIds = { accountId: string; contactId: string; opportunityId: string };
+
+/**
+ * Converts a lead in **one PocketBase batch**: the account (when it is new),
+ * the contact, the opportunity and the lead's own update land together or not
+ * at all, so a failure never leaves a customer with no lead pointing at it, or
+ * a lead marked converted into nothing. Every write is the caller's, under the
+ * collection rules — a viewer's conversion fails on its first write.
+ *
+ * The lead's update goes last, because its links name the records before it.
+ */
+export async function convertLeadRecords(token: string, plan: LeadConversionPlan): Promise<LeadConversionIds> {
+  const accountId = plan.existingAccountId ?? newId("acc");
+  const contactId = plan.contact ? newId("con") : "";
+  const opportunityId = plan.opportunity ? newId("opp") : "";
+
+  const batch = clientFor(token).createBatch();
+  if (plan.newAccount) {
+    // No address: a lead has none, and a blank location is no location (saveAccountGraph).
+    batch.collection("accounts").create({ id: accountId, ...accountBody(plan.newAccount), billingAddress: "", shippingAddress: "" });
+  }
+  if (plan.contact) {
+    batch.collection(CONTACTS).create({ id: contactId, account: accountId, ...contactBody(plan.contact.contact, plan.contact.position) });
+  }
+  if (plan.opportunity) {
+    batch.collection("opportunities").create({
+      id: opportunityId,
+      ...opportunityBody({ ...plan.opportunity, accountId, contactId: plan.opportunity.contactId || contactId }),
+    });
+  }
+  batch.collection("leads").update(plan.leadId, {
+    status: "converted",
+    convertedAt: plan.convertedAt,
+    convertedAccount: accountId,
+    convertedContact: contactId,
+    convertedOpportunity: opportunityId,
+  });
+
+  try {
+    await sendBatch(batch);
+  } catch (error) {
+    throw toApiError(error, "Could not convert the lead");
+  }
+  return { accountId, contactId, opportunityId };
+}
+
 /* --------------------------- proposal templates -------------------------- */
 
 export const listProposalTemplates = async (token: string): Promise<ProposalTemplate[]> =>
@@ -985,7 +1169,7 @@ async function saveWithLines<T>(
 
 /** Everything a list shows. The lines are `quote_lines` rows, and are not read for a list. */
 const QUOTE_SUMMARY_FIELDS =
-  "id,number,name,status,version,supersedes,supersededBy,priceBook,currency,validUntil,header,totals,approvals,approvers,owner,org,sharedWith,sentAt,decidedAt,created,updated,lineCount";
+  "id,number,name,status,version,supersedes,supersededBy,opportunity,priceBook,currency,validUntil,header,totals,approvals,approvers,owner,org,sharedWith,sentAt,decidedAt,created,updated,lineCount";
 
 export type QuoteRecordInput = {
   number: string;
@@ -993,6 +1177,8 @@ export type QuoteRecordInput = {
   status: QuoteStatus;
   version: number;
   supersedesId: string | null;
+  /** The opportunity it is written for. Left out (`undefined`), the stored link is not written. */
+  opportunityId?: string | null;
   customer: Quote["customer"];
   priceBookId: string;
   currency: Quote["currency"];
@@ -1027,6 +1213,7 @@ function quoteBody(input: QuoteRecordInput): Record_ {
     status: input.status,
     version: input.version,
     supersedes: input.supersedesId ?? "",
+    ...(input.opportunityId !== undefined ? { opportunity: input.opportunityId ?? "" } : {}),
     priceBook: input.priceBookId || "",
     currency: input.currency,
     validUntil: input.validUntil,
@@ -1232,6 +1419,17 @@ export const listQuotesForAccount = async (token: string, accountId: string, lim
       sort: "-updated",
       fields: QUOTE_SUMMARY_FIELDS,
       filter: `header.customer.accountId = "${accountId.replace(/"/g, "")}"`,
+    })
+  ).map(toQuoteSummary);
+
+/** Every quote written for one opportunity, newest first. */
+export const listQuotesForOpportunity = async (token: string, opportunityId: string): Promise<QuoteSummary[]> =>
+  (
+    await readMany(token, "quotes", {
+      limit: 0,
+      sort: "-updated",
+      fields: QUOTE_SUMMARY_FIELDS,
+      filter: `opportunity = "${opportunityId.replace(/"/g, "")}"`,
     })
   ).map(toQuoteSummary);
 

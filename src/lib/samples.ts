@@ -1227,8 +1227,14 @@ export const SAMPLE_QUOTE = {
  * been sitting there — an example whose numbers depend on when you clicked it
  * teaches nothing.
  */
-export const SAMPLE_INVOICES: {
+export type SampleInvoice = {
   accountName: string;
+  /**
+   * Bill this sample quote, by name, the way *Create invoice* does — its lines
+   * come from the quote and `lines` is ignored. The quote has to have reached
+   * sent or accepted, or the invoice is skipped.
+   */
+  quoteName?: string;
   /** Issued this many days before the install. Its terms decide when it fell due. */
   issuedDaysAgo: number;
   poNumber: string;
@@ -1237,7 +1243,11 @@ export const SAMPLE_INVOICES: {
   /** Cash received against it, as a fraction of the total. 1 settles it. */
   paidFraction: number;
   paidDaysAgo: number;
-}[] = [
+  /** A credit against it, as a fraction of the total — recorded before any payment. */
+  credit?: { fraction: number; reason: "adjustment" | "return" | "goodwill" | "write_off"; note: string; daysAgo: number };
+};
+
+export const SAMPLE_INVOICES: SampleInvoice[] = [
   {
     accountName: "Harbour Logistics",
     // Net 30, issued 20 days ago: not yet due, and already paid in full.
@@ -1378,6 +1388,7 @@ export function specimenQuote(): Quote {
   return {
     id: "qte_specimen",
     number: "Q-2026-0042",
+    opportunityId: null,
     name: "Harbour Logistics — platform expansion",
     status: "sent",
     version: 1,

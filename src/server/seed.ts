@@ -4,8 +4,9 @@
  *
  * One call fills an empty account with a catalogue, the policy around it,
  * customers and quotes that actually trip the approval ladder — and, in the
- * first set, seven proposal templates and a receivables book spread across the
- * aging — so the first thing a new account sees is the app doing its job rather
+ * first set, seven proposal templates; in both, a receivables book spread
+ * across the aging; and in the second, a pipeline of leads and opportunities
+ * behind the quotes — so the first thing a new account sees is the app doing its job rather
  * than nine empty lists.
  *
  * Everything goes in through the same validators and the same pricing engine
@@ -26,15 +27,21 @@ import {
   SAMPLE_QUOTE,
   SAMPLE_TEMPLATES,
   sampleApprovalRules,
+  type SampleInvoice,
   type SampleSetName,
 } from "../lib/samples";
 import {
   HEALTHCARE_ACCOUNTS,
+  HEALTHCARE_INVOICES,
+  HEALTHCARE_LEADS,
+  HEALTHCARE_OPPORTUNITIES,
   HEALTHCARE_PRICE_BOOKS,
   HEALTHCARE_PRICING_RULES,
   HEALTHCARE_PRODUCTS,
   HEALTHCARE_QUOTES,
   healthcareApprovalRules,
+  type SampleLead,
+  type SampleOpportunity,
   type SampleQuote,
   type SampleQuoteStage,
 } from "../lib/samplesHealthcare";
@@ -43,6 +50,11 @@ import { round } from "../lib/money";
 import {
   readAccount,
   readApprovalRule,
+  readCredit,
+  readLead,
+  readLeadConversion,
+  readOpportunity,
+  readPayment,
   readPriceBook,
   readPricingRule,
   readProduct,
@@ -64,7 +76,10 @@ import {
   createProposalTemplate,
   listAccounts,
   listApprovalRules,
+  createLead,
   listInvoices,
+  listLeads,
+  listOpportunities,
   listPriceBooks,
   listPricingRules,
   listProducts,
@@ -72,7 +87,17 @@ import {
   listQuotes,
 } from "./db";
 import { createPricedQuote, decideQuote, submitQuote, transitionQuote } from "./quotes";
-import { createBlankInvoice, discardInvoice, issueInvoice, recordPayment } from "./invoices";
+import {
+  createBlankInvoice,
+  discardInvoice,
+  invoiceQuote,
+  issueInvoice,
+  recordCredit,
+  recordPayment,
+  saveInvoice,
+} from "./invoices";
+import { convertLead, saveOpportunity } from "./pipeline";
+import type { Account, QuoteSummary } from "../lib/types";
 import { addDays, today } from "../lib/receivable";
 import { ApiError } from "./http";
 
@@ -93,7 +118,9 @@ type SampleSet = {
   accounts: (AccountInput & { priceBookName?: string })[];
   templates: typeof SAMPLE_TEMPLATES;
   quotes: readonly SampleQuote[];
-  invoices: typeof SAMPLE_INVOICES;
+  invoices: readonly SampleInvoice[];
+  opportunities: readonly SampleOpportunity[];
+  leads: readonly SampleLead[];
 };
 
 const SETS: Record<SampleSetName, SampleSet> = {
@@ -111,6 +138,8 @@ const SETS: Record<SampleSetName, SampleSet> = {
       },
     ],
     invoices: SAMPLE_INVOICES,
+    opportunities: [],
+    leads: [],
   },
   healthcare: {
     products: HEALTHCARE_PRODUCTS,
@@ -120,7 +149,9 @@ const SETS: Record<SampleSetName, SampleSet> = {
     accounts: HEALTHCARE_ACCOUNTS,
     templates: [],
     quotes: HEALTHCARE_QUOTES,
-    invoices: [],
+    invoices: HEALTHCARE_INVOICES,
+    opportunities: HEALTHCARE_OPPORTUNITIES,
+    leads: HEALTHCARE_LEADS,
   },
 };
 
@@ -265,6 +296,31 @@ export async function installSample(
     count(created, "accounts");
   }
 
+  /* ----------------------------- opportunities ---------------------------- */
+
+  // Before the quotes, which are written for them. Idempotent by name.
+  const haveOpportunity = new Map((await listOpportunities(token)).map(one => [one.name.toLowerCase(), one]));
+  /** Deals this run opened with no amount of their own: they take their quote's total. */
+  const pricedByQuote = new Set<string>();
+
+  for (const sample of set.opportunities) {
+    if (haveOpportunity.has(sample.name.toLowerCase())) {
+      count(skipped, "opportunities");
+      continue;
+    }
+    const account = haveAccount.get(sample.accountName.toLowerCase());
+    if (!account) {
+      count(skipped, "opportunities");
+      continue;
+    }
+    const parsed = readOpportunity(opportunityInput(sample, account, sample.amount ?? 0));
+    if (!parsed.ok) throw new ApiError(`The built-in sample is invalid (${sample.name}): ${parsed.error}`, 500);
+    const opened = await saveOpportunity(token, null, parsed.value);
+    haveOpportunity.set(opened.name.toLowerCase(), opened);
+    if (sample.amount === undefined) pricedByQuote.add(opened.id);
+    count(created, "opportunities");
+  }
+
   /* ------------------------------- documents ------------------------------ */
 
   const haveTemplate = new Set((await listProposalTemplates(token)).map(template => template.name.toLowerCase()));
@@ -323,11 +379,14 @@ export async function installSample(
 
     if (!lines.length) continue;
 
+    const opportunity = sample.opportunityName ? haveOpportunity.get(sample.opportunityName.toLowerCase()) : undefined;
+
     const result = await createPricedQuote(
       token,
       {
         name: sample.name,
         accountId: account.id,
+        ...(opportunity ? { opportunityId: opportunity.id } : {}),
         priceBookId: "",
         currency: "USD",
         termMonths: sample.termMonths,
@@ -345,12 +404,60 @@ export async function installSample(
     count(created, "quotes");
     if (sample.note) notes.push(sample.note);
 
+    // A deal opened with no amount is worth what its quote came to.
+    if (opportunity && pricedByQuote.has(opportunity.id)) {
+      const parsed = readOpportunity({ ...opportunity, amount: result.quote.totals.grandTotal });
+      if (parsed.ok) await saveOpportunity(token, opportunity.id, parsed.value);
+      pricedByQuote.delete(opportunity.id);
+    }
+
     try {
       await walkQuote(token, result.quote.id, approverEmail, sample.stage ?? "draft");
     } catch (error) {
       if (!(error instanceof ApiError)) throw error;
       notes.push(`“${sample.name}” stopped short of ${sample.stage}: ${error.message}`);
     }
+  }
+
+  /* --------------------------------- leads -------------------------------- */
+
+  // Idempotent by person and company: the same name at the same place is the same lead.
+  const leadKey = (lead: { name: string; company: string }) => `${lead.name.toLowerCase()}|${lead.company.toLowerCase()}`;
+  const haveLead = new Set((await listLeads(token)).map(leadKey));
+
+  for (const sample of set.leads) {
+    if (haveLead.has(leadKey(sample))) {
+      count(skipped, "leads");
+      continue;
+    }
+    const { convert, ...fields } = sample;
+    const parsed = readLead({ ...fields, currency: "USD" });
+    if (!parsed.ok) throw new ApiError(`The built-in sample is invalid (${sample.company || sample.name}): ${parsed.error}`, 500);
+    const lead = await createLead(token, parsed.value);
+    haveLead.add(leadKey(sample));
+    count(created, "leads");
+
+    if (!convert) continue;
+    const account = haveAccount.get(convert.accountName.toLowerCase());
+    if (!account) continue;
+    const conversion = readLeadConversion({
+      accountId: account.id,
+      addContact: true,
+      createOpportunity: true,
+      opportunity: { name: convert.opportunityName, stage: convert.stage, closeDate: addDays(today(), convert.closeInDays) },
+    });
+    if (!conversion.ok) throw new ApiError(`The built-in sample is invalid (${sample.name}): ${conversion.error}`, 500);
+    try {
+      await convertLead(token, lead.id, conversion.value);
+      count(created, "conversions");
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      notes.push(`The lead “${sample.name}” was created but not converted: ${error.message}`);
+    }
+  }
+
+  if (created.conversions) {
+    notes.push("One lead has already been converted, onto an existing customer — open it to see the contact and the deal it made.");
   }
 
   /* ------------------------------ receivables ----------------------------- */
@@ -369,6 +476,8 @@ export async function installSample(
     existingInvoices.map(one => `${one.customer.name.toLowerCase()}|${one.poNumber}|${one.totals.total}`),
   );
 
+  const quoteByName = new Map((await listQuotes(token, 0)).map(quote => [quote.name.toLowerCase(), quote]));
+
   for (const sample of set.invoices) {
     const customer = haveAccount.get(sample.accountName.toLowerCase());
     if (!customer) {
@@ -376,34 +485,34 @@ export async function installSample(
       continue;
     }
 
-    const lines = sample.lines.map((entry, index) => ({
-      id: localId("inl"),
-      sourceLineId: null,
-      sku: entry.sku,
-      description: entry.description,
-      quantity: entry.quantity,
-      unitPrice: entry.unitPrice,
-      amount: 0,
-      taxPercent: customer.taxExempt ? 0 : entry.taxPercent,
-      taxAmount: 0,
-      sortOrder: index,
-    }));
-
     try {
-      const raised = await createBlankInvoice(
-        token,
-        {
-          accountId: customer.id,
-          quoteId: null,
-          currency: customer.currency,
-          issueDate: "",
-          paymentTermDays: customer.paymentTermDays,
-          poNumber: sample.poNumber,
-          notes: sample.notes,
-          internalNotes: "Part of the worked example.",
-        },
-        lines,
-      );
+      const raised = sample.quoteName
+        ? await raiseFromQuote(token, sample, customer, quoteByName.get(sample.quoteName.toLowerCase()))
+        : await createBlankInvoice(
+            token,
+            {
+              accountId: customer.id,
+              quoteId: null,
+              currency: customer.currency,
+              issueDate: "",
+              paymentTermDays: customer.paymentTermDays,
+              poNumber: sample.poNumber,
+              notes: sample.notes,
+              internalNotes: "Part of the worked example.",
+            },
+            sample.lines.map((entry, index) => ({
+              id: localId("inl"),
+              sourceLineId: null,
+              sku: entry.sku,
+              description: entry.description,
+              quantity: entry.quantity,
+              unitPrice: entry.unitPrice,
+              amount: 0,
+              taxPercent: customer.taxExempt ? 0 : entry.taxPercent,
+              taxAmount: 0,
+              sortOrder: index,
+            })),
+          );
 
       // Same customer, same reference, same money: this one is already here.
       const fingerprint = `${customer.name.toLowerCase()}|${sample.poNumber}|${raised.invoice.totals.total}`;
@@ -417,17 +526,27 @@ export async function installSample(
       const issued = await issueInvoice(token, raised.invoice.id, addDays(today(), -sample.issuedDaysAgo));
       count(created, "invoices");
 
+      // The credit first: it is what the customer was told they owe less by
+      // before they paid what they still owed.
+      if (sample.credit) {
+        const credit = readCredit({
+          issuedOn: addDays(today(), -sample.credit.daysAgo),
+          amount: round(issued.totals.total * sample.credit.fraction, issued.currency),
+          reason: sample.credit.reason,
+          note: sample.credit.note,
+        });
+        if (credit.ok) await recordCredit(token, issued.id, credit.value);
+      }
+
       if (sample.paidFraction > 0) {
-        const amount = round(issued.totals.total * sample.paidFraction, issued.currency);
-        if (amount > 0) {
-          await recordPayment(token, issued.id, {
-            receivedOn: addDays(today(), -sample.paidDaysAgo),
-            amount,
-            method: "bank_transfer",
-            reference: `FT-${sample.issuedDaysAgo}${sample.poNumber.slice(-3)}`,
-            note: "",
-          });
-        }
+        const payment = readPayment({
+          receivedOn: addDays(today(), -sample.paidDaysAgo),
+          amount: round(issued.totals.total * sample.paidFraction, issued.currency),
+          method: "bank_transfer",
+          reference: `FT-${sample.issuedDaysAgo}${sample.poNumber.slice(-3)}`,
+          note: "",
+        });
+        if (payment.ok) await recordPayment(token, issued.id, payment.value);
       }
     } catch (error) {
       // An invoice that will not install is not worth failing the sample over.
@@ -436,8 +555,57 @@ export async function installSample(
   }
 
   if (created.invoices) {
-    notes.push("The receivables book has one settled invoice, one a fortnight late and one badly overdue.");
+    notes.push(
+      setName === "healthcare"
+        ? "The receivables book has an invoice raised from Riverbend's accepted quote, one settled, one current, one late and one deep in 90+ with a credit against it."
+        : "The receivables book has one settled invoice, one a fortnight late and one badly overdue.",
+    );
   }
 
   return { created, skipped, quoteId, notes };
+}
+
+/** A sample opportunity as the body `POST /api/opportunities` would take. */
+function opportunityInput(sample: SampleOpportunity, account: Account, amount: number) {
+  const contact =
+    account.contacts.find(one => sample.contactEmail && one.email === sample.contactEmail) ??
+    account.contacts.find(one => one.primary);
+  return {
+    name: sample.name,
+    accountId: account.id,
+    contactId: contact?.id ?? "",
+    stage: sample.stage,
+    amount,
+    currency: account.currency,
+    probability: sample.probability ?? null,
+    closeDate: addDays(today(), sample.closeInDays),
+    source: sample.source,
+    nextStep: sample.nextStep,
+    lossReason: sample.lossReason ?? "",
+    notes: sample.notes,
+  };
+}
+
+/**
+ * Bills a sample quote the way *Create invoice* does, then gives the draft the
+ * sample's PO and notes. Refused — and so skipped — if the quote never got as
+ * far as sent.
+ */
+async function raiseFromQuote(token: string, sample: SampleInvoice, customer: Account, quote: QuoteSummary | undefined) {
+  if (!quote) throw new ApiError(`No quote named “${sample.quoteName}”.`, 404);
+  const { invoice } = await invoiceQuote(token, quote.id);
+  return saveInvoice(
+    token,
+    invoice.id,
+    {
+      accountId: customer.id,
+      currency: invoice.currency,
+      issueDate: "",
+      paymentTermDays: invoice.paymentTermDays,
+      poNumber: sample.poNumber,
+      notes: sample.notes,
+      internalNotes: `${invoice.internalNotes} Part of the worked example.`,
+    },
+    invoice.lines,
+  );
 }

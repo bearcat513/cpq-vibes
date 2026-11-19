@@ -39,6 +39,26 @@ Since then, three things not in this plan are done: a **Home dashboard** (the st
 with single-key shortcuts. The dashboard covers the "today" end of §3.10; the reporting itself
 (trends over time, win/loss by rep and product, saved reports) is still open.
 
+Since 2026-11-15 these are done too:
+
+- **Files on records** — attachments on customers, quotes, invoices and approvals, in one
+  `sys_attachment` collection whose rules repeat each record's audience.
+- **A record workspace** in the record browser: related lists, a summary column with roll-ups and
+  formulas, and an admin editor for both.
+- **Customers normalised** into `accounts`, `contacts` and `sys_physical_location`, and **lines as
+  records** (`quote_lines`, `invoice_lines`), each graph written in one PocketBase batch.
+- **Most of §3.5: leads and opportunities.** Leads convert into a customer, a contact and an
+  opportunity in one batch. An opportunity has a stage, amount, probability and close date, holds
+  the quotes written against it, and records a loss reason when it is lost. The pipeline is totalled
+  per currency.
+
+Still open from §3.5: a **primary** quote per opportunity (the pipeline counts the opportunity's own
+amount, not a quote's), **quote comparison**, and a loss reason as a **picklist** rather than free
+text. Not in the plan but worth doing next: **accepting a quote should close its opportunity as
+won**, and declining every quote on it should prompt for a loss. Opportunities cannot carry
+attachments yet. The record form's stale-write check (409) is a start on §3.13's optimistic
+concurrency, but only `/table` has it.
+
 Everything else in §3 is still to do.
 
 ---
@@ -227,7 +247,8 @@ needs the contract it created:
 
 ### 3.5 Deals and pipeline (P2)
 
-A quote is currently the top-level object, and revisions are linked only by `supersedesId`.
+*Mostly done — see Status.* When this was written a quote was the top-level object, and revisions
+were linked only by `supersedesId`.
 
 - **`opportunities`** (or "deals"): the account, the expected close date, the stage and the owner.
   An opportunity holds several quotes (alternatives as well as revisions) and marks one as

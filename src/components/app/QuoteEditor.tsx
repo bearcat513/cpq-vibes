@@ -80,6 +80,8 @@ type Props = {
 type Draft = {
   name: string;
   accountId: string | null;
+  /** Untouched (`undefined`), a save keeps the quote's opportunity; null unlinks it. */
+  opportunityId?: string | null;
   priceBookId: string;
   currency: string;
   termMonths: number;
@@ -284,6 +286,7 @@ export function QuoteEditor(props: Props) {
   const bodyOf = (source: Draft): QuoteBody => ({
     name: source.name.trim() || "Untitled quote",
     accountId: source.accountId,
+    ...(source.opportunityId !== undefined ? { opportunityId: source.opportunityId } : {}),
     priceBookId: source.priceBookId,
     currency: source.currency,
     termMonths: source.termMonths,
@@ -540,7 +543,17 @@ export function QuoteEditor(props: Props) {
                 />
               </Field>
 
-              <Field label="Customer">
+              <Field
+                label="Customer"
+                hint={
+                  quote?.opportunityId && draft.opportunityId !== null ? (
+                    <OpportunityLink
+                      id={quote.opportunityId}
+                      onUnlink={editable ? () => patch({ opportunityId: null }) : undefined}
+                    />
+                  ) : undefined
+                }
+              >
                 <Select
                   value={draft.accountId ?? "none"}
                   onValueChange={value => patch({ accountId: value === "none" ? null : value })}
@@ -992,5 +1005,35 @@ function ApprovalHistory({
         </div>
       )}
     </Section>
+  );
+}
+
+/**
+ * The deal a quote is written for, under its customer. Unlinking takes effect
+ * on the next save, like any other change to the draft; the customer cannot be
+ * moved off the deal's while it is linked (the server refuses it).
+ */
+function OpportunityLink({ id, onUnlink }: { id: string; onUnlink?: () => void }) {
+  const [name, setName] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    api.getOpportunity(id).then(
+      opportunity => live && setName(opportunity.name),
+      () => live && setName(""),
+    );
+    return () => {
+      live = false;
+    };
+  }, [id]);
+
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      For opportunity <span className="font-medium text-foreground">{name === null ? "…" : name || "(not visible to you)"}</span>
+      {onUnlink && (
+        <button type="button" className="underline underline-offset-2" onClick={onUnlink}>
+          Unlink
+        </button>
+      )}
+    </span>
   );
 }

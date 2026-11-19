@@ -828,7 +828,7 @@ function DataSection({
             <p className="text-xs text-muted-foreground">
               {hasCatalogue
                 ? "Additive — anything already here by the same SKU or name is left exactly as it is."
-                : "Software: eight products, a quote and a receivables book. Healthcare: 42 archive products, four price books, five customers and five quotes at every stage."}
+                : "Software: eight products, a quote and a receivables book. Healthcare: 42 archive products, five price books, seven customers, eight quotes at every stage, a pipeline of leads and opportunities, and five invoices."}
             </p>
           </div>
         </Section>

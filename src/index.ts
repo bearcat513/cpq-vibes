@@ -64,7 +64,18 @@ import {
   updatePricingRule,
   updateProduct,
   updateProposalTemplate,
+  deleteLead,
+  deleteOpportunity,
+  getLead,
+  getOpportunity,
+  createLead,
+  listLeads,
+  listOpportunities,
+  listQuotesForOpportunity,
+  updateLead,
 } from "./server/db";
+import { convertLead, quoteOpportunity, saveOpportunity } from "./server/pipeline";
+import { LEAD_STATUSES, OPPORTUNITY_STAGES, isConverted, type LeadStatus, type OpportunityStage } from "./lib/pipeline";
 import {
   agingRows,
   creditRows,
@@ -199,6 +210,9 @@ import {
   readProposalTemplate,
   readQuoteHeader,
   readQuoteLines,
+  readLead,
+  readLeadConversion,
+  readOpportunity,
 } from "./lib/validate";
 
 /**
@@ -781,6 +795,93 @@ const server = serve({
         if (!account) return fail("Account not found.", 404);
         return Response.json((await listQuotesForAccount(token, account.id)).map(quote => withLifecycle(quote)));
       }),
+    },
+
+    /* ------------------------------ the pipeline ------------------------- */
+
+    "/api/leads": {
+      GET: guarded(async (token, req) => {
+        const status = query(req).get("status") ?? "";
+        if (status && !LEAD_STATUSES.includes(status as LeadStatus)) {
+          throw new ApiError(`"status" must be one of ${LEAD_STATUSES.join(", ")}.`);
+        }
+        const leads = await listLeads(token);
+        return Response.json(status ? leads.filter(lead => lead.status === status) : leads);
+      }),
+      POST: guarded(async (token, req) => Response.json(await createLead(token, must(readLead(await body(req)))), { status: 201 })),
+    },
+
+    "/api/leads/:id": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const lead = await getLead(token, req.params.id);
+        return lead ? Response.json(lead) : fail("Lead not found.", 404);
+      }),
+      PUT: guarded<{ params: { id: string } }>(async (token, req) => {
+        const input = must(readLead(await body(req)));
+        // The collection rule refuses it too; this says why rather than "not found".
+        const existing = await getLead(token, req.params.id);
+        if (!existing) return fail("Lead not found.", 404);
+        if (isConverted(existing)) return fail("A converted lead is history and cannot be edited. Edit the customer or the opportunity it became.", 409);
+        const updated = await updateLead(token, req.params.id, input);
+        return updated ? Response.json(updated) : fail("Lead not found, or not yours to change.", 404);
+      }),
+      DELETE: guarded<{ params: { id: string } }>(async (token, req) =>
+        (await deleteLead(token, req.params.id))
+          ? Response.json({ ok: true })
+          : fail("Lead not found, or not yours to delete.", 404),
+      ),
+    },
+
+    /**
+     * Turns a lead into a customer (new, or one named by `accountId`), adds
+     * the person as a contact there, and opens an opportunity — in one batch.
+     */
+    "/api/leads/:id/convert": {
+      POST: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await convertLead(token, req.params.id, must(readLeadConversion(await body(req)))), { status: 201 }),
+      ),
+    },
+
+    "/api/opportunities": {
+      GET: guarded(async (token, req) => {
+        const params = query(req);
+        const stage = params.get("stage") ?? "";
+        if (stage && !OPPORTUNITY_STAGES.includes(stage as OpportunityStage)) {
+          throw new ApiError(`"stage" must be one of ${OPPORTUNITY_STAGES.join(", ")}.`);
+        }
+        const all = await listOpportunities(token, { accountId: params.get("accountId") ?? "" });
+        return Response.json(stage ? all.filter(opportunity => opportunity.stage === stage) : all);
+      }),
+      POST: guarded(async (token, req) =>
+        Response.json(await saveOpportunity(token, null, must(readOpportunity(await body(req)))), { status: 201 }),
+      ),
+    },
+
+    "/api/opportunities/:id": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const opportunity = await getOpportunity(token, req.params.id);
+        return opportunity ? Response.json(opportunity) : fail("Opportunity not found.", 404);
+      }),
+      PUT: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await saveOpportunity(token, req.params.id, must(readOpportunity(await body(req))))),
+      ),
+      DELETE: guarded<{ params: { id: string } }>(async (token, req) =>
+        (await deleteOpportunity(token, req.params.id))
+          ? Response.json({ ok: true })
+          : fail("Opportunity not found, or not yours to delete.", 404),
+      ),
+    },
+
+    /** The quotes written for a deal, and a new one for it. */
+    "/api/opportunities/:id/quotes": {
+      GET: guarded<{ params: { id: string } }>(async (token, req) => {
+        const opportunity = await getOpportunity(token, req.params.id);
+        if (!opportunity) return fail("Opportunity not found.", 404);
+        return Response.json((await listQuotesForOpportunity(token, opportunity.id)).map(quote => withLifecycle(quote)));
+      }),
+      POST: guarded<{ params: { id: string } }>(async (token, req) =>
+        Response.json(await quoteOpportunity(token, req.params.id), { status: 201 }),
+      ),
     },
 
     "/api/products": products.collection,

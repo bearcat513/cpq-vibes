@@ -31,6 +31,8 @@
  * them as ordinary discounts.
  */
 import { addDays, today as todayIso } from "./receivable";
+import type { LeadSource, OpportunityStage } from "./pipeline";
+import type { SampleInvoice } from "./samples";
 import type { OptionGroup } from "./types";
 import type { AccountInput, ApprovalRuleInput, PriceBookInput, PricingRuleInput, ProductInput } from "./validate";
 
@@ -724,6 +726,7 @@ const BOOK_LIST = "Archive list";
 const BOOK_RIVERBEND = "Riverbend Health System contract";
 const BOOK_LAKESHORE = "Lakeshore consolidation program";
 const BOOK_PRAIRIE = "Prairie View Community Health contract";
+const BOOK_HARBORVIEW = "Harborview Children's contract";
 
 /**
  * The list book, and one contract book per customer the workbook gives a rate.
@@ -771,6 +774,19 @@ export const HEALTHCARE_PRICE_BOOKS: PriceBookInput[] = [
     validFrom: addDays(todayIso(), -120),
     validTo: addDays(todayIso(), 245),
     entries: [{ sku: "SUP-STD", unitPrice: 0.16, active: true }],
+  },
+  {
+    name: BOOK_HARBORVIEW,
+    description: "Premium support at 20% of license, and the pediatric migration rate, under the merger letter of intent.",
+    currency: "USD",
+    isDefault: false,
+    active: true,
+    validFrom: addDays(todayIso(), -60),
+    validTo: addDays(todayIso(), 670),
+    entries: [
+      { sku: "SUP-PRM", unitPrice: 0.2, active: true },
+      { sku: "SVC-MIG", unitPrice: 31_500, active: true },
+    ],
   },
 ];
 
@@ -833,6 +849,16 @@ export const HEALTHCARE_PRICING_RULES: PricingRuleInput[] = [
     message: "Multi-system extraction",
   }),
   lineRule({
+    name: "Volume - Warm Storage 25+ TB",
+    description: "Automatic on Locker Tier 3, for customers parking a whole retired system's images there.",
+    appliesToSku: "HST-WRM",
+    condition: "quantity >= 25",
+    target: "discountPercent",
+    expression: "max(discountPercent, 10)",
+    priority: 20,
+    message: "25+ TB warm storage volume",
+  }),
+  lineRule({
     name: "5-Year Hosting Commitment",
     description: "Runs last and adds rather than takes the larger, because the workbook marks it stackable.",
     appliesToFamily: HOSTING,
@@ -892,6 +918,20 @@ export const healthcareApprovalRules = (approverEmail: string): ApprovalRuleInpu
     approvalsRequired: 1,
     rejectionsRequired: 1,
     message: "A line was priced past the ceiling its product allows, which needs the CRO.",
+    active: true,
+  },
+  {
+    name: "Term Beyond Five Years",
+    scope: "quote",
+    metric: "termMonths",
+    comparator: ">",
+    threshold: 60,
+    condition: "",
+    level: 1,
+    approvers: [approverEmail],
+    approvalsRequired: 1,
+    rejectionsRequired: 1,
+    message: "A commitment longer than the five-year hosting term needs Finance to sign off on the revenue schedule.",
     active: true,
   },
 ];
@@ -1001,6 +1041,37 @@ export const HEALTHCARE_ACCOUNTS: HealthcareAccount[] = [
     billingAddress: address("500 Cedar Plaza", "Cedar Rapids", "IA", "52401"),
     notes: "Fictional. Needs delegated-entity oversight across six states.",
   }),
+  account({
+    name: "Harborview Children's Hospital",
+    industry: "Pediatric acute care hospital",
+    website: "https://harborview-childrens.example.org",
+    status: "customer",
+    tags: ["acute", "pediatric", "post-merger", "epic"],
+    priceBookName: BOOK_HARBORVIEW,
+    paymentTerms: "Net 45",
+    paymentTermDays: 45,
+    creditLimit: 1_000_000,
+    contacts: [
+      { id: "con_harborview_amara", name: "Amara Delacroix-Finch", title: "VP, Clinical Informatics", email: "a.delacroix-finch@harborview-childrens.example.org", phone: "+1 555 010 3391", role: "commercial", primary: true },
+      { id: "con_harborview_jun", name: "Jun-seo Albright", title: "HIM Director", email: "j.albright@harborview-childrens.example.org", phone: "", role: "technical", primary: false },
+      { id: "con_harborview_ap", name: "Accounts Payable", title: "", email: "payables@harborview-childrens.example.org", phone: "", role: "billing", primary: false },
+    ],
+    billingAddress: address("1 Lighthouse Way", "Portland", "ME", "04101"),
+    notes: "Fictional. Merged into a regional system on Epic; its own Epic instance retires. Pediatric records are kept until the patient turns 21, so retention is the 21-year option.",
+  }),
+  account({
+    name: "Summit Ridge Orthopedic Partners",
+    industry: "Orthopedic physician group and ASC",
+    website: "https://summitridge-ortho.example.com",
+    status: "customer",
+    tags: ["ambulatory", "asc", "private-equity"],
+    contacts: [
+      { id: "con_summit_garrett", name: "Garrett Osei", title: "Chief Operating Officer", email: "g.osei@summitridge-ortho.example.com", phone: "+1 555 010 5807", role: "commercial", primary: true },
+      { id: "con_summit_billing", name: "Billing Office", title: "", email: "billing@summitridge-ortho.example.com", phone: "", role: "billing", primary: false },
+    ],
+    billingAddress: address("7800 Summit Ridge Boulevard", "Boulder", "CO", "80301"),
+    notes: "Fictional. A roll-up of three practices, two on athenahealth and one on Greenway, consolidating onto one PM system.",
+  }),
 ];
 
 /* --------------------------------- quotes --------------------------------- */
@@ -1036,6 +1107,8 @@ export type SampleQuote = {
   internalNotes: string;
   stage?: SampleQuoteStage;
   note?: string;
+  /** The sample opportunity this quote is written for, by name. */
+  opportunityName?: string;
   lines: readonly SampleQuoteLine[];
 };
 
@@ -1054,6 +1127,9 @@ const LAKESHORE_LICENSES = [
 ];
 const PRAIRIE_LICENSES = ["ARC-ECW", "ARC-ECW-EHR", "ARC-ECW-PM"];
 const BLUFF_LICENSES = ["ARC-MTX", "ARC-MTX-CLN"];
+const HARBORVIEW_LICENSES = ["ARC-EPC", "ARC-EPC-CLN", "ARC-EPC-RES"];
+const HARBORVIEW_SERVICES = ["SVC-EXT-STD", "SVC-MIG", "SVC-DOC", "SVC-IMP"];
+const SUMMIT_LICENSES = ["ARC-ATH", "ARC-GRW"];
 
 const line = (
   sku: string,
@@ -1062,9 +1138,243 @@ const line = (
   rest: Omit<SampleQuoteLine, "sku" | "quantity" | "options" | "discountPercent"> & { discountPercent?: number } = {},
 ): SampleQuoteLine => ({ sku, quantity, options, discountPercent: 0, ...rest });
 
+/* ------------------------------ opportunities ----------------------------- */
+
+const OPP_RIVERBEND = "Riverbend - TruBridge sunset";
+const OPP_LAKESHORE = "Lakeshore - Q4 2026 consolidation";
+const OPP_PRAIRIE = "Prairie View - eClinicalWorks archive";
+const OPP_PRAIRIE_WARM = "Prairie View - Warm storage expansion";
+const OPP_BLUFF = "Bluff County - MEDITECH archive";
+const OPP_CEDAR = "Cedar Valley - Managed care oversight";
+const OPP_HARBORVIEW = "Harborview - Epic post-merger archive";
+const OPP_SUMMIT = "Summit Ridge - Ambulatory archive consolidation";
+
+export type SampleOpportunity = {
+  name: string;
+  accountName: string;
+  stage: OpportunityStage;
+  /** Omitted, the deal is worth what the quote written for it comes to. */
+  amount?: number;
+  /** Omitted, the stage's own probability. */
+  probability?: number;
+  /** Relative to the install: negative is a deal that closed (or should have) that many days ago. */
+  closeInDays: number;
+  source: LeadSource;
+  /** Who the deal is with, by email. Omitted, the customer's primary contact. */
+  contactEmail?: string;
+  nextStep: string;
+  lossReason?: string;
+  notes: string;
+};
+
+/**
+ * One deal behind every sample quote, and one with no quote at all, lost —
+ * so the pipeline has a win rate to show rather than 100%.
+ */
+export const HEALTHCARE_OPPORTUNITIES: SampleOpportunity[] = [
+  {
+    name: OPP_RIVERBEND,
+    accountName: "Riverbend Health System",
+    stage: "closed_won",
+    closeInDays: -30,
+    source: "outbound",
+    nextStep: "Kickoff with the extraction team.",
+    notes: "Signed under the MSLA amendment, credit included.",
+  },
+  {
+    name: OPP_LAKESHORE,
+    accountName: "Lakeshore Regional Medical Center",
+    stage: "negotiation",
+    probability: 80,
+    closeInDays: 40,
+    source: "referral",
+    contactEmail: "m.lindqvist@lakeshore-regional.example.org",
+    nextStep: "CFO signature on the order form before the year-end promotion runs out.",
+    notes: "Referred by Riverbend's CIO. Approved through the CRO.",
+  },
+  {
+    name: OPP_PRAIRIE,
+    accountName: "Prairie View Community Health",
+    stage: "proposal",
+    closeInDays: 30,
+    source: "web",
+    nextStep: "Grant officer to confirm the drawdown schedule.",
+    notes: "HRSA capital grant; the money is there but has to be drawn by quarter.",
+  },
+  {
+    name: OPP_PRAIRIE_WARM,
+    accountName: "Prairie View Community Health",
+    stage: "prospecting",
+    closeInDays: 120,
+    source: "outbound",
+    nextStep: "Count the boxes: they think it is 30 TB once scanned.",
+    notes: "Paper charts from the two clinics they took over last year.",
+  },
+  {
+    name: OPP_BLUFF,
+    accountName: "Bluff County Memorial Hospital",
+    stage: "negotiation",
+    probability: 60,
+    closeInDays: 21,
+    source: "partner",
+    nextStep: "VP sign-off on the extra 8%, then send.",
+    notes: "Came through the state rural hospital association. A competing bid is in.",
+  },
+  {
+    name: OPP_CEDAR,
+    accountName: "Cedar Valley Health Plan",
+    stage: "qualification",
+    closeInDays: 75,
+    source: "event",
+    nextStep: "Scoping call on the custom reports, and whether MI and OH are in.",
+    notes: "Met at the AHIP conference.",
+  },
+  {
+    name: "Cedar Valley - Provider directory archive",
+    accountName: "Cedar Valley Health Plan",
+    stage: "closed_lost",
+    amount: 85_000,
+    closeInDays: -55,
+    source: "event",
+    nextStep: "",
+    lossReason: "Bundled into their claims vendor's renewal at no extra cost.",
+    notes: "Lost on price to a bundle, not on product. Worth asking again at that renewal.",
+  },
+  {
+    name: OPP_HARBORVIEW,
+    accountName: "Harborview Children's Hospital",
+    stage: "proposal",
+    probability: 55,
+    closeInDays: 50,
+    source: "referral",
+    nextStep: "Walk the HIM director through the 21-year retention plan.",
+    notes: "The acquiring system's Epic team is driving the timeline; the instance goes read-only in the spring.",
+  },
+  {
+    name: OPP_SUMMIT,
+    accountName: "Summit Ridge Orthopedic Partners",
+    stage: "closed_won",
+    closeInDays: -12,
+    source: "web",
+    nextStep: "Extraction kickoff with both vendors.",
+    notes: "Came in through the website after their PE sponsor mandated one PM system.",
+  },
+];
+
+/* ---------------------------------- leads --------------------------------- */
+
+export type SampleLead = {
+  name: string;
+  company: string;
+  title: string;
+  email: string;
+  phone: string;
+  website: string;
+  industry: string;
+  source: LeadSource;
+  status: "new" | "working" | "qualified" | "unqualified";
+  estimatedAmount: number;
+  notes: string;
+  /**
+   * Converted after it is created, onto this existing customer, opening this
+   * deal — the way the *Convert* button does.
+   */
+  convert?: { accountName: string; opportunityName: string; stage: OpportunityStage; closeInDays: number };
+};
+
+export const HEALTHCARE_LEADS: SampleLead[] = [
+  {
+    name: "Dana Okafor",
+    company: "Lakeshore Regional Medical Center",
+    title: "Director, Health Information Management",
+    email: "d.okafor@lakeshore-regional.example.org",
+    phone: "+1 555 010 7790",
+    website: "",
+    industry: "Regional medical center",
+    source: "event",
+    status: "qualified",
+    estimatedAmount: 28_800,
+    notes: "Stopped by the booth at the state HIMA meeting: release-of-information requests against the archive once it is live.",
+    convert: {
+      accountName: "Lakeshore Regional Medical Center",
+      opportunityName: "Lakeshore - Release of Information",
+      stage: "qualification",
+      closeInDays: 90,
+    },
+  },
+  {
+    name: "Marisol Achterberg",
+    company: "St. Brendan's Rehabilitation Hospital",
+    title: "CFO",
+    email: "m.achterberg@stbrendans-rehab.example.org",
+    phone: "+1 555 010 4127",
+    website: "https://stbrendans-rehab.example.org",
+    industry: "Post-acute rehabilitation",
+    source: "event",
+    status: "working",
+    estimatedAmount: 95_000,
+    notes: "Moving off MEDITECH Magic. Wants A/R wind down more than the clinical archive.",
+  },
+  {
+    name: "Theo Varga",
+    company: "Northern Plains Lab Services",
+    title: "IT Manager",
+    email: "theo.varga@northernplainslab.example.com",
+    phone: "",
+    website: "https://northernplainslab.example.com",
+    industry: "Reference laboratory",
+    source: "referral",
+    status: "qualified",
+    estimatedAmount: 40_000,
+    notes: "Referred by Prairie View. LIS replacement next summer; results have to stay reachable for 10 years.",
+  },
+  {
+    name: "Ruth Ellingboe",
+    company: "Mesa Verde Behavioral Health",
+    title: "Compliance Officer",
+    email: "r.ellingboe@mesaverde-bh.example.org",
+    phone: "",
+    website: "",
+    industry: "Behavioral health",
+    source: "web",
+    status: "new",
+    estimatedAmount: 0,
+    notes: "Downloaded the 42 CFR Part 2 retention guide.",
+  },
+  {
+    name: "",
+    company: "Tri-County Public Health Department",
+    title: "",
+    email: "",
+    phone: "+1 555 010 0300",
+    website: "https://tricounty-health.example.gov",
+    industry: "Public health",
+    source: "outbound",
+    status: "new",
+    estimatedAmount: 0,
+    notes: "Immunization registry vendor is sunsetting its hosted product. Find out who owns it.",
+  },
+  {
+    name: "Felix Brandvold",
+    company: "Copperline Dental Group",
+    title: "Office Manager",
+    email: "felix@copperline-dental.example.com",
+    phone: "",
+    website: "",
+    industry: "Dental practice",
+    source: "advertising",
+    status: "unqualified",
+    estimatedAmount: 0,
+    notes: "Four chairs and one system. Their PM vendor's export does what they need; pointed them at it.",
+  },
+];
+
+/* ---------------------------------- quotes -------------------------------- */
+
 export const HEALTHCARE_QUOTES: SampleQuote[] = [
   {
     name: "Riverbend - TruBridge sunset and A/R wind down",
+    opportunityName: OPP_RIVERBEND,
     accountName: "Riverbend Health System",
     termMonths: 36,
     stage: "accepted",
@@ -1094,6 +1404,7 @@ export const HEALTHCARE_QUOTES: SampleQuote[] = [
   },
   {
     name: "Lakeshore - Q4 2026 Consolidation",
+    opportunityName: OPP_LAKESHORE,
     accountName: "Lakeshore Regional Medical Center",
     termMonths: 60,
     // The workbook's year-end promotion keys off the opportunity name, which a
@@ -1124,6 +1435,7 @@ export const HEALTHCARE_QUOTES: SampleQuote[] = [
   },
   {
     name: "Prairie View - eClinicalWorks archive",
+    opportunityName: OPP_PRAIRIE,
     accountName: "Prairie View Community Health",
     termMonths: 36,
     stage: "sent",
@@ -1144,6 +1456,7 @@ export const HEALTHCARE_QUOTES: SampleQuote[] = [
   },
   {
     name: "Bluff County - MEDITECH archive",
+    opportunityName: OPP_BLUFF,
     accountName: "Bluff County Memorial Hospital",
     termMonths: 36,
     discountPercent: 8,
@@ -1165,6 +1478,7 @@ export const HEALTHCARE_QUOTES: SampleQuote[] = [
   },
   {
     name: "Cedar Valley - Managed Care Oversight",
+    opportunityName: OPP_CEDAR,
     accountName: "Cedar Valley Health Plan",
     termMonths: 36,
     stage: "draft",
@@ -1174,5 +1488,137 @@ export const HEALTHCARE_QUOTES: SampleQuote[] = [
       line("MCO-PLT", 6, [], { description: "IA, IL, MN, MO, NE and WI." }),
       line("SVC-CRB", 80),
     ],
+  },
+  {
+    name: "Harborview - Epic post-merger archive",
+    accountName: "Harborview Children's Hospital",
+    opportunityName: OPP_HARBORVIEW,
+    termMonths: 60,
+    stage: "sent",
+    notes: "Pediatric retention: records kept to the patient's 21st birthday. Premium support at the contracted 20%.",
+    internalNotes: "Five-year hosting term so the 8% commitment discount lands. Anything longer needs Finance.",
+    lines: [
+      line("ARC-EPC", 1, ["bed_101", "epic_data_source_both", "facility_type_acute_hospital", "retention_21_years_minors", "source_hosting_on_premise"], {
+        description: "188 licensed beds. Chronicles review booked with the SE.",
+      }),
+      line("ARC-EPC-CLN", 1, ["bed_101"], { parentSku: "ARC-EPC" }),
+      line("ARC-EPC-RES", 1, ["bed_101"], { parentSku: "ARC-EPC" }),
+      line("SVC-EXT-STD", 1, ["extraction_method_database_direct"]),
+      line("SVC-MIG", 2, ["target_system_epic"], { description: "Problem lists and immunizations into the surviving Epic." }),
+      line("SVC-DOC", 3, [], { description: "About 3 million pages of scanned consent forms." }),
+      line("SVC-IMP", 177_840, [], { basis: HARBORVIEW_LICENSES }),
+      line("SVC-PM", 152_352, [], { basis: HARBORVIEW_SERVICES }),
+      line("SUP-PRM", 177_840, [], { basis: HARBORVIEW_LICENSES }),
+      line("HST-HOT", 18, ["hosting_region_us_east"]),
+      line("ADD-CTX", 1, [], { description: "Launch from the acquiring system's Epic." }),
+      line("ADD-ROI", 1, ["roi_partner_mro"]),
+    ],
+  },
+  {
+    name: "Summit Ridge - athenahealth and Greenway archive",
+    accountName: "Summit Ridge Orthopedic Partners",
+    opportunityName: OPP_SUMMIT,
+    termMonths: 36,
+    stage: "accepted",
+    notes: "Two source systems onto one archive. Imaging from the closed Lakewood site goes to cold storage.",
+    internalNotes: "The 5% on athena matched what their sponsor's other portfolio company paid.",
+    lines: [
+      line("ARC-ATH", 1, ["provider_51", "facility_type_physician_group", "retention_10_years", "source_hosting_vendor_hosted"], {
+        discountPercent: 5,
+        description: "64 rendering providers across two practices.",
+      }),
+      line("ARC-GRW", 1, ["provider_11", "facility_type_asc", "retention_7_years", "source_hosting_on_premise"], {
+        description: "22 rendering providers.",
+      }),
+      line("SVC-EXT-STD", 2, ["extraction_method_vendor_api"]),
+      line("SVC-IMP", 76_000, [], { basis: SUMMIT_LICENSES }),
+      line("SUP-STD", 76_000, [], { basis: SUMMIT_LICENSES }),
+      line("HST-HOT", 6, ["hosting_region_us_west"]),
+      line("HST-CLD-T2", 12, [], { description: "Decommissioned imaging from the Lakewood site." }),
+    ],
+  },
+  {
+    name: "Prairie View - Warm storage expansion",
+    accountName: "Prairie View Community Health",
+    opportunityName: OPP_PRAIRIE_WARM,
+    termMonths: 36,
+    stage: "draft",
+    notes: "Scanned paper charts from the two acquired clinics, alongside the eClinicalWorks archive.",
+    internalNotes: "30 TB is their guess. The volume discount starts at 25, so it holds even if they are a little high.",
+    lines: [
+      line("SVC-DOC", 2, [], { description: "Roughly 2 million pages, scanned by their own vendor." }),
+      line("HST-WRM", 30),
+    ],
+  },
+];
+
+/* -------------------------------- invoices -------------------------------- */
+
+/**
+ * The receivables book: one raised from an accepted quote, the rest for work
+ * billed before this archive was ever sold — assessments, hours, an old
+ * support year — spread across the aging. Every customer here is tax exempt.
+ */
+export const HEALTHCARE_INVOICES: SampleInvoice[] = [
+  {
+    accountName: "Riverbend Health System",
+    // Billed from the accepted quote, Net 30, issued 18 days ago: not yet due, a deposit in.
+    quoteName: "Riverbend - TruBridge sunset and A/R wind down",
+    issuedDaysAgo: 18,
+    poNumber: "RHS-PO-40117",
+    notes: "The whole contract value, per the MSLA amendment. The deposit was received at signature.",
+    lines: [],
+    paidFraction: 0.25,
+    paidDaysAgo: 9,
+  },
+  {
+    accountName: "Lakeshore Regional Medical Center",
+    // Net 30, issued 75 days ago and settled: the pilot that earned the consolidation deal.
+    issuedDaysAgo: 75,
+    poNumber: "LRMC-22-0918",
+    notes: "Archive readiness assessment and pilot extraction of the Lawson AP/GL history.",
+    lines: [
+      { sku: "SVC-EXT-CPX", description: "Pilot extraction - Lawson AP/GL", quantity: 60, unitPrice: 225, taxPercent: 0 },
+      { sku: "SVC-CRB", description: "Reconciliation reports for the pilot", quantity: 16, unitPrice: 195, taxPercent: 0 },
+    ],
+    paidFraction: 1,
+    paidDaysAgo: 41,
+  },
+  {
+    accountName: "Prairie View Community Health",
+    // Net 45, issued 70 days ago: 25 days late and untouched — waiting on the grant drawdown.
+    issuedDaysAgo: 70,
+    poNumber: "PVCH-GR-0412",
+    notes: "Interim warm storage for the eClinicalWorks export while the archive is contracted.",
+    lines: [
+      { sku: "HST-WRM", description: "Warm Storage - Locker Tier 3, 3 TB x 6 months", quantity: 18, unitPrice: 110, taxPercent: 0 },
+    ],
+    paidFraction: 0,
+    paidDaysAgo: 0,
+  },
+  {
+    accountName: "Summit Ridge Orthopedic Partners",
+    // Net 30, issued 130 days ago: deep in 90+, part credited and part paid.
+    issuedDaysAgo: 130,
+    poNumber: "",
+    notes: "Custom report build for the PE sponsor's diligence, billed monthly in arrears.",
+    lines: [
+      { sku: "SVC-CRB", description: "Custom Report/View Build - diligence pack", quantity: 48, unitPrice: 195, taxPercent: 0 },
+    ],
+    credit: { fraction: 0.25, reason: "goodwill", note: "Twelve hours rebuilt after we read the wrong fee schedule.", daysAgo: 95 },
+    paidFraction: 0.35,
+    paidDaysAgo: 60,
+  },
+  {
+    accountName: "Harborview Children's Hospital",
+    // Net 45, issued 4 days ago: current.
+    issuedDaysAgo: 4,
+    poNumber: "HCH-7731",
+    notes: "Epic Chronicles source review ahead of the archive proposal.",
+    lines: [
+      { sku: "SVC-EXT-CPX", description: "Chronicles source review and sizing", quantity: 40, unitPrice: 225, taxPercent: 0 },
+    ],
+    paidFraction: 0,
+    paidDaysAgo: 0,
   },
 ];

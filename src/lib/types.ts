@@ -881,6 +881,11 @@ export type Quote = {
    * revising and cleared by deleting that revision; never by a save.
    */
   supersededById: string | null;
+  /**
+   * The opportunity it is written for (src/lib/pipeline.ts), or null. Kept by
+   * every save that does not name another, and carried onto a revision.
+   */
+  opportunityId: string | null;
   customer: CustomerSnapshot;
   priceBookId: string;
   currency: CurrencyCode;

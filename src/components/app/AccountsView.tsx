@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { AccountStatusBadge, EmptyState, Field, Notice, Section } from "./common";
+import { AccountStatusBadge, EmptyState, Field, FilterChip, Notice, Section } from "./common";
 import { CustomerDetail } from "./CustomerDetail";
 import { Table, Tbody, Td, Th, Thead, Tr } from "@/components/ui/table";
 import { useAccess } from "./access";
@@ -320,21 +320,6 @@ export function AccountsView({
 
       {editor}
     </>
-  );
-}
-
-function FilterChip({ label, count, on, onClick }: { label: string; count: number; on: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
-        on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:bg-accent",
-      )}
-    >
-      {label} <span className="tabular-nums opacity-70">{count}</span>
-    </button>
   );
 }
 

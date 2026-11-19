@@ -14,6 +14,7 @@ import type { FieldInfo } from "./dataTable";
 import type { Preferences } from "./preferences";
 import type { AgingReport } from "./receivable";
 import type { SampleSetName } from "./samples";
+import type { Lead, Opportunity } from "./pipeline";
 import type {
   Account,
   Invoice,
@@ -38,6 +39,9 @@ import type {
   ApprovalRuleInput,
   CreditInput,
   InvoiceHeaderInput,
+  LeadConversionInput,
+  LeadInput,
+  OpportunityInput,
   PaymentInput,
   PriceBookInput,
   PricingRuleInput,
@@ -164,6 +168,8 @@ export type IssuedApiKey = ApiKey & { key: string };
 export type QuoteBody = {
   name: string;
   accountId: string | null;
+  /** Left out, a save keeps the quote's opportunity; null unlinks it. */
+  opportunityId?: string | null;
   priceBookId: string;
   currency: string;
   termMonths: number;
@@ -177,6 +183,9 @@ export type QuoteBody = {
 };
 
 export type SavedQuote = { quote: Quote; issues: string[]; warnings: string[] };
+
+/** A converted lead, and what it became. */
+export type LeadConversion = { lead: Lead; account: Account; opportunity: Opportunity | null };
 
 export type SubmitResult = SavedQuote & { required: ApprovalRequest[]; unresolved: string[] };
 
@@ -416,6 +425,25 @@ export const api = {
   deleteAccount: (id: string) => send<{ ok: true }>(`/api/accounts/${id}`, "DELETE"),
   /** One customer's whole quote history — what the customer screen totals. */
   accountQuotes: (id: string) => request<QuoteSummary[]>(`/api/accounts/${id}/quotes`),
+
+  /* ------------------------------- pipeline ------------------------------ */
+
+  listLeads: () => request<Lead[]>("/api/leads"),
+  createLead: (payload: LeadInput) => send<Lead>("/api/leads", "POST", payload),
+  updateLead: (id: string, payload: LeadInput) => send<Lead>(`/api/leads/${id}`, "PUT", payload),
+  deleteLead: (id: string) => send<{ ok: true }>(`/api/leads/${id}`, "DELETE"),
+  convertLead: (id: string, payload: Partial<LeadConversionInput>) =>
+    send<LeadConversion>(`/api/leads/${id}/convert`, "POST", payload),
+
+  listOpportunities: (accountId?: string) =>
+    request<Opportunity[]>(`/api/opportunities${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ""}`),
+  getOpportunity: (id: string) => request<Opportunity>(`/api/opportunities/${id}`),
+  createOpportunity: (payload: OpportunityInput) => send<Opportunity>("/api/opportunities", "POST", payload),
+  updateOpportunity: (id: string, payload: OpportunityInput) => send<Opportunity>(`/api/opportunities/${id}`, "PUT", payload),
+  deleteOpportunity: (id: string) => send<{ ok: true }>(`/api/opportunities/${id}`, "DELETE"),
+  opportunityQuotes: (id: string) => request<QuoteSummary[]>(`/api/opportunities/${id}/quotes`),
+  /** A new draft quote for the deal's customer, linked to it. */
+  quoteOpportunity: (id: string) => send<SavedQuote>(`/api/opportunities/${id}/quotes`, "POST"),
 
   /* ------------------------------- catalogue ----------------------------- */
 

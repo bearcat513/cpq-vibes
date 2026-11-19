@@ -27,7 +27,7 @@ const list = (overrides: Partial<RelatedList> = {}): RelatedList => ({
 });
 
 describe("the built-in workspaces", () => {
-  for (const collection of ["accounts", "quotes", "invoices"]) {
+  for (const collection of ["accounts", "quotes", "invoices", "opportunities"]) {
     test(`${collection}'s default passes the same check a stored one does`, () => {
       const read = readWorkspaceLayout(defaultWorkspace(collection));
       expect(read).toMatchObject({ ok: true });

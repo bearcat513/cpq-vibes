@@ -37,6 +37,7 @@ import {
   createQuote,
   deleteQuote,
   getAccount,
+  getOpportunity,
   getPriceBook,
   getQuote,
   listApprovalRules,
@@ -139,6 +140,8 @@ type RepriceInput = {
   status: QuoteStatus;
   version: number;
   supersedesId: string | null;
+  /** Written only when defined — see `QuoteRecordInput.opportunityId`. */
+  opportunityId?: string | null;
   customer: CustomerSnapshot;
   approvals: ApprovalRequest[];
   approverIds: string[];
@@ -173,6 +176,7 @@ export function repriceQuote(input: RepriceInput, catalogue: Catalogue, rules: A
       status: input.status,
       version: input.version,
       supersedesId: input.supersedesId,
+      ...(input.opportunityId !== undefined ? { opportunityId: input.opportunityId } : {}),
       customer: input.customer,
       priceBookId: priceBook?.id ?? "",
       currency,
@@ -221,6 +225,10 @@ export async function createPricedQuote(
   lines: PriceableLine[],
   validDays: number,
 ): Promise<CreateQuoteResult> {
+  // A quote for a deal is for the deal's customer, and takes it when it names none.
+  const link = await resolveQuoteOpportunity(token, header.opportunityId, header.accountId);
+  header = { ...header, accountId: link.accountId };
+
   const [catalogue, rules, account] = await Promise.all([
     loadCatalogue(token),
     listPricingRules(token),
@@ -248,6 +256,7 @@ export async function createPricedQuote(
         status: "draft",
         version: 1,
         supersedesId: null,
+        opportunityId: link.opportunityId ?? null,
         customer: snapshotCustomer(account),
         approvals: [],
         approverIds: [],
@@ -268,6 +277,31 @@ export async function createPricedQuote(
   }
 
   throw new ApiError("Could not allocate a quote number. Try again.", 409);
+}
+
+/**
+ * The opportunity a quote should store, checked: `undefined` leaves the stored
+ * link alone, `null` clears it, and an id must be an opportunity the caller
+ * can read, for the customer the quote is addressed to. Returns that customer
+ * too, so a new quote that names none takes the deal's.
+ */
+export async function resolveQuoteOpportunity(
+  token: string,
+  opportunityId: string | null | undefined,
+  accountId: string | null,
+): Promise<{ opportunityId: string | null | undefined; accountId: string | null }> {
+  if (opportunityId === undefined || opportunityId === null) return { opportunityId, accountId };
+
+  const opportunity = await getOpportunity(token, opportunityId);
+  if (!opportunity) throw new ApiError("That opportunity does not exist, or is not in your organization.", 404);
+  if (accountId !== null && accountId !== opportunity.accountId) {
+    throw new ApiError(
+      `A quote for "${opportunity.name}" has to be for its customer` +
+        `${opportunity.accountName ? ` (${opportunity.accountName})` : ""}. ` +
+        "Change the customer on the opportunity, or unlink the quote from it.",
+    );
+  }
+  return { opportunityId: opportunity.id, accountId: opportunity.accountId };
 }
 
 /* -------------------------------- editing -------------------------------- */
@@ -309,6 +343,15 @@ export async function saveQuote(
 
   if (header.accountId && !account) throw new ApiError("That account does not exist, or is not yours.", 404);
 
+  // A link named in the body is checked; a stored one is re-checked only when
+  // the customer moves out from under it.
+  const opportunityId =
+    header.opportunityId !== undefined
+      ? (await resolveQuoteOpportunity(token, header.opportunityId, header.accountId ?? "")).opportunityId
+      : existing.opportunityId && header.accountId !== existing.customer.accountId
+        ? (await resolveQuoteOpportunity(token, existing.opportunityId, header.accountId ?? "")).opportunityId
+        : undefined;
+
   // Re-snapshot only when the account actually changed; otherwise the quote
   // keeps the details it was written against.
   const customer =
@@ -328,6 +371,7 @@ export async function saveQuote(
       status: "draft",
       version: existing.version,
       supersedesId: existing.supersedesId,
+      opportunityId,
       customer,
       approvals: [],
       approverIds: [],
@@ -646,6 +690,8 @@ export async function reviseQuote(token: string, id: string): Promise<CreateQuot
       status: "draft",
       version,
       supersedesId: existing.id,
+      // The same deal, so the same opportunity.
+      opportunityId: existing.opportunityId,
       customer: existing.customer,
       approvals: [],
       approverIds: [],

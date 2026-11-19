@@ -25,6 +25,8 @@ export const BROWSABLE_COLLECTIONS = [
   "accounts",
   "contacts",
   "sys_physical_location",
+  "leads",
+  "opportunities",
   "products",
   "price_books",
   "pricing_rules",

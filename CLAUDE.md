@@ -147,7 +147,7 @@ and restored by `rules/ownership.js` exactly like `owner`. The rules are built f
 | Role | Writes |
 | --- | --- |
 | `admin` | everything, the organization and its members included |
-| `sales` | accounts, and quotes it owns (an admin edits any quote) |
+| `sales` | accounts, leads, and the opportunities and quotes it owns (an admin edits any) |
 | `finance` | accounts (not deleting them), invoices, payments, credits |
 | `viewer` | nothing |
 
@@ -426,15 +426,16 @@ holds sections of fields with a widget, label and bounds each, checked by `readF
 `GET`/`PATCH /api/table/:collection/:id` (`src/server/recordForms.ts`) resolve the same layout, and
 the server refuses any field the form does not offer as editable, re-runs each field's check, and
 refuses a write whose `updated` stamp is stale (409). That narrows the route; the collection's rules
-still decide. **Quotes, invoices, their lines, payments and credits are never written there** (`SERVER_OWNED`),
-because a raw write would skip pricing and totals. Neither are `LOCKED_FIELDS` (owner, org, sharedWith…).
+still decide. **Quotes, invoices, their lines, payments, credits, leads and opportunities are never
+written there** (`SERVER_OWNED`), because a raw write would skip pricing, totals, a lead's conversion
+and a deal's probability. Neither are `LOCKED_FIELDS` (owner, org, sharedWith…).
 
 **A row opens the record workspace** (`components/table/RecordWorkspace.tsx`), full page, in three
 panes: the details form (`RecordFormBody`, its bookkeeping sections folded), **related lists** (tabs
 of the records whose link field holds this record's id — `RelatedLists.tsx`) and a **summary**
 column (`SummaryPane.tsx`). Its layout is the `workspace` JSON on the same `record_forms` row as the
 form, checked by `readWorkspaceLayout` in `src/lib/workspace.ts`, which also holds the built-in
-defaults for accounts, quotes and invoices. A summary line is a field (a JSON path), a **roll-up**
+defaults for accounts, quotes, invoices and opportunities. A summary line is a field (a JSON path), a **roll-up**
 (count/sum/avg/min/max over a related list, optionally filtered) or a **formula** over the keys
 above it — and a formula with a blank input is blank, never a zero. The server works the summary out
 (`src/server/workspace.ts`, `GET /api/workspace/:collection/:id`), reading every related row as the
@@ -509,6 +510,18 @@ contacts existed (`contactName`/`contactEmail`/`contactPhone`) becomes a one-con
 list with no primary or several gets exactly one. The customers screen is a list until you pick one,
 and then it is `CustomerDetail` — that customer's quote history from `GET /api/accounts/:id/quotes`,
 because `/api/quotes` is capped at a page.
+
+**The pipeline is leads and opportunities** (`src/lib/pipeline.ts`, `src/server/pipeline.ts`,
+`1750000017_leads_opportunities.js`). A lead is worked by anyone in sales (a pool, not owned) and
+**converted** by `POST /api/leads/:id/convert`, which writes the customer (new, or the one named), the
+person as its contact (skipped if that email is already there), an opportunity and the lead's own
+`converted` stamp in **one batch**. A converted lead is fixed by its update rule, which reads the
+*stored* status. An opportunity is owned like a quote (sales its own, admin any), always has a
+customer, and a closed stage fixes its probability (won 100, lost 0); `closedAt` is the server's.
+A quote names its deal in the `opportunity` relation: `opportunityId` left out of a save keeps it,
+`null` unlinks it, a revision carries it, and a linked quote's customer must be the deal's.
+`POST /api/opportunities/:id/quotes` starts one. A lead's estimate is never carried into another
+currency, and `pipelineTotals` is one row per currency.
 
 **A field that names another record is a `Combobox`, not an `Input`.** `components/ui/combobox.tsx`
 — searchable, portalled to `document.body` so the panel's `overflow-y-auto` cannot clip it, and
