@@ -1118,9 +1118,19 @@ export function readQuoteLine(raw: unknown, index: number): Validated<QuoteLineI
   });
 }
 
+/**
+ * A quote with more lines than this is a data feed, not an offer. Each line is
+ * a record of its own (`quote_lines`), saved with its quote in one PocketBase
+ * batch — 1750000016_line_items.js sizes the batch for this many. Checked
+ * again on the priced lines when they are stored, since a bundle adds its
+ * components.
+ */
+export const MAX_QUOTE_LINES = 1000;
+
 export function readQuoteLines(raw: unknown): Validated<QuoteLineInput[]> {
   if (raw === undefined || raw === null) return valid([]);
   if (!Array.isArray(raw)) return invalid('"lines" must be an array.');
+  if (raw.length > MAX_QUOTE_LINES) return invalid(`A quote may have at most ${MAX_QUOTE_LINES} lines.`);
 
   const lines: QuoteLineInput[] = [];
   const ids = new Set<string>();

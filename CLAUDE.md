@@ -323,7 +323,15 @@ stakes are sharper: a client that could set its own balance could mark its own d
   `1750000010_organizations.js` gives every existing user a personal org (`org_<user id>`) as its
   admin and stamps every record with its owner's org — all as exported, tested SQL constants, and
   idempotent, so a re-run changes nothing. It also seeds the counters from the highest number
-  already used, so the next one does not collide
+  already used, so the next one does not collide.
+  `1750000014_account_normalize.js` breaks `accounts.details` into columns, `contacts` and
+  `sys_physical_location` the same way — exported SQL, tested, idempotent, ids derived from the
+  account's so a re-run finds its own rows. Mind SQL's NULLs there: `NOT (x AND json_type(…) = …)`
+  is NULL, not true, when the path is missing, and silently skips the row.
+  `1750000016_line_items.js` fans `quotes.lines` and `invoices.lines` out into `quote_lines` and
+  `invoice_lines` the same way, and its down rebuilds both arrays exactly. Filter `json_each` rows on
+  `entry.type = 'object'`, never `json_type(entry.value)`: a string element reaches `json_type` as
+  bare text and the whole statement fails on "malformed JSON".
 - `docker/pb_hooks/` — server-side JS run by PocketBase's own JSVM, not by Bun. **A hook body
   cannot see its file's scope**: declare what a handler needs inside the handler, or `require` it
   there. Code that breaks this rule registers fine and fails only at runtime
@@ -418,7 +426,7 @@ holds sections of fields with a widget, label and bounds each, checked by `readF
 `GET`/`PATCH /api/table/:collection/:id` (`src/server/recordForms.ts`) resolve the same layout, and
 the server refuses any field the form does not offer as editable, re-runs each field's check, and
 refuses a write whose `updated` stamp is stale (409). That narrows the route; the collection's rules
-still decide. **Quotes, invoices, payments and credits are never written there** (`SERVER_OWNED`),
+still decide. **Quotes, invoices, their lines, payments and credits are never written there** (`SERVER_OWNED`),
 because a raw write would skip pricing and totals. Neither are `LOCKED_FIELDS` (owner, org, sharedWith…).
 
 **A row opens the record workspace** (`components/table/RecordWorkspace.tsx`), full page, in three
@@ -447,6 +455,22 @@ and superseded; an invoice is a number sitting in somebody's accounts payable. `
 `state`, `dueDate` and `total` as real columns, and keeps **no `status` and no `balance` column at
 all** — both are derived, for the reason in `src/lib/receivable.ts`.
 
+**A line is a record, not an entry in its parent's JSON.** `quote_lines` and `invoice_lines` (one
+row per line, `position` for the order, a required cascade relation to the parent) replaced the
+`lines` arrays. Every scalar is a column; a quote line's nested parts (options, tier, applied rules,
+issues, warnings, and `unitPriceOverride`, which may be `null`) ride in `detail`, and anything a
+`PricedLine` gains later lands there without a migration. The line's own id is the `lineId` column,
+unique only within its parent, because a revision keeps its quote's line ids and `parentId` /
+`sourceLineId` name them; the record id is minted. `saveWithLines` in `src/server/db.ts` writes the
+parent and its lines in **one batch**, matched on `lineId`, so an unchanged line is not rewritten and
+a quote is never stored with half its lines. That sizes the batch: `MAX_QUOTE_LINES` (1000, in
+`validate.ts`) and `MAX_INVOICE_LINES` replace the old JSON byte caps, and the migration raises
+`batch.maxRequests` to match. A line has its parent's audience, joined through the relation: a
+quote line is read by the quote's org, its shares and its approvers, but written only by its
+editors, which is why `decideQuote` saves with `{ lines: false }`. An invoice line is written only
+while `invoice.state = "draft"`, so **an issued invoice's lines are fixed in the collection rule
+too**, not only in `invoices.ts`. `lineCount` stays on the parent, so lists never read a line.
+
 **A payment and a credit are records, not entries in the invoice's JSON.** `payments` and `credits`
 are their own collections, each row belonging to one invoice, which buys three things: recording one
 is an *insert*, so two people banking cash at the same moment cannot lose a payment (the old
@@ -464,15 +488,27 @@ here blocks a quote on it, because a limit somebody typed last year would be wro
 right. A new collection needs adding to `OWNED` in `docker/pb_hooks/rules/ownership.js`, or its
 records are created with no owner and every rule misses them.
 
-**A customer is a record with people in it.** An account carries a `contacts` list — one of them
-`primary`, which is who a quote is addressed to and what `snapshotCustomer` flattens onto the
-document — plus a lifecycle `status`, free-text `tags`, and a shipping address that is kept equal
-to the billing one while `shippingSameAsBilling`. `readAccount` repairs rather than refuses: a body
-written before contacts existed (`contactName`/`contactEmail`/`contactPhone`) becomes a one-contact
-account, and a list with no primary or several gets exactly one. `toAccount` does the same for rows
-stored before the list existed, which is why this shipped without a data migration. The customers
-screen is a list until you pick one, and then it is `CustomerDetail` — that customer's quote
-history from `GET /api/accounts/:id/quotes`, because `/api/quotes` is capped at a page.
+**A customer is three collections.** `accounts` keeps its own scalars as columns (status, tags,
+terms, `paymentTermDays`, `creditLimit`, tax, notes — there is no `details` JSON any more). Its
+people are `contacts` records (required `account` relation, cascade-deleted with it, ordered by
+`position`, one of them `primary` — who a quote is addressed to and what `snapshotCustomer` flattens
+onto the document). Its addresses are `sys_physical_location` records that `billingAddress` and
+`shippingAddress` relate to; **"ship to billing" is both relations naming one record**, not a flag.
+A location's `name` is its parts on one line, set on every save by `pb_hooks/rules/locations.js`
+(`locationName` in `src/lib/locations.ts` is the same rule), and a location no account names any more
+is deleted by the same hook, inside the save's transaction. **`contacts` is an auth collection
+nobody can sign in to**: `authRule` is null and every method is off, because a contact carries
+`org` and every rule grants `@request.auth.org` — a contact with a token would read the whole
+organization. A customer portal needs every rule to check `@request.auth.collectionName = "users"`
+first. For the same reason a contact's address is `contactEmail`; the auth `email` (unique across
+every org, hidden from other users) stays blank. The API still speaks the nested `Account` shape:
+`saveAccountGraph` in `src/server/db.ts` writes the account, its locations and its contacts in **one
+PocketBase batch** (enabled by `1750000014_account_normalize.js`), keeps a contact's id only if this
+account already has it, and mints the rest. `readAccount` still repairs a body: one written before
+contacts existed (`contactName`/`contactEmail`/`contactPhone`) becomes a one-contact account, and a
+list with no primary or several gets exactly one. The customers screen is a list until you pick one,
+and then it is `CustomerDetail` — that customer's quote history from `GET /api/accounts/:id/quotes`,
+because `/api/quotes` is capped at a page.
 
 **A field that names another record is a `Combobox`, not an `Input`.** `components/ui/combobox.tsx`
 — searchable, portalled to `document.body` so the panel's `overflow-y-auto` cannot clip it, and

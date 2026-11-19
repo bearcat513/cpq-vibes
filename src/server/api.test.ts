@@ -1286,6 +1286,246 @@ async function bobToken(): Promise<string> {
   return (await response.json()).token;
 }
 
+/* ------------------------- accounts, normalized -------------------------- */
+
+describe("an account's people and addresses are records", () => {
+  const table = (path: string, init?: RequestInit & { cookie?: string }) => json(`/api/table/${path}`, init);
+  const filter = (expression: string) => `?filter=${encodeURIComponent(expression)}`;
+  const body = (extra: Record<string, unknown> = {}) => ({
+    name: "Normal Form Ltd",
+    currency: "EUR",
+    paymentTerms: "Net 15",
+    creditLimit: 5000,
+    tags: ["Normalized"],
+    contacts: [
+      { name: "Ada", email: "ada@normal.example.com", role: "commercial" },
+      { name: "Bea", email: "bea@normal.example.com", role: "billing", primary: true },
+    ],
+    billingAddress: { line1: "1 First Street", line2: "", city: "Leeds", state: "", postalCode: "LS1 1AA", country: "United Kingdom" },
+    shippingSameAsBilling: true,
+    ...extra,
+  });
+
+  signedIn("contacts, locations and the account's own columns are what is stored", async () => {
+    const account = await post("/api/accounts", body());
+
+    const contacts = await table(`contacts${filter(`account = "${account.id}"`)}&sort=position`);
+    expect(contacts.items.map((row: any) => [row.name, row.contactEmail, row.primary, row.position])).toEqual([
+      ["Ada", "ada@normal.example.com", false, 0],
+      ["Bea", "bea@normal.example.com", true, 1],
+    ]);
+    // The auth email stays blank: nobody signs in as a contact.
+    expect(contacts.items.every((row: any) => !row.email)).toBe(true);
+
+    // One location, named on one line by the hook, and both relations on it.
+    expect(account.billingAddressId).toBeTruthy();
+    expect(account.shippingAddressId).toBe(account.billingAddressId);
+    const location = (await table(`sys_physical_location/${account.billingAddressId}`)).record;
+    expect(location.name).toBe("1 First Street, Leeds, LS1 1AA, United Kingdom");
+
+    // The details blob is gone; its contents are columns a filter can reach.
+    const row = (await table(`accounts/${account.id}`)).record;
+    expect(row.details).toBeUndefined();
+    expect(row).toMatchObject({ creditLimit: 5000, paymentTermDays: 15, tags: ["normalized"], billingAddress: account.billingAddressId });
+    expect((await table(`accounts${filter(`creditLimit = 5000 && id = "${account.id}"`)}`)).totalItems).toBe(1);
+
+    await api(`/api/accounts/${account.id}`, { method: "DELETE" });
+  });
+
+  signedIn("shipping elsewhere gets its own location, and one nothing names is removed", async () => {
+    const account = await post("/api/accounts", body());
+    const shared = account.billingAddressId;
+
+    const apart = await put(`/api/accounts/${account.id}`, {
+      ...body({ shippingSameAsBilling: false, shippingAddress: { line1: "Unit 9", city: "Wakefield", country: "United Kingdom" } }),
+      contacts: account.contacts,
+    });
+    expect(apart.billingAddressId).toBe(shared);
+    expect(apart.shippingAddressId).not.toBe(shared);
+    expect(apart.shippingAddress.city).toBe("Wakefield");
+    const shipping = apart.shippingAddressId;
+
+    // Editing the billing address edits its record in place.
+    const moved = await put(`/api/accounts/${account.id}`, {
+      ...body({ billingAddress: { ...body().billingAddress, city: "York" } }),
+      contacts: account.contacts,
+    });
+    expect(moved.billingAddressId).toBe(shared);
+    expect(moved.shippingSameAsBilling).toBe(true);
+    expect((await table(`sys_physical_location/${shared}`)).record.name).toContain("York");
+    // And the shipping location it no longer points at is gone.
+    expect((await api(`/api/table/sys_physical_location/${shipping}`)).status).toBe(404);
+
+    await api(`/api/accounts/${account.id}`, { method: "DELETE" });
+    expect((await api(`/api/table/sys_physical_location/${shared}`)).status).toBe(404);
+    expect((await table(`contacts${filter(`account = "${account.id}"`)}`)).totalItems).toBe(0);
+  });
+
+  signedIn("a contact keeps its id while it is edited; a dropped one is deleted; a borrowed id is not trusted", async () => {
+    const account = await post("/api/accounts", body());
+    const [ada, bea] = account.contacts;
+
+    const other = await post("/api/accounts", { ...body(), name: "Other Ltd" });
+    const saved = await put(`/api/accounts/${account.id}`, {
+      ...body(),
+      contacts: [
+        { ...bea, title: "Controller" },
+        // Another account's contact id: a new contact here, not a move.
+        { ...other.contacts[0], name: "Cy" },
+      ],
+    });
+    expect(saved.contacts.map((contact: any) => contact.name)).toEqual(["Bea", "Cy"]);
+    expect(saved.contacts[0].id).toBe(bea.id);
+    expect(saved.contacts[0].title).toBe("Controller");
+    expect(saved.contacts[1].id).not.toBe(other.contacts[0].id);
+    expect((await api(`/api/table/contacts/${ada.id}`)).status).toBe(404);
+    // The other account still has its own.
+    expect((await json(`/api/accounts/${other.id}`)).contacts.map((contact: any) => contact.id)).toContain(other.contacts[0].id);
+
+    await api(`/api/accounts/${account.id}`, { method: "DELETE" });
+    await api(`/api/accounts/${other.id}`, { method: "DELETE" });
+  });
+
+  signedIn("nobody can sign in as a contact", async () => {
+    const methods = await (await fetch(`${pocketbase.url}/api/collections/contacts/auth-methods`)).json();
+    expect(methods.password.enabled).toBe(false);
+    expect(methods.otp.enabled).toBe(false);
+    expect(methods.oauth2.enabled).toBe(false);
+
+    const attempt = await fetch(`${pocketbase.url}/api/collections/contacts/auth-with-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity: "ada@normal.example.com", password: "anything-at-all" }),
+    });
+    expect(attempt.status).toBeGreaterThanOrEqual(400);
+  });
+
+  signedIn("another organization sees none of it, and cannot hang a contact on your account", async () => {
+    const account = await post("/api/accounts", body());
+
+    expect((await table("contacts", { cookie: bobCookie })).totalItems).toBe(0);
+    expect((await table("sys_physical_location", { cookie: bobCookie })).totalItems).toBe(0);
+
+    const intrusion = await fetch(`${pocketbase.url}/api/collections/contacts/records`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: await bobToken() },
+      body: JSON.stringify({ account: account.id, name: "Mallory" }),
+    });
+    expect(intrusion.status).toBeGreaterThanOrEqual(400);
+    expect((await json(`/api/accounts/${account.id}`)).contacts.map((contact: any) => contact.name)).toEqual(["Ada", "Bea"]);
+
+    await api(`/api/accounts/${account.id}`, { method: "DELETE" });
+  });
+});
+
+/* ------------------------- line items as records ------------------------ */
+
+describe("quote and invoice lines are records", () => {
+  const table = (path: string, init?: RequestInit & { cookie?: string }) => json(`/api/table/${path}`, init);
+  const linesOf = (collection: string, parent: string, id: string, init?: RequestInit & { cookie?: string }) =>
+    table(`${collection}?filter=${encodeURIComponent(`${parent} = "${id}"`)}&sort=position`, init);
+  const pbAs = async (path: string, init: RequestInit) =>
+    fetch(`${pocketbase.url}${path}`, {
+      ...init,
+      headers: { "Content-Type": "application/json", Authorization: await bobToken(), ...(init.headers ?? {}) },
+    });
+
+  signedIn("a quote's lines are rows, edited in place, and the quote keeps no copy", async () => {
+    const two = quoteBody({ name: "Line items" });
+    two.lines.push({ ...two.lines[0], id: "ln_2", quantity: 3, sortOrder: 1 } as any);
+    const created = (await post("/api/quotes", two)).quote;
+    expect(created.lines.map((line: any) => [line.id, line.quantity])).toEqual([
+      ["ln_1", 10],
+      ["ln_2", 3],
+    ]);
+
+    const rows = (await linesOf("quote_lines", "quote", created.id)).items;
+    expect(rows.map((row: any) => [row.lineId, row.position, row.sku, row.quantity, row.netTotal])).toEqual([
+      ["ln_1", 0, "PLAT", 10, created.lines[0].netTotal],
+      ["ln_2", 1, "PLAT", 3, created.lines[1].netTotal],
+    ]);
+    // What is nested rides in `detail`; the quote record has no lines of its own.
+    expect(rows[0].detail.selectedOptions).toEqual(["standard"]);
+    expect((await table(`quotes/${created.id}`)).record.lines).toBeUndefined();
+
+    // Changing one line updates its row and leaves the other alone; dropping
+    // a line deletes its row.
+    const kept = rows[0];
+    const saved = await put(`/api/quotes/${created.id}`, quoteBody({ name: "Line items" }, { quantity: 12 }));
+    expect(saved.quote.lines.map((line: any) => [line.id, line.quantity])).toEqual([["ln_1", 12]]);
+    const after = (await linesOf("quote_lines", "quote", created.id)).items;
+    expect(after.map((row: any) => [row.id, row.quantity])).toEqual([[kept.id, 12]]);
+    expect((await api(`/api/table/quote_lines/${rows[1].id}`)).status).toBe(404);
+
+    // A line is written through the quote, never as a raw record.
+    const raw = await api(`/api/table/quote_lines/${kept.id}`, { method: "PATCH", body: JSON.stringify({ quantity: 1, updated: kept.updated }) });
+    expect(raw.status).toBeGreaterThanOrEqual(400);
+
+    await api(`/api/quotes/${created.id}`, { method: "DELETE" });
+    expect((await linesOf("quote_lines", "quote", created.id)).totalItems).toBe(0);
+  });
+
+  signedIn("another organization reads none of them, and cannot add one to your quote", async () => {
+    const created = (await post("/api/quotes", quoteBody({ name: "Private lines" }))).quote;
+
+    expect((await linesOf("quote_lines", "quote", created.id, { cookie: bobCookie })).totalItems).toBe(0);
+    const intrusion = await pbAs("/api/collections/quote_lines/records", {
+      method: "POST",
+      body: JSON.stringify({ quote: created.id, lineId: "ln_evil", sku: "FREE", netTotal: 0 }),
+    });
+    expect(intrusion.status).toBeGreaterThanOrEqual(400);
+    expect((await json(`/api/quotes/${created.id}`)).lines.map((line: any) => line.id)).toEqual(["ln_1"]);
+
+    await api(`/api/quotes/${created.id}`, { method: "DELETE" });
+  });
+
+  signedIn("an invoice's lines are rows, and fixed in PocketBase itself once it is issued", async () => {
+    const { invoice: draft } = await post("/api/invoices", {
+      accountId,
+      lines: [
+        { description: "Setup", quantity: 1, unitPrice: 300 },
+        { description: "Training", quantity: 2, unitPrice: 50, taxPercent: 10 },
+      ],
+    });
+    const rows = (await linesOf("invoice_lines", "invoice", draft.id)).items;
+    expect(rows.map((row: any) => [row.description, row.amount, row.taxAmount])).toEqual([
+      ["Setup", 300, 0],
+      ["Training", 100, 10],
+    ]);
+    expect((await table(`invoices/${draft.id}`)).record.lines).toBeUndefined();
+
+    await post(`/api/invoices/${draft.id}/issue`, { issueDate: "2026-04-01" });
+
+    // The server refuses to edit an issued invoice's lines; the collection
+    // rule refuses it too, for anyone writing to PocketBase directly.
+    const login = await fetch(`${pocketbase.url}/api/collections/users/auth-with-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity: ALICE, password: PASSWORD }),
+    });
+    const alice = (await login.json()).token;
+    const direct = await fetch(`${pocketbase.url}/api/collections/invoice_lines/records/${rows[0].id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Authorization: alice },
+      body: JSON.stringify({ unitPrice: 1, amount: 1 }),
+    });
+    expect(direct.status).toBe(404);
+    expect((await json(`/api/invoices/${draft.id}`)).lines[0].amount).toBe(300);
+
+    // Voiding it writes the invoice alone: nothing on a line changed.
+    const voided = await post(`/api/invoices/${draft.id}/void`, {});
+    expect(voided.state).toBe("void");
+    expect(voided.lines).toHaveLength(2);
+  });
+
+  signedIn("discarding a draft takes its lines with it", async () => {
+    const { invoice: draft } = await post("/api/invoices", { accountId, lines: [{ description: "Discarded", quantity: 1, unitPrice: 10 }] });
+    expect((await linesOf("invoice_lines", "invoice", draft.id)).totalItems).toBe(1);
+    await api(`/api/invoices/${draft.id}`, { method: "DELETE" });
+    expect((await linesOf("invoice_lines", "invoice", draft.id)).totalItems).toBe(0);
+  });
+});
+
 /* --------------------------------- sharing ------------------------------- */
 
 /* ------------------------------ attachments ------------------------------ */
@@ -1734,7 +1974,7 @@ describe("the record workspace", () => {
     const page = await json(`/api/workspace/invoices/${invoice.id}`);
     expect(page.record.id).toBe(invoice.id);
     expect(page.workspaceSource).toBe("default");
-    expect(page.workspace.relatedLists.map((list: any) => list.key)).toEqual(["payments", "credits", "files"]);
+    expect(page.workspace.relatedLists.map((list: any) => list.key)).toEqual(["lines", "payments", "credits", "files"]);
     expect(page.counts).toMatchObject({ payments: 2, credits: 0, files: 0 });
 
     const line = (key: string) => page.summary.lines.find((entry: any) => entry.key === key);

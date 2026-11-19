@@ -23,13 +23,17 @@ export const isCollectionName = (value: string) => COLLECTION_NAME.test(value);
  */
 export const BROWSABLE_COLLECTIONS = [
   "accounts",
+  "contacts",
+  "sys_physical_location",
   "products",
   "price_books",
   "pricing_rules",
   "approval_rules",
   "proposal_templates",
   "quotes",
+  "quote_lines",
   "invoices",
+  "invoice_lines",
   "payments",
   "credits",
   "organizations",

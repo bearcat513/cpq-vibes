@@ -42,6 +42,13 @@ const OWNED = [
   "credits",
   // The data table's form layouts — see 1750000011_record_forms.js.
   "record_forms",
+  // An account's people and addresses — see 1750000014_account_normalize.js.
+  "contacts",
+  "sys_physical_location",
+  // Line items — see 1750000016_line_items.js. What they may do is decided
+  // by their quote or invoice, in the collection rules.
+  "quote_lines",
+  "invoice_lines",
 ];
 
 /** Quotes are updated under rules/approvals.js instead. */

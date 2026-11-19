@@ -136,7 +136,9 @@ export type RecordWithForm = { record: TableRecord; form: RecordForm };
  */
 export const SERVER_OWNED: Record<string, string> = {
   quotes: "A quote is priced by the server on every save — edit it in the quote editor.",
+  quote_lines: "A quote line is priced with its quote — edit it in the quote editor.",
   invoices: "An invoice's totals and numbering are kept by the server — edit it in Receivables.",
+  invoice_lines: "An invoice line is totalled with its invoice — edit it in Receivables.",
   payments: "A payment is part of an invoice's balance — record or remove it in Receivables.",
   credits: "A credit is part of an invoice's balance — record or remove it in Receivables.",
   sys_attachment: "An attachment is a file on a record — add or remove it from that record's Attachments panel.",
@@ -160,6 +162,21 @@ export const LOCKED_FIELDS = new Set([
   "collectionId",
   "collectionName",
 ]);
+
+/**
+ * Fields locked in one collection only: a contact's auth fields (nobody signs
+ * in as a contact — see 1750000014_account_normalize.js) and a location's
+ * `name`, which pb_hooks/rules/locations.js derives from its parts on every
+ * save. Elsewhere the same names are ordinary fields — an invitation's
+ * `email` is the whole point of it.
+ */
+export const COLLECTION_LOCKED_FIELDS: Record<string, readonly string[]> = {
+  contacts: ["email", "emailVisibility", "verified"],
+  sys_physical_location: ["name"],
+};
+
+export const isLockedField = (collection: string, name: string): boolean =>
+  LOCKED_FIELDS.has(name) || (COLLECTION_LOCKED_FIELDS[collection]?.includes(name) ?? false);
 
 /** Shown last, in the "Record" section of a default layout. */
 const RECORD_FIELDS = ["id", "owner", "org", "created", "updated"];
@@ -448,7 +465,7 @@ function resolveField(config: FormFieldConfig, value: unknown, columns: 1 | 2, f
     label: config.label || humanize(config.name),
     widget,
     span: columns === 1 ? 1 : (config.span ?? (widget === "json" || widget === "textarea" ? 2 : 1)),
-    readOnly: !form.writable || LOCKED_FIELDS.has(config.name) || config.readOnly === true,
+    readOnly: !form.writable || isLockedField(form.collection, config.name) || config.readOnly === true,
     required: config.required === true,
     help: config.help ?? "",
     placeholder: config.placeholder ?? "",

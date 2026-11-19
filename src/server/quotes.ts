@@ -476,7 +476,8 @@ export async function decideQuote(
     decidedAt: status === "in_review" ? "" : new Date().toISOString(),
   };
 
-  const saved = await updateQuote(token, id, record);
+  // The quote alone: an approver may not write a line, and deciding changes none.
+  const saved = await updateQuote(token, id, record, { lines: false });
   if (!saved) throw new ApiError("Quote not found, or not yours to decide.", 404);
 
   // The next rung of the ladder, stamped by the owner's own hook route. An

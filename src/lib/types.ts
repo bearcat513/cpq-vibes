@@ -582,6 +582,13 @@ export type Account = {
    */
   shippingAddress: Address;
   shippingSameAsBilling: boolean;
+  /**
+   * The `sys_physical_location` records the two addresses are stored in —
+   * the same id twice while shipping to the billing address, "" for none.
+   * Set by the server on read; a body sent to it never needs them.
+   */
+  billingAddressId?: string;
+  shippingAddressId?: string;
   currency: CurrencyCode;
   /** The price book quotes for this customer start on. Empty uses the default book. */
   priceBookId: string;

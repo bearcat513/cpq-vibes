@@ -37,7 +37,7 @@ describe("the built-in workspaces", () => {
   test("anything else opens empty, and a default is a copy nobody can mutate", () => {
     expect(defaultWorkspace("products")).toEqual({ relatedLists: [], summary: { currencyField: "currency", items: [] } });
     defaultWorkspace("quotes").relatedLists.pop();
-    expect(defaultWorkspace("quotes").relatedLists.length).toBe(3);
+    expect(defaultWorkspace("quotes").relatedLists.length).toBe(4);
   });
 });
 

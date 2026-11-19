@@ -18,10 +18,14 @@
  * field to allow them.
  */
 import { normalizePreferences } from "../lib/preferences";
-import { EMPTY_ADDRESS, emptyCustomer, primaryContact } from "../lib/types";
+import { ACCOUNT_STATUSES, CONTACT_ROLES, EMPTY_ADDRESS, emptyCustomer } from "../lib/types";
+import { ADDRESS_PARTS, isBlankAddress } from "../lib/locations";
 import type {
   Account,
   AccountContact,
+  AccountStatus,
+  Address,
+  ContactRole,
   ApprovalDecision,
   Invoice,
   InvoiceCredit,
@@ -42,7 +46,7 @@ import type {
   QuoteTotals,
 } from "../lib/types";
 import { lineTotals, settlement, type LineTotals } from "../lib/receivable";
-import { readPaymentTermDays } from "../lib/validate";
+import { MAX_INVOICE_LINES, MAX_QUOTE_LINES, readPaymentTermDays } from "../lib/validate";
 import type {
   AccountInput,
   CreditInput,
@@ -54,6 +58,7 @@ import type {
   ProposalTemplateInput,
 } from "../lib/validate";
 import { asCurrency } from "../lib/money";
+import { ClientResponseError } from "pocketbase";
 import { ApiError } from "./http";
 import {
   POCKETBASE_URL,
@@ -69,13 +74,6 @@ import {
 /** PocketBase rejects a `perPage` above this, so larger reads are paged. */
 const MAX_PER_PAGE = 500;
 
-/**
- * Matches `maxSize` on the `lines` JSON field in the migration. Checked here
- * so an enormous quote fails with a sentence about the quote rather than
- * PocketBase's generic field error.
- */
-const MAX_QUOTE_BYTES = 4 * 1024 * 1024;
-
 type Record_ = globalThis.Record<string, unknown>;
 
 /* ------------------------------- helpers -------------------------------- */
@@ -84,7 +82,7 @@ export function newId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 }
 
-async function readOne(token: string, collection: string, id: string, options?: { fields?: string }): Promise<Record_ | null> {
+async function readOne(token: string, collection: string, id: string, options?: { fields?: string; expand?: string }): Promise<Record_ | null> {
   try {
     return await clientFor(token).collection(collection).getOne(id, options);
   } catch (error) {
@@ -100,13 +98,13 @@ async function readOne(token: string, collection: string, id: string, options?: 
 async function readMany(
   token: string,
   collection: string,
-  { limit, sort, fields, filter }: { limit: number; sort: string; fields?: string; filter?: string },
+  { limit, sort, fields, filter, expand }: { limit: number; sort: string; fields?: string; filter?: string; expand?: string },
 ): Promise<Record_[]> {
   try {
     const records = clientFor(token).collection(collection);
-    if (limit > 0 && limit <= MAX_PER_PAGE) return (await records.getList(1, limit, { sort, fields, filter })).items;
+    if (limit > 0 && limit <= MAX_PER_PAGE) return (await records.getList(1, limit, { sort, fields, filter, expand })).items;
 
-    const all = await records.getFullList({ batch: MAX_PER_PAGE, sort, fields, filter });
+    const all = await records.getFullList({ batch: MAX_PER_PAGE, sort, fields, filter, expand });
     return limit > 0 ? all.slice(0, limit) : all;
   } catch (error) {
     throw toApiError(error, `Could not list ${collection}`);
@@ -138,6 +136,30 @@ async function remove(token: string, collection: string, id: string): Promise<bo
   } catch (error) {
     if (isNotFound(error)) return false;
     throw toApiError(error, `Could not delete from ${collection}`);
+  }
+}
+
+/**
+ * A failed batch answers 400 "Batch transaction failed." and tucks the real
+ * answer — the sub-request that failed, with its own status — inside
+ * `data.requests`. This puts that answer back on top, so a rule miss inside a
+ * batch reads as the 404 it is, exactly as it would outside one.
+ */
+function unwrapBatchError(error: unknown): unknown {
+  if (!(error instanceof ClientResponseError)) return error;
+  const requests = (error.response?.data as Record_ | undefined)?.requests;
+  if (!requests || typeof requests !== "object") return error;
+  const failed = Object.values(requests as Record_)[0] as { response?: { status?: number; body?: Record_ } } | undefined;
+  const inner = failed?.response;
+  if (!inner?.status) return error;
+  return new ClientResponseError({ url: error.url, status: inner.status, response: inner.body ?? {} });
+}
+
+async function sendBatch(batch: ReturnType<ReturnType<typeof clientFor>["createBatch"]>): Promise<void> {
+  try {
+    await batch.send();
+  } catch (error) {
+    throw unwrapBatchError(error);
   }
 }
 
@@ -255,54 +277,76 @@ function toApprovalRule(row: Record_): ApprovalRule {
   };
 }
 
-/**
- * An account's contact list, including one written before the list existed.
- *
- * Records saved by an earlier version carry a single contact spread across
- * `details.contactName`, `details.contactPhone` and the `contactEmail`
- * column. Reading them as a one-contact list is what lets the contact list
- * ship without a data migration: the next save writes the new shape, and a
- * record nobody edits keeps working in the meantime.
- */
-function toContacts(row: Record_, details: Record<string, unknown>): AccountContact[] {
-  const stored = details.contacts;
-  if (Array.isArray(stored)) return stored as AccountContact[];
+/* An account is three collections — see 1750000014_account_normalize.js. */
 
-  const name = String(details.contactName ?? "");
-  const email = String(row.contactEmail ?? "");
-  const phone = String(details.contactPhone ?? "");
-  if (!name && !email && !phone) return [];
+const LOCATIONS = "sys_physical_location";
+const CONTACTS = "contacts";
 
-  return [{ id: "con_legacy", name, title: "", email, phone, role: "commercial", primary: true }];
+/** What an account is read with: both addresses, and everybody pointing at it. */
+const ACCOUNT_EXPAND = "billingAddress,shippingAddress,contacts_via_account";
+
+function toAddress(row: unknown): Address {
+  if (!row || typeof row !== "object") return { ...EMPTY_ADDRESS };
+  const record = row as Record_;
+  return {
+    line1: String(record.line1 ?? ""),
+    line2: String(record.line2 ?? ""),
+    city: String(record.city ?? ""),
+    state: String(record.state ?? ""),
+    postalCode: String(record.postalCode ?? ""),
+    country: String(record.country ?? ""),
+  };
 }
 
+function toContact(row: Record_): AccountContact {
+  return {
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    title: String(row.title ?? ""),
+    email: String(row.contactEmail ?? ""),
+    phone: String(row.phone ?? ""),
+    role: (CONTACT_ROLES as string[]).includes(String(row.role)) ? (row.role as ContactRole) : "commercial",
+    primary: row.primary === true,
+  };
+}
+
+/** In the order the account lists them — `position`, which the server writes on every save. */
+const contactOrder = (a: Record_, b: Record_) =>
+  Number(a.position ?? 0) - Number(b.position ?? 0) || String(a.id).localeCompare(String(b.id));
+
 function toAccount(row: Record_): Account {
-  const details = jsonObject<Partial<Account> & Record<string, unknown>>(row.details, {});
-  const billingAddress = details.billingAddress ?? { ...EMPTY_ADDRESS };
-  const shippingSameAsBilling = details.shippingSameAsBilling !== false;
+  const expand = (row.expand ?? {}) as Record_;
+  const billingAddressId = relationId(row.billingAddress);
+  const shippingAddressId = relationId(row.shippingAddress);
+  // Shipping to the billing address is both relations naming one record —
+  // or no shipping record at all, which is what an account with no address
+  // has, and what "same as billing" has always defaulted to.
+  const shippingSameAsBilling = !shippingAddressId || shippingAddressId === billingAddressId;
+  const billingAddress = toAddress(expand.billingAddress);
+  const contacts = Array.isArray(expand.contacts_via_account) ? [...(expand.contacts_via_account as Record_[])] : [];
 
   return {
     id: String(row.id),
     name: String(row.name ?? ""),
-    industry: details.industry ?? "",
-    website: details.website ?? "",
-    status: (details.status ?? "prospect") as Account["status"],
-    tags: jsonArray<string>(details.tags),
-    contacts: toContacts(row, details),
+    industry: String(row.industry ?? ""),
+    website: String(row.website ?? ""),
+    status: (ACCOUNT_STATUSES as string[]).includes(String(row.status)) ? (row.status as AccountStatus) : "prospect",
+    tags: jsonArray<string>(row.tags),
+    contacts: contacts.sort(contactOrder).map(toContact),
     billingAddress,
-    shippingAddress: shippingSameAsBilling ? { ...billingAddress } : (details.shippingAddress ?? { ...EMPTY_ADDRESS }),
+    shippingAddress: shippingSameAsBilling ? { ...billingAddress } : toAddress(expand.shippingAddress),
     shippingSameAsBilling,
+    billingAddressId,
+    shippingAddressId: shippingSameAsBilling ? billingAddressId : shippingAddressId,
     currency: asCurrency(row.currency),
     priceBookId: relationId(row.priceBook),
-    paymentTerms: details.paymentTerms ?? "",
-    // Seeded from the terms text for a row written before receivables, the
-    // same way the validator does it for a body from the same era.
-    paymentTermDays: readPaymentTermDays(details.paymentTermDays, String(details.paymentTerms ?? "")),
-    creditLimit: Number(details.creditLimit ?? 0),
-    defaultDiscountPercent: Number(details.defaultDiscountPercent ?? 0),
-    taxExempt: details.taxExempt === true,
-    taxPercent: Number(details.taxPercent ?? 0),
-    notes: details.notes ?? "",
+    paymentTerms: String(row.paymentTerms ?? ""),
+    paymentTermDays: readPaymentTermDays(row.paymentTermDays, String(row.paymentTerms ?? "")),
+    creditLimit: Number(row.creditLimit ?? 0),
+    defaultDiscountPercent: Number(row.defaultDiscountPercent ?? 0),
+    taxExempt: row.taxExempt === true,
+    taxPercent: Number(row.taxPercent ?? 0),
+    notes: String(row.notes ?? ""),
     ownerId: relationId(row.owner),
     orgId: relationId(row.org),
     ...stamps(row),
@@ -369,7 +413,7 @@ function toApprovalRequest(raw: unknown): ApprovalRequest {
   };
 }
 
-function toQuote(row: Record_): Quote {
+function toQuote(row: Record_, lines: PricedLine[]): Quote {
   const header = jsonObject<Partial<Quote>>(row.header, {});
   return {
     id: String(row.id),
@@ -392,7 +436,7 @@ function toQuote(row: Record_): Quote {
     validUntil: String(row.validUntil ?? ""),
     notes: header.notes ?? "",
     internalNotes: header.internalNotes ?? "",
-    lines: jsonArray<PricedLine>(row.lines),
+    lines,
     totals: jsonObject<QuoteTotals>(row.totals, {} as QuoteTotals),
     approvals: jsonArray<unknown>(row.approvals).map(toApprovalRequest),
     approverIds: relationIds(row.approvers),
@@ -405,13 +449,12 @@ function toQuote(row: Record_): Quote {
   };
 }
 
-/** The list view: everything but the lines, which are the bulk of a quote. */
+/** The list view: everything but the lines, which are not read for it. */
 function toQuoteSummary(row: Record_): QuoteSummary {
-  const quote = toQuote(row);
-  const { lines, approvals, ...rest } = quote;
+  const { lines: _lines, approvals, ...rest } = toQuote(row, []);
   return {
     ...rest,
-    lineCount: Number(row.lineCount ?? lines.length),
+    lineCount: Number(row.lineCount ?? 0),
     pendingApprovals: approvals.filter(request => request.status === "pending").length,
   };
 }
@@ -592,48 +635,125 @@ export const deleteApprovalRule = (token: string, id: string) => remove(token, "
 
 const accountBody = (input: AccountInput): Record_ => ({
   name: input.name,
-  // The column holds the primary contact's address, which is the one anything
-  // outside the app would mean by "the account's email".
-  contactEmail: primaryContact(input)?.email ?? "",
   currency: input.currency,
   // PocketBase wants "" for an unset relation, not null.
   priceBook: input.priceBookId || "",
-  details: {
-    industry: input.industry,
-    website: input.website,
-    status: input.status,
-    tags: input.tags,
-    contacts: input.contacts,
-    billingAddress: input.billingAddress,
-    shippingAddress: input.shippingAddress,
-    shippingSameAsBilling: input.shippingSameAsBilling,
-    paymentTerms: input.paymentTerms,
-    paymentTermDays: input.paymentTermDays,
-    creditLimit: input.creditLimit,
-    defaultDiscountPercent: input.defaultDiscountPercent,
-    taxExempt: input.taxExempt,
-    taxPercent: input.taxPercent,
-    notes: input.notes,
-  },
+  industry: input.industry,
+  website: input.website,
+  status: input.status,
+  tags: input.tags,
+  paymentTerms: input.paymentTerms,
+  paymentTermDays: input.paymentTermDays,
+  creditLimit: input.creditLimit,
+  defaultDiscountPercent: input.defaultDiscountPercent,
+  taxExempt: input.taxExempt,
+  taxPercent: input.taxPercent,
+  notes: input.notes,
 });
 
+const contactBody = (contact: AccountContact, position: number): Record_ => ({
+  position,
+  name: contact.name,
+  title: contact.title,
+  contactEmail: contact.email,
+  phone: contact.phone,
+  role: contact.role,
+  primary: contact.primary,
+});
+
+const sameAddress = (a: Address, b: Address) => ADDRESS_PARTS.every(part => a[part] === b[part]);
+const sameContact = (row: Record_, contact: AccountContact, position: number) => {
+  const stored = contactBody(toContact(row), Number(row.position ?? 0));
+  const next = contactBody(contact, position);
+  return Object.keys(next).every(key => stored[key] === next[key]);
+};
+
+/**
+ * Saves an account and what it is made of — its two locations and its
+ * contacts — in one PocketBase batch, so a failure anywhere leaves all three
+ * collections as they were. Every write is still the caller's own, under the
+ * collection rules.
+ *
+ * A location is edited in place while the account keeps pointing at it, and
+ * created when it starts to. One the account stops naming is removed by
+ * pb_hooks/rules/locations.js once nothing names it. "Same as billing" points
+ * the shipping relation at the billing record rather than copying it.
+ *
+ * A contact keeps its id when it is one this account already has; any other
+ * id is a client's placeholder, and the server mints a real one — ids are
+ * global, and two accounts installed from the same sample would collide.
+ */
+async function saveAccountGraph(token: string, id: string | null, input: AccountInput): Promise<Account | null> {
+  const existing = id ? await readOne(token, "accounts", id, { expand: ACCOUNT_EXPAND }) : null;
+  if (id && !existing) return null;
+  const accountId = id ?? newId("acc");
+  const expand = (existing?.expand ?? {}) as Record_;
+
+  const batch = clientFor(token).createBatch();
+  const locations = batch.collection(LOCATIONS);
+
+  /** The location an address should live in: `current` edited if it changed, a new one if there is none. */
+  const place = (address: Address, currentId: string, current: unknown): string => {
+    if (isBlankAddress(address)) return "";
+    if (currentId) {
+      if (!sameAddress(toAddress(current), address)) locations.update(currentId, { ...address });
+      return currentId;
+    }
+    const created = newId("loc");
+    locations.create({ id: created, ...address });
+    return created;
+  };
+
+  const oldBilling = relationId(existing?.billingAddress);
+  const oldShipping = relationId(existing?.shippingAddress);
+  const billingAddress = place(input.billingAddress, oldBilling, expand.billingAddress);
+  const shippingAddress = input.shippingSameAsBilling
+    ? billingAddress
+    : // A shipping record that was the billing one is the billing one; ship elsewhere needs its own.
+      place(input.shippingAddress, oldShipping !== oldBilling ? oldShipping : "", oldShipping !== oldBilling ? expand.shippingAddress : null);
+
+  const body = { ...accountBody(input), billingAddress, shippingAddress };
+  if (id) batch.collection("accounts").update(id, body);
+  else batch.collection("accounts").create({ id: accountId, ...body });
+
+  const stored = new Map(
+    (Array.isArray(expand.contacts_via_account) ? (expand.contacts_via_account as Record_[]) : []).map(row => [String(row.id), row]),
+  );
+  const contacts = batch.collection(CONTACTS);
+  input.contacts.forEach((contact, position) => {
+    const row = stored.get(contact.id);
+    if (row) {
+      if (!sameContact(row, contact, position)) contacts.update(contact.id, contactBody(contact, position));
+      stored.delete(contact.id);
+    } else {
+      contacts.create({ id: newId("con"), account: accountId, ...contactBody(contact, position) });
+    }
+  });
+  for (const gone of stored.keys()) contacts.delete(gone);
+
+  try {
+    await sendBatch(batch);
+  } catch (error) {
+    if (id && isNotFound(error)) return null;
+    throw toApiError(error, id ? "Could not update the account" : "Could not save the account");
+  }
+  return getAccount(token, accountId);
+}
+
 export const listAccounts = async (token: string): Promise<Account[]> =>
-  (await readMany(token, "accounts", { limit: 0, sort: "name" })).map(toAccount);
+  (await readMany(token, "accounts", { limit: 0, sort: "name", expand: ACCOUNT_EXPAND })).map(toAccount);
 
 export async function getAccount(token: string, id: string): Promise<Account | null> {
-  const row = await readOne(token, "accounts", id);
+  const row = await readOne(token, "accounts", id, { expand: ACCOUNT_EXPAND });
   return row ? toAccount(row) : null;
 }
 
 export async function createAccount(token: string, input: AccountInput): Promise<Account> {
-  const row = await write(token, "accounts", null, { id: newId("acc"), ...accountBody(input) }, "Could not save the account");
-  return toAccount(row!);
+  return (await saveAccountGraph(token, null, input))!;
 }
 
-export async function updateAccount(token: string, id: string, input: AccountInput): Promise<Account | null> {
-  const row = await write(token, "accounts", id, accountBody(input), "Could not update the account");
-  return row ? toAccount(row) : null;
-}
+export const updateAccount = (token: string, id: string, input: AccountInput): Promise<Account | null> =>
+  saveAccountGraph(token, id, input);
 
 export const deleteAccount = (token: string, id: string) => remove(token, "accounts", id);
 
@@ -663,9 +783,207 @@ export async function updateProposalTemplate(
 
 export const deleteProposalTemplate = (token: string, id: string) => remove(token, "proposal_templates", id);
 
+/* ------------------------------- line items ------------------------------- */
+
+/**
+ * A quote's lines are `quote_lines` records and an invoice's are
+ * `invoice_lines` — see 1750000016_line_items.js. Each is saved with its
+ * parent in one PocketBase batch, so a quote is never stored with half its
+ * lines.
+ *
+ * A row keeps the line's own id as `lineId` (what a bundle component's
+ * `parentId` and an invoice line's `sourceLineId` name) and is matched on it
+ * when the parent is saved again: a line still there is updated only if
+ * something on it changed, a new one is created, and one the save leaves out
+ * is deleted. The record id is the server's, minted on create.
+ */
+type LineSpec<T> = {
+  collection: string;
+  /** The relation to the parent. */
+  parent: string;
+  prefix: string;
+  body: (line: T, position: number) => Record_;
+  read: (row: Record_) => T;
+};
+
+const QUOTE_LINE_TEXT = ["productId", "description", "sku", "name", "family", "chargeType", "billingPeriod", "unitOfMeasure"] as const;
+const QUOTE_LINE_NUMBERS = [
+  "sortOrder",
+  "quantity",
+  "discountPercent",
+  "termMonths",
+  "listUnitPrice",
+  "optionsUnitDelta",
+  "baseUnitPrice",
+  "unitPrice",
+  "listTotal",
+  "discountAmount",
+  "netTotal",
+  "effectiveDiscountPercent",
+  "periods",
+  "unitCost",
+  "costTotal",
+  "margin",
+  "marginPercent",
+  "oneTime",
+  "monthlyRecurring",
+  "annualRecurring",
+] as const;
+const QUOTE_LINE_COLUMNS = new Set<string>(["id", "parentId", ...QUOTE_LINE_TEXT, ...QUOTE_LINE_NUMBERS]);
+
+const finite = (value: unknown): number => (Number.isFinite(Number(value)) ? Number(value) : 0);
+
+/**
+ * A priced line as a `quote_lines` body: every scalar in its column, and
+ * whatever is left — options, tier, applied rules, issues, warnings,
+ * `unitPriceOverride` — in `detail`. Anything a line gains later lands in
+ * `detail` without a migration.
+ */
+function quoteLineBody(line: PricedLine, position: number): Record_ {
+  const body: Record_ = { lineId: line.id, position, parentLineId: line.parentId ?? "" };
+  for (const key of QUOTE_LINE_TEXT) body[key] = String(line[key] ?? "");
+  for (const key of QUOTE_LINE_NUMBERS) body[key] = finite(line[key]);
+  body.detail = Object.fromEntries(Object.entries(line).filter(([key]) => !QUOTE_LINE_COLUMNS.has(key)));
+  return body;
+}
+
+function toQuoteLine(row: Record_): PricedLine {
+  const line: Record_ = {
+    unitPriceOverride: null,
+    selectedOptions: [],
+    optionNames: [],
+    tier: null,
+    appliedRules: [],
+    issues: [],
+    warnings: [],
+    ...jsonObject<Record_>(row.detail, {}),
+    id: String(row.lineId ?? ""),
+    parentId: relationId(row.parentLineId) || null,
+  };
+  for (const key of QUOTE_LINE_TEXT) line[key] = String(row[key] ?? "");
+  for (const key of QUOTE_LINE_NUMBERS) line[key] = finite(row[key]);
+  return line as PricedLine;
+}
+
+const invoiceLineBody = (line: InvoiceLine, position: number): Record_ => ({
+  lineId: line.id,
+  position,
+  sourceLineId: line.sourceLineId ?? "",
+  sku: line.sku,
+  description: line.description,
+  quantity: finite(line.quantity),
+  unitPrice: finite(line.unitPrice),
+  amount: finite(line.amount),
+  taxPercent: finite(line.taxPercent),
+  taxAmount: finite(line.taxAmount),
+});
+
+const toInvoiceLine = (row: Record_): InvoiceLine => ({
+  id: String(row.lineId ?? ""),
+  sourceLineId: relationId(row.sourceLineId) || null,
+  sku: String(row.sku ?? ""),
+  description: String(row.description ?? ""),
+  quantity: finite(row.quantity),
+  unitPrice: finite(row.unitPrice),
+  amount: finite(row.amount),
+  taxPercent: finite(row.taxPercent),
+  taxAmount: finite(row.taxAmount),
+});
+
+const QUOTE_LINES: LineSpec<PricedLine> = {
+  collection: "quote_lines",
+  parent: "quote",
+  prefix: "qln",
+  body: quoteLineBody,
+  read: toQuoteLine,
+};
+
+const INVOICE_LINES: LineSpec<InvoiceLine> = {
+  collection: "invoice_lines",
+  parent: "invoice",
+  prefix: "iln",
+  body: invoiceLineBody,
+  read: toInvoiceLine,
+};
+
+const LINE_SORT = "position,id";
+
+/** One parent's line rows, in order. */
+const readLineRows = (token: string, spec: Pick<LineSpec<unknown>, "collection" | "parent">, parentId: string): Promise<Record_[]> =>
+  readMany(token, spec.collection, { limit: 0, sort: LINE_SORT, filter: `${spec.parent} = "${parentId.replace(/"/g, "")}"` });
+
+/** Key order does not make two bodies different. */
+const canonical = (value: unknown): string =>
+  JSON.stringify(value, (_key, inner) =>
+    inner && typeof inner === "object" && !Array.isArray(inner)
+      ? Object.fromEntries(Object.keys(inner).sort().map(key => [key, (inner as Record_)[key]]))
+      : inner,
+  );
+
+/**
+ * Queues the writes that turn `rows` — what is stored — into `lines`. A
+ * second row claiming a `lineId` already seen is a leftover and is removed.
+ */
+function queueLines<T>(
+  batch: ReturnType<ReturnType<typeof clientFor>["createBatch"]>,
+  spec: LineSpec<T>,
+  parentId: string,
+  rows: Record_[],
+  lines: T[],
+): void {
+  const records = batch.collection(spec.collection);
+  const stored = new Map<string, Record_>();
+  for (const row of rows) {
+    const key = String(row.lineId ?? "");
+    if (stored.has(key)) records.delete(String(row.id));
+    else stored.set(key, row);
+  }
+
+  lines.forEach((line, position) => {
+    const body = spec.body(line, position);
+    const row = stored.get(String(body.lineId));
+    if (!row) {
+      records.create({ id: newId(spec.prefix), [spec.parent]: parentId, ...body });
+      return;
+    }
+    stored.delete(String(body.lineId));
+    if (canonical(spec.body(spec.read(row), Number(row.position ?? 0))) !== canonical(body)) {
+      records.update(String(row.id), body);
+    }
+  });
+
+  for (const row of stored.values()) records.delete(String(row.id));
+}
+
+/**
+ * Creates or updates a parent record and, unless `lines` is null, makes its
+ * stored lines exactly `lines` — all in one batch. Returns false when an
+ * update finds nothing it may change.
+ */
+async function saveWithLines<T>(
+  token: string,
+  parent: { collection: string; id: string; create: boolean; body: Record_; what: string },
+  spec: LineSpec<T>,
+  lines: T[] | null,
+): Promise<boolean> {
+  const rows = lines && !parent.create ? await readLineRows(token, spec, parent.id) : [];
+  const batch = clientFor(token).createBatch();
+  if (parent.create) batch.collection(parent.collection).create({ id: parent.id, ...parent.body });
+  else batch.collection(parent.collection).update(parent.id, parent.body);
+  if (lines) queueLines(batch, spec, parent.id, rows, lines);
+
+  try {
+    await sendBatch(batch);
+    return true;
+  } catch (error) {
+    if (!parent.create && isNotFound(error)) return false;
+    throw toApiError(error, parent.what);
+  }
+}
+
 /* --------------------------------- quotes -------------------------------- */
 
-/** Everything but `lines`, `totals` and `approvals` — the bulk of a quote. */
+/** Everything a list shows. The lines are `quote_lines` rows, and are not read for a list. */
 const QUOTE_SUMMARY_FIELDS =
   "id,number,name,status,version,supersedes,supersededBy,priceBook,currency,validUntil,header,totals,approvals,approvers,owner,org,sharedWith,sentAt,decidedAt,created,updated,lineCount";
 
@@ -695,11 +1013,10 @@ export type QuoteRecordInput = {
 };
 
 function quoteBody(input: QuoteRecordInput): Record_ {
-  const lines = JSON.stringify(input.lines);
-  if (lines.length > MAX_QUOTE_BYTES) {
+  if (input.lines.length > MAX_QUOTE_LINES) {
     throw new ApiError(
-      `This quote is ${(lines.length / 1024 / 1024).toFixed(1)} MB of line items, over the ` +
-        `${MAX_QUOTE_BYTES / 1024 / 1024} MB a stored quote may occupy. Split it into several quotes.`,
+      `This quote comes to ${input.lines.length} lines once its bundles are expanded, over the ` +
+        `${MAX_QUOTE_LINES} a quote may hold. Split it into several quotes.`,
       413,
     );
   }
@@ -714,7 +1031,6 @@ function quoteBody(input: QuoteRecordInput): Record_ {
     currency: input.currency,
     validUntil: input.validUntil,
     lineCount: input.lines.length,
-    lines: input.lines,
     totals: input.totals,
     approvals: input.approvals,
     approvers: input.approverIds,
@@ -930,19 +1246,34 @@ export const listQuotesAwaiting = async (token: string, userId: string): Promise
     })
   ).map(toQuoteSummary);
 
+/** A quote and its lines, read side by side. */
 export async function getQuote(token: string, id: string): Promise<Quote | null> {
-  const row = await readOne(token, "quotes", id);
-  return row ? toQuote(row) : null;
+  const [row, lines] = await Promise.all([readOne(token, "quotes", id), readLineRows(token, QUOTE_LINES, id)]);
+  return row ? toQuote(row, lines.map(toQuoteLine)) : null;
 }
 
 export async function createQuote(token: string, input: QuoteRecordInput): Promise<Quote> {
-  const row = await write(token, "quotes", null, { id: newId("qte"), ...quoteBody(input) }, "Could not save the quote");
-  return toQuote(row!);
+  const id = newId("qte");
+  await saveWithLines(token, { collection: "quotes", id, create: true, body: quoteBody(input), what: "Could not save the quote" }, QUOTE_LINES, input.lines);
+  const quote = await getQuote(token, id);
+  if (!quote) throw new ApiError("The quote was saved but could not be read back.", 502);
+  return quote;
 }
 
-export async function updateQuote(token: string, id: string, input: QuoteRecordInput): Promise<Quote | null> {
-  const row = await write(token, "quotes", id, quoteBody(input), "Could not update the quote");
-  return row ? toQuote(row) : null;
+/**
+ * Saves a quote and its lines together. `lines: false` writes the quote
+ * alone — what an approver's decision does, since an approver may not write
+ * a line (1750000016) and deciding never changes one.
+ */
+export async function updateQuote(
+  token: string,
+  id: string,
+  input: QuoteRecordInput,
+  options: { lines?: boolean } = {},
+): Promise<Quote | null> {
+  const lines = options.lines === false ? null : input.lines;
+  const saved = await saveWithLines(token, { collection: "quotes", id, create: false, body: quoteBody(input), what: "Could not update the quote" }, QUOTE_LINES, lines);
+  return saved ? getQuote(token, id) : null;
 }
 
 export const deleteQuote = (token: string, id: string) => remove(token, "quotes", id);
@@ -1006,12 +1337,6 @@ export async function databaseMeta(token: string) {
 export { normalizePreferences };
 
 /* ------------------------------ receivables ------------------------------ */
-
-/**
- * Matches `maxSize` on the invoices `lines` field in the migration. Checked
- * here so an enormous invoice fails with a sentence about the invoice.
- */
-const MAX_INVOICE_BYTES = 1024 * 1024;
 
 const INVOICE_SUMMARY_FIELDS =
   "id,number,state,currency,issueDate,dueDate,total,lineCount,quote,header,totals,owner,sharedWith,created,updated";
@@ -1159,11 +1484,10 @@ export async function getCredit(token: string, id: string): Promise<InvoiceCredi
  * reads every payment in the workspace once and hands each invoice its share
  * — two queries for a page rather than two per invoice.
  */
-function toInvoice(row: Record_, payments: InvoicePayment[], credits: InvoiceCredit[]): Invoice {
+function toInvoice(row: Record_, lines: InvoiceLine[], payments: InvoicePayment[], credits: InvoiceCredit[]): Invoice {
   const header = jsonObject<Record<string, unknown>>(row.header, {});
   const stored = jsonObject<Partial<InvoiceTotals>>(row.totals, {});
   const currency = asCurrency(row.currency);
-  const lines = jsonArray<InvoiceLine>(row.lines);
 
   return {
     id: String(row.id),
@@ -1188,7 +1512,7 @@ function toInvoice(row: Record_, payments: InvoicePayment[], credits: InvoiceCre
     // a balance can never disagree with the payments behind it.
     totals: {
       currency,
-      lineCount: Number(stored.lineCount ?? lines.length),
+      lineCount: Number(stored.lineCount ?? row.lineCount ?? lines.length),
       subtotal: Number(stored.subtotal ?? 0),
       taxAmount: Number(stored.taxAmount ?? 0),
       total: Number(stored.total ?? 0),
@@ -1200,11 +1524,10 @@ function toInvoice(row: Record_, payments: InvoicePayment[], credits: InvoiceCre
 }
 
 function toInvoiceSummary(row: Record_, payments: InvoicePayment[], credits: InvoiceCredit[]): InvoiceSummary {
-  const invoice = toInvoice(row, payments, credits);
-  const { lines, payments: paid, credits: credited, ...rest } = invoice;
+  const { lines: _lines, payments: paid, credits: credited, ...rest } = toInvoice(row, [], payments, credits);
   return {
     ...rest,
-    lineCount: Number(row.lineCount ?? lines.length),
+    lineCount: Number(row.lineCount ?? 0),
     paymentCount: paid.length,
     creditCount: credited.length,
   };
@@ -1236,11 +1559,10 @@ export type InvoiceRecordInput = {
 };
 
 function invoiceBody(input: InvoiceRecordInput): Record_ {
-  const lines = JSON.stringify(input.lines);
-  if (lines.length > MAX_INVOICE_BYTES) {
+  if (input.lines.length > MAX_INVOICE_LINES) {
     throw new ApiError(
-      `This invoice is ${(lines.length / 1024).toFixed(0)} KB of line items, over the ` +
-        `${MAX_INVOICE_BYTES / 1024} KB a stored invoice may occupy. Split it into several invoices.`,
+      `This invoice has ${input.lines.length} lines, over the ${MAX_INVOICE_LINES} an invoice may hold. ` +
+        "Split it into several invoices.",
       413,
     );
   }
@@ -1257,7 +1579,6 @@ function invoiceBody(input: InvoiceRecordInput): Record_ {
     total: input.totals.total,
     lineCount: input.lines.length,
     quote: input.quoteId ?? "",
-    lines: input.lines,
     totals: input.totals,
     header: {
       customer: input.customer,
@@ -1323,24 +1644,33 @@ export async function listInvoicesForQuote(token: string, quoteId: string): Prom
   return withLedgers(token, rows);
 }
 
+/** An invoice, its lines and its ledger — three reads, side by side. */
 export async function getInvoice(token: string, id: string): Promise<Invoice | null> {
-  const row = await readOne(token, "invoices", id);
-  if (!row) return null;
-  const ledger = await readLedger(token, String(row.id));
-  return toInvoice(row, ledger.payments, ledger.credits);
+  const [row, lines, ledger] = await Promise.all([
+    readOne(token, "invoices", id),
+    readLineRows(token, INVOICE_LINES, id),
+    readLedger(token, id),
+  ]);
+  return row ? toInvoice(row, lines.map(toInvoiceLine), ledger.payments, ledger.credits) : null;
 }
 
 export async function createInvoice(token: string, input: InvoiceRecordInput): Promise<Invoice> {
-  const row = await write(token, "invoices", null, { id: newId("inv"), ...invoiceBody(input) }, "Could not save the invoice");
+  const id = newId("inv");
+  await saveWithLines(token, { collection: "invoices", id, create: true, body: invoiceBody(input), what: "Could not save the invoice" }, INVOICE_LINES, input.lines);
   // Brand new, so its ledger is empty by construction rather than by query.
-  return toInvoice(row!, [], []);
+  const [row, lines] = await Promise.all([readOne(token, "invoices", id), readLineRows(token, INVOICE_LINES, id)]);
+  if (!row) throw new ApiError("The invoice was saved but could not be read back.", 502);
+  return toInvoice(row, lines.map(toInvoiceLine), [], []);
 }
 
+/**
+ * Saves an invoice and its lines together. Only a draft's lines can be
+ * written (1750000016); the lines of an issued invoice come back from a save
+ * unchanged, so nothing is queued for them.
+ */
 export async function updateInvoice(token: string, id: string, input: InvoiceRecordInput): Promise<Invoice | null> {
-  const row = await write(token, "invoices", id, invoiceBody(input), "Could not update the invoice");
-  if (!row) return null;
-  const ledger = await readLedger(token, id);
-  return toInvoice(row, ledger.payments, ledger.credits);
+  const saved = await saveWithLines(token, { collection: "invoices", id, create: false, body: invoiceBody(input), what: "Could not update the invoice" }, INVOICE_LINES, input.lines);
+  return saved ? getInvoice(token, id) : null;
 }
 
 export const deleteInvoice = (token: string, id: string) => remove(token, "invoices", id);

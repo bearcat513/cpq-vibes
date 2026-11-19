@@ -543,3 +543,339 @@ describe("linking superseded quotes", () => {
     expect(supersededBy("q4")).toBe("");
   });
 });
+
+/* -------------------- breaking up account details (1750000014) ------------------- */
+
+/**
+ * The account `details` blob moving into columns, `contacts` and
+ * `sys_physical_location`. Like the ledger fan-out, it moves data rather than
+ * adding to it — a dropped contact or address would be gone with the column.
+ */
+const NORMALIZE_MIGRATION = "docker/pb_migrations/1750000014_account_normalize.js";
+const NORMALIZE = ["INSERT_BILLING", "INSERT_SHIPPING", "COPY_COLUMNS", "INSERT_CONTACTS", "INSERT_LEGACY_CONTACTS", "ONE_PRIMARY"];
+
+/** The three tables as PocketBase leaves them once 1750000014 has added its fields, before `details` is dropped. */
+function accountTables(accounts: { id: string; details: unknown; contactEmail?: string }[]): Database {
+  const db = new Database(":memory:");
+  db.run(
+    "CREATE TABLE accounts (id TEXT PRIMARY KEY, owner TEXT, org TEXT, name TEXT, contactEmail TEXT, details TEXT, industry TEXT, website TEXT, status TEXT, tags TEXT, paymentTerms TEXT, paymentTermDays REAL, creditLimit REAL, defaultDiscountPercent REAL, taxExempt BOOLEAN, taxPercent REAL, notes TEXT, billingAddress TEXT, shippingAddress TEXT, created TEXT, updated TEXT)",
+  );
+  db.run(
+    "CREATE TABLE sys_physical_location (id TEXT PRIMARY KEY, owner TEXT, org TEXT, name TEXT, line1 TEXT, line2 TEXT, city TEXT, state TEXT, postalCode TEXT, country TEXT, created TEXT, updated TEXT)",
+  );
+  db.run(
+    'CREATE TABLE contacts (id TEXT PRIMARY KEY, account TEXT, owner TEXT, org TEXT, name TEXT, title TEXT, contactEmail TEXT, phone TEXT, role TEXT, "primary" BOOLEAN, position REAL, email TEXT, emailVisibility BOOLEAN, verified BOOLEAN, password TEXT, tokenKey TEXT UNIQUE, created TEXT, updated TEXT)',
+  );
+  for (const account of accounts) {
+    db.run("INSERT INTO accounts (id, owner, org, name, contactEmail, details, created, updated) VALUES (?, 'u1', 'org1', ?, ?, ?, ?, ?)", [
+      account.id,
+      account.id,
+      account.contactEmail ?? "",
+      typeof account.details === "string" ? account.details : JSON.stringify(account.details),
+      "2026-03-01 09:00:00.000Z",
+      "2026-03-01 09:00:00.000Z",
+    ]);
+  }
+  return db;
+}
+
+const normalize = async (db: Database) => {
+  for (const name of NORMALIZE) db.run(await statement(name, NORMALIZE_MIGRATION));
+};
+
+const HARBOUR = {
+  status: "customer",
+  tags: ["enterprise", "renewal-q3"],
+  paymentTerms: "Net 30",
+  paymentTermDays: 30,
+  creditLimit: 250000,
+  taxExempt: true,
+  taxPercent: 8.5,
+  billingAddress: { line1: "1200 Embarcadero", line2: "Suite 400", city: "San Francisco", state: "CA", postalCode: "94107", country: "United States" },
+  shippingSameAsBilling: false,
+  shippingAddress: { line1: "3400 Pier 80", line2: "", city: "San Francisco", state: "CA", postalCode: "94124", country: "" },
+  contacts: [
+    { id: "con_harbour_dana", name: "Dana Okafor", email: "Dana@Harbour.example.com", role: "commercial", primary: false },
+    { id: "con_harbour_ap", name: "Accounts Payable", email: "ap@harbour.example.com", role: "billing", primary: true },
+  ],
+};
+
+describe("breaking an account's details into columns and records", () => {
+  test("each address becomes a location named on one line, and the account points at it", async () => {
+    const db = accountTables([
+      { id: "acc_h", details: HARBOUR },
+      { id: "acc_same", details: { billingAddress: HARBOUR.billingAddress, shippingSameAsBilling: true, shippingAddress: HARBOUR.shippingAddress } },
+      { id: "acc_none", details: { billingAddress: { line1: " ", city: "" } } },
+    ]);
+    await normalize(db);
+
+    const names = Object.fromEntries((db.query("SELECT id, name FROM sys_physical_location").all() as any[]).map(row => [row.id, row.name]));
+    expect(names).toEqual({
+      loc_b_acc_h: "1200 Embarcadero, Suite 400, San Francisco, CA, 94107, United States",
+      // Blank parts are skipped, not left as ", ,".
+      loc_s_acc_h: "3400 Pier 80, San Francisco, CA, 94124",
+      loc_b_acc_same: "1200 Embarcadero, Suite 400, San Francisco, CA, 94107, United States",
+    });
+
+    const links = db.query("SELECT id, billingAddress, shippingAddress FROM accounts ORDER BY id").all();
+    expect(links).toEqual([
+      { id: "acc_h", billingAddress: "loc_b_acc_h", shippingAddress: "loc_s_acc_h" },
+      // A blank address is no location; shipping to the billing address is the same one.
+      { id: "acc_none", billingAddress: "", shippingAddress: "" },
+      { id: "acc_same", billingAddress: "loc_b_acc_same", shippingAddress: "loc_b_acc_same" },
+    ]);
+  });
+
+  test("the scalars land in their columns, and payment days are read out of the terms when missing", async () => {
+    const db = accountTables([
+      { id: "acc_h", details: HARBOUR },
+      { id: "acc_text", details: { paymentTerms: "Net 45 EOM", status: "nonsense" } },
+      { id: "acc_bare", details: {} },
+    ]);
+    await normalize(db);
+
+    const rows = db.query("SELECT id, status, tags, paymentTermDays, creditLimit, taxExempt, taxPercent FROM accounts ORDER BY id").all() as any[];
+    expect(rows).toEqual([
+      { id: "acc_bare", status: "prospect", tags: "[]", paymentTermDays: 30, creditLimit: 0, taxExempt: 0, taxPercent: 0 },
+      { id: "acc_h", status: "customer", tags: '["enterprise","renewal-q3"]', paymentTermDays: 30, creditLimit: 250000, taxExempt: 1, taxPercent: 8.5 },
+      { id: "acc_text", status: "prospect", tags: "[]", paymentTermDays: 45, creditLimit: 0, taxExempt: 0, taxPercent: 0 },
+    ]);
+  });
+
+  test("every contact becomes a record on its account, in order, with exactly one primary", async () => {
+    const db = accountTables([
+      { id: "acc_h", details: HARBOUR },
+      // The same sample installed in another org: same embedded ids, no collision.
+      { id: "acc_h2", details: HARBOUR },
+      { id: "acc_two", details: { contacts: [{ name: "A", primary: true }, { name: "B", primary: true }] } },
+      { id: "acc_zero", details: { contacts: [{ name: "C" }, { name: "D" }] } },
+    ]);
+    await normalize(db);
+
+    const rows = db.query('SELECT id, account, name, contactEmail, role, "primary" AS isPrimary, position, email FROM contacts ORDER BY account, position').all() as any[];
+    expect(rows.filter(row => row.account === "acc_h")).toEqual([
+      { id: "con_acc_h_0", account: "acc_h", name: "Dana Okafor", contactEmail: "dana@harbour.example.com", role: "commercial", isPrimary: 0, position: 0, email: "" },
+      { id: "con_acc_h_1", account: "acc_h", name: "Accounts Payable", contactEmail: "ap@harbour.example.com", role: "billing", isPrimary: 1, position: 1, email: "" },
+    ]);
+    expect(rows.filter(row => row.account === "acc_h2")).toHaveLength(2);
+    expect(rows.filter(row => row.account === "acc_two").map(row => row.isPrimary)).toEqual([1, 0]);
+    expect(rows.filter(row => row.account === "acc_zero").map(row => row.isPrimary)).toEqual([1, 0]);
+    // Nobody signs in as a contact, but each still has a distinct token key.
+    expect(new Set((db.query("SELECT tokenKey FROM contacts").all() as any[]).map(row => row.tokenKey)).size).toBe(rows.length);
+  });
+
+  test("a record from before the contact list becomes one primary contact", async () => {
+    const db = accountTables([
+      { id: "acc_old", contactEmail: "Old@Example.com", details: { contactName: "Olde Contact", contactPhone: "555" } },
+      { id: "acc_empty", details: {} },
+    ]);
+    await normalize(db);
+
+    expect(db.query('SELECT account, name, contactEmail, phone, "primary" AS isPrimary FROM contacts').all()).toEqual([
+      { account: "acc_old", name: "Olde Contact", contactEmail: "old@example.com", phone: "555", isPrimary: 1 },
+    ]);
+  });
+
+  test("running it twice changes nothing", async () => {
+    const db = accountTables([{ id: "acc_h", details: HARBOUR }]);
+    await normalize(db);
+    const snapshot = () => [
+      db.query("SELECT * FROM sys_physical_location ORDER BY id").all(),
+      db.query("SELECT id, name, position FROM contacts ORDER BY id").all(),
+      db.query("SELECT billingAddress, shippingAddress, paymentTermDays FROM accounts").all(),
+    ];
+    const first = snapshot();
+    await normalize(db);
+    expect(snapshot()).toEqual(first);
+  });
+
+  test("down rebuilds the blob the app used to read", async () => {
+    const db = accountTables([{ id: "acc_h", details: HARBOUR }]);
+    await normalize(db);
+    db.run("UPDATE accounts SET details = NULL, contactEmail = ''");
+    db.run(await statement("REBUILD_DETAILS", NORMALIZE_MIGRATION));
+
+    const row = db.query("SELECT contactEmail, details FROM accounts").get() as any;
+    const details = JSON.parse(row.details);
+    expect(row.contactEmail).toBe("ap@harbour.example.com");
+    expect(details.contacts.map((contact: any) => [contact.name, contact.primary])).toEqual([
+      ["Dana Okafor", false],
+      ["Accounts Payable", true],
+    ]);
+    expect(details.billingAddress).toEqual(HARBOUR.billingAddress);
+    expect(details.shippingAddress.line1).toBe("3400 Pier 80");
+    expect(details.shippingSameAsBilling).toBe(false);
+    expect(details).toMatchObject({ status: "customer", creditLimit: 250000, paymentTermDays: 30, taxExempt: true, tags: HARBOUR.tags });
+  });
+});
+
+/* ---------------------- line items as records (1750000016) ---------------------- */
+
+/**
+ * `quotes.lines` and `invoices.lines` fanning out into `quote_lines` and
+ * `invoice_lines`. The arrays are dropped afterwards, so a line left behind
+ * here is a line gone from a customer's quote or invoice.
+ */
+const LINES_MIGRATION = "docker/pb_migrations/1750000016_line_items.js";
+
+const QUOTE_LINE_COLUMNS =
+  "lineId TEXT, position REAL, productId TEXT, parentLineId TEXT, sortOrder REAL, quantity REAL, discountPercent REAL, termMonths REAL, description TEXT, sku TEXT, name TEXT, family TEXT, chargeType TEXT, billingPeriod TEXT, unitOfMeasure TEXT, listUnitPrice REAL, optionsUnitDelta REAL, baseUnitPrice REAL, unitPrice REAL, listTotal REAL, discountAmount REAL, netTotal REAL, effectiveDiscountPercent REAL, periods REAL, unitCost REAL, costTotal REAL, margin REAL, marginPercent REAL, oneTime REAL, monthlyRecurring REAL, annualRecurring REAL, detail TEXT";
+
+/** Both parents with their `lines` still on them, and both line tables as 1750000016 creates them. */
+function lineTables(quotes: { id: string; lines: unknown }[], invoices: { id: string; lines: unknown }[] = []): Database {
+  const db = new Database(":memory:");
+  const raw = (value: unknown) => (typeof value === "string" || value === null ? value : JSON.stringify(value));
+  db.run("CREATE TABLE quotes (id TEXT PRIMARY KEY, owner TEXT, org TEXT, lines TEXT, created TEXT, updated TEXT)");
+  db.run("CREATE TABLE invoices (id TEXT PRIMARY KEY, owner TEXT, org TEXT, lines TEXT, created TEXT, updated TEXT)");
+  db.run(`CREATE TABLE quote_lines (id TEXT PRIMARY KEY, quote TEXT, owner TEXT, org TEXT, ${QUOTE_LINE_COLUMNS}, created TEXT, updated TEXT)`);
+  db.run(
+    "CREATE TABLE invoice_lines (id TEXT PRIMARY KEY, invoice TEXT, owner TEXT, org TEXT, lineId TEXT, position REAL, sourceLineId TEXT, sku TEXT, description TEXT, quantity REAL, unitPrice REAL, amount REAL, taxPercent REAL, taxAmount REAL, created TEXT, updated TEXT)",
+  );
+  const stamp = "2026-05-01 09:00:00.000Z";
+  for (const quote of quotes) {
+    db.run("INSERT INTO quotes VALUES (?, 'u1', 'org1', ?, ?, ?)", [quote.id, raw(quote.lines) as string, stamp, stamp]);
+  }
+  for (const invoice of invoices) {
+    db.run("INSERT INTO invoices VALUES (?, 'u1', 'org1', ?, ?, ?)", [invoice.id, raw(invoice.lines) as string, stamp, stamp]);
+  }
+  return db;
+}
+
+const fanOutLines = async (db: Database) => {
+  db.run(await statement("FANOUT_QUOTE_LINES", LINES_MIGRATION));
+  db.run(await statement("FANOUT_INVOICE_LINES", LINES_MIGRATION));
+};
+
+/** A priced bundle line and one of its components, as the pricing engine stores them. */
+const BUNDLE = {
+  id: "ln_bundle",
+  productId: "prd_suite",
+  quantity: 10,
+  discountPercent: 5,
+  unitPriceOverride: null,
+  selectedOptions: ["sso", "audit"],
+  termMonths: 12,
+  description: "",
+  parentId: null,
+  sortOrder: 0,
+  sku: "SUITE",
+  name: "Suite",
+  family: "Software",
+  chargeType: "recurring",
+  billingPeriod: "monthly",
+  unitOfMeasure: "seat",
+  optionNames: ["SSO", "Audit log"],
+  listUnitPrice: 40,
+  optionsUnitDelta: 5,
+  baseUnitPrice: 45,
+  tier: { minQuantity: 10, maxQuantity: null, unitPrice: 42 },
+  unitPrice: 39.9,
+  listTotal: 4800,
+  discountAmount: 12,
+  netTotal: 4788,
+  effectiveDiscountPercent: 0.25,
+  periods: 12,
+  unitCost: 10,
+  costTotal: 1200,
+  margin: 3588,
+  marginPercent: 74.94,
+  oneTime: 0,
+  monthlyRecurring: 399,
+  annualRecurring: 4788,
+  appliedRules: [{ ruleId: "prc_1", name: "Volume break", amount: -12 }],
+  issues: [],
+  warnings: ["Two more seats reach the next tier."],
+};
+const COMPONENT = { ...BUNDLE, id: "ln_component", parentId: "ln_bundle", sortOrder: 1, unitPriceOverride: 0, sku: "SUITE-SVC", tier: null, appliedRules: [], warnings: [] };
+
+const INVOICE_LINES = [
+  { id: "il_1", sourceLineId: "ln_bundle", sku: "SUITE", description: "Suite, 12 months", quantity: 120, unitPrice: 39.9, amount: 4788, taxPercent: 20, taxAmount: 957.6 },
+  { id: "il_2", sourceLineId: null, sku: "", description: "Shipping", quantity: 1, unitPrice: 25, amount: 25, taxPercent: 0, taxAmount: 0 },
+];
+
+describe("breaking quote and invoice lines out into their own tables", () => {
+  test("every quote line becomes a row on its quote: scalars in columns, the rest in detail", async () => {
+    const db = lineTables([{ id: "qte_a", lines: [BUNDLE, COMPONENT] }]);
+    await fanOutLines(db);
+
+    const rows = db.query("SELECT * FROM quote_lines ORDER BY position").all() as any[];
+    expect(rows.map(row => [row.id, row.quote, row.lineId, row.position, row.parentLineId])).toEqual([
+      ["qln_qte_a_0", "qte_a", "ln_bundle", 0, ""],
+      ["qln_qte_a_1", "qte_a", "ln_component", 1, "ln_bundle"],
+    ]);
+    expect(rows[0]).toMatchObject({ owner: "u1", org: "org1", sku: "SUITE", quantity: 10, unitPrice: 39.9, netTotal: 4788, margin: 3588, chargeType: "recurring" });
+
+    // Nothing that is a column is repeated in detail, and nothing nested is lost.
+    expect(JSON.parse(rows[0].detail)).toEqual({
+      unitPriceOverride: null,
+      selectedOptions: ["sso", "audit"],
+      optionNames: ["SSO", "Audit log"],
+      tier: { minQuantity: 10, maxQuantity: null, unitPrice: 42 },
+      appliedRules: [{ ruleId: "prc_1", name: "Volume break", amount: -12 }],
+      issues: [],
+      warnings: ["Two more seats reach the next tier."],
+    });
+    // A negotiated price of zero is not "no override".
+    expect(JSON.parse(rows[1].detail).unitPriceOverride).toBe(0);
+  });
+
+  test("every invoice line becomes a row, and a line from no quote names none", async () => {
+    const db = lineTables([], [{ id: "inv_a", lines: INVOICE_LINES }]);
+    await fanOutLines(db);
+
+    expect(db.query("SELECT id, invoice, lineId, position, sourceLineId, description, amount, taxAmount FROM invoice_lines ORDER BY position").all()).toEqual([
+      { id: "iln_inv_a_0", invoice: "inv_a", lineId: "il_1", position: 0, sourceLineId: "ln_bundle", description: "Suite, 12 months", amount: 4788, taxAmount: 957.6 },
+      { id: "iln_inv_a_1", invoice: "inv_a", lineId: "il_2", position: 1, sourceLineId: "", description: "Shipping", amount: 25, taxAmount: 0 },
+    ]);
+  });
+
+  test("the same lines on two quotes — a revision — become two sets of rows", async () => {
+    const db = lineTables([
+      { id: "qte_a", lines: [BUNDLE] },
+      { id: "qte_a_r2", lines: [BUNDLE] },
+    ]);
+    await fanOutLines(db);
+    expect(db.query("SELECT quote, lineId FROM quote_lines ORDER BY quote").all()).toEqual([
+      { quote: "qte_a", lineId: "ln_bundle" },
+      { quote: "qte_a_r2", lineId: "ln_bundle" },
+    ]);
+  });
+
+  test("an empty, missing, null or broken array is skipped, not failed", async () => {
+    const db = lineTables(
+      [
+        { id: "q_empty", lines: [] },
+        { id: "q_null", lines: null },
+        { id: "q_broken", lines: "{not json" },
+        { id: "q_object", lines: { id: "ln_x" } },
+        { id: "q_junk", lines: [1, "two", null, { id: "ln_ok", sku: "OK" }] },
+      ],
+      [{ id: "i_null", lines: null }],
+    );
+    await fanOutLines(db);
+    expect(db.query("SELECT quote, lineId, position FROM quote_lines").all()).toEqual([{ quote: "q_junk", lineId: "ln_ok", position: 3 }]);
+    expect((db.query("SELECT count(*) AS n FROM invoice_lines").get() as any).n).toBe(0);
+  });
+
+  test("running it twice does not double the lines", async () => {
+    const db = lineTables([{ id: "qte_a", lines: [BUNDLE, COMPONENT] }], [{ id: "inv_a", lines: INVOICE_LINES }]);
+    await fanOutLines(db);
+    await fanOutLines(db);
+    expect((db.query("SELECT count(*) AS n FROM quote_lines").get() as any).n).toBe(2);
+    expect((db.query("SELECT count(*) AS n FROM invoice_lines").get() as any).n).toBe(2);
+  });
+
+  test("down rebuilds both arrays exactly as they were, in order", async () => {
+    const db = lineTables([{ id: "qte_a", lines: [BUNDLE, COMPONENT] }, { id: "qte_none", lines: [] }], [{ id: "inv_a", lines: INVOICE_LINES }]);
+    await fanOutLines(db);
+    db.run("UPDATE quotes SET lines = NULL");
+    db.run("UPDATE invoices SET lines = NULL");
+    db.run(await statement("REBUILD_QUOTE_LINES", LINES_MIGRATION));
+    db.run(await statement("REBUILD_INVOICE_LINES", LINES_MIGRATION));
+
+    const lines = (table: string, id: string) => JSON.parse((db.query(`SELECT lines FROM ${table} WHERE id = ?`).get(id) as any).lines);
+    expect(lines("quotes", "qte_a")).toEqual([BUNDLE, COMPONENT]);
+    expect(lines("quotes", "qte_none")).toEqual([]);
+    expect(lines("invoices", "inv_a")).toEqual(INVOICE_LINES);
+  });
+});

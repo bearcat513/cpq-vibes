@@ -13,6 +13,7 @@ const MODULES = [
   "rules/ownership.js",
   "rules/approvals.js",
   "rules/attachments.js",
+  "rules/locations.js",
   "share/routes.js",
   "keys/routes.js",
   "orgs/routes.js",

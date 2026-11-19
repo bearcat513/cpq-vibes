@@ -2122,8 +2122,11 @@ function schemas(): Record<string, Json> {
 
     /* ------------------------------ customers ----------------------------- */
     Address: address,
-    AccountContact: object("One person at a customer.", {
-      id: id("The contact's id."),
+    AccountContact: object("One person at a customer — a record in `contacts`, which no one can sign in as.", {
+      id: id(
+        "The contact's id. Send one this account already has to edit that contact; any other id (or none) " +
+          "adds a contact, and the server mints its id. A stored contact missing from the list is removed.",
+      ),
       name: string_("Their name."),
       title: string_("Job title."),
       email: string_("Email.", { format: "email" }),
@@ -2144,7 +2147,7 @@ function schemas(): Record<string, Json> {
         shippingAddress: ref("Address"),
         shippingSameAsBilling: boolean_(
           "While true, the shipping address is kept equal to the billing one, so nothing downstream " +
-            "has to check the flag before reading it.",
+            "has to check the flag before reading it. Stored as both relations naming one location.",
         ),
         currency: currency(),
         priceBookId: string_("The book their quotes start on. Empty uses the default book."),
@@ -2163,10 +2166,20 @@ function schemas(): Record<string, Json> {
     ),
     Account: {
       allOf: [
-        object("Stored fields.", { id: id("The customer's id."), ...ownership }),
+        object("Stored fields.", {
+          id: id("The customer's id."),
+          billingAddressId: string_("The `sys_physical_location` record the billing address is stored in. Empty for none."),
+          shippingAddressId: string_(
+            "The one the shipping address is stored in — the billing one again while shipping there.",
+          ),
+          ...ownership,
+        }),
         ref("AccountInput"),
       ],
-      description: `A customer, with the people in it. At most ${MAX_CONTACTS} contacts and ${MAX_TAGS} tags.`,
+      description:
+        `A customer, with the people in it. At most ${MAX_CONTACTS} contacts and ${MAX_TAGS} tags. Stored as three ` +
+        "collections — `accounts`, its `contacts`, and the `sys_physical_location` records its two addresses " +
+        "point at — and written in one transaction.",
     },
 
     /* ------------------------------ catalogue ----------------------------- */

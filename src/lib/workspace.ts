@@ -125,6 +125,16 @@ const BUILT_IN: Record<string, WorkspaceLayout> = {
   accounts: {
     relatedLists: [
       {
+        key: "contacts",
+        title: "Contacts",
+        collection: "contacts",
+        field: "account",
+        match: [],
+        columns: ["name", "title", "contactEmail", "phone", "role", "primary"],
+        sort: "-primary,name",
+        allowCreate: true,
+      },
+      {
         key: "quotes",
         title: "Quotes",
         collection: "quotes",
@@ -155,13 +165,23 @@ const BUILT_IN: Record<string, WorkspaceLayout> = {
         { kind: "formula", key: "winRate", label: "Win rate", expression: "if(quoteCount > 0, won / quoteCount * 100, 0)", format: "percent", emphasis: false },
         { kind: "heading", key: "billing", label: "Billing" },
         { kind: "rollup", key: "invoiced", label: "Invoiced", list: "invoices", op: "sum", field: "total", where: 'state = "issued"', format: "money", emphasis: false },
-        { kind: "field", key: "creditLimit", label: "Credit limit", field: "details.creditLimit", format: "money", emphasis: false },
-        { kind: "field", key: "terms", label: "Payment terms (days)", field: "details.paymentTermDays", format: "number", emphasis: false },
+        { kind: "field", key: "creditLimit", label: "Credit limit", field: "creditLimit", format: "money", emphasis: false },
+        { kind: "field", key: "terms", label: "Payment terms (days)", field: "paymentTermDays", format: "number", emphasis: false },
       ],
     },
   },
   quotes: {
     relatedLists: [
+      {
+        key: "lines",
+        title: "Lines",
+        collection: "quote_lines",
+        field: "quote",
+        match: [],
+        columns: ["sku", "name", "quantity", "unitPrice", "netTotal"],
+        sort: "position",
+        allowCreate: false,
+      },
       {
         key: "invoices",
         title: "Invoices",
@@ -202,6 +222,16 @@ const BUILT_IN: Record<string, WorkspaceLayout> = {
   },
   invoices: {
     relatedLists: [
+      {
+        key: "lines",
+        title: "Lines",
+        collection: "invoice_lines",
+        field: "invoice",
+        match: [],
+        columns: ["sku", "description", "quantity", "unitPrice", "amount"],
+        sort: "position",
+        allowCreate: false,
+      },
       {
         key: "payments",
         title: "Payments",
