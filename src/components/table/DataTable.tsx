@@ -28,6 +28,11 @@ import { nativeSelect } from "./QueryBuilder";
  *
  * Features and the empty fallback live at module scope: v9 rebuilds its
  * models whenever either changes identity.
+ *
+ * On `lg` and up it is a grid in a window: it fills whatever height its
+ * parent gives it, scrolls inside itself in both directions, and keeps the
+ * heading row and the pager in view. Below that it is an ordinary block the
+ * page scrolls past.
  */
 
 const features = tableFeatures({ rowSortingFeature, rowPaginationFeature, columnVisibilityFeature });
@@ -49,6 +54,13 @@ type Props = {
 
 /** Numbers right-aligned in tabular figures, like every list in the app. */
 const isNumeric = (field: FieldInfo) => field.type === "number";
+
+/**
+ * The first column (the id) stays in view while the rest scroll sideways, the
+ * way a spreadsheet freezes its first column. Opaque, or the cells scrolling
+ * under it would show through.
+ */
+const FROZEN = "lg:sticky lg:left-0 lg:z-[1] lg:bg-card lg:shadow-[1px_0_0_var(--border)]";
 
 export function DataTable({
   fields,
@@ -105,8 +117,8 @@ export function DataTable({
   const last = Math.min(totalItems, (pagination.pageIndex + 1) * pagination.pageSize);
 
   return (
-    <div className="panel overflow-hidden rounded-lg border shadow-[0_1px_2px_var(--cast)]">
-      <div className="seam flex flex-wrap items-center gap-2 border-b px-3 py-2">
+    <div className="panel flex flex-col overflow-hidden rounded-md border shadow-[0_1px_2px_var(--cast)] lg:min-h-0 lg:flex-1">
+      <div className="seam flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1.5">
         <p className="text-xs text-muted-foreground tabular-nums">
           {totalItems === 0 ? "No rows" : `${first.toLocaleString()}–${last.toLocaleString()} of ${totalItems.toLocaleString()}`}
         </p>
@@ -124,12 +136,12 @@ export function DataTable({
         />
       </div>
 
-      <div className={cn("transition-opacity", loading && "opacity-60")}>
-        <Table>
-          <Thead>
+      <div className={cn("flex min-h-0 flex-1 flex-col transition-opacity", loading && "opacity-60")}>
+        <Table containerClassName="lg:min-h-0 lg:flex-1 lg:overflow-auto">
+          <Thead className="lg:sticky lg:top-0 lg:z-10 lg:bg-card lg:shadow-[0_1px_0_var(--border)]">
             {table.getHeaderGroups().map(group => (
               <Tr key={group.id} className="hover:bg-transparent">
-                {group.headers.map(header => {
+                {group.headers.map((header, index) => {
                   const field = fieldOf(header.column.id);
                   const sorted = header.column.getIsSorted();
                   const sortable = header.column.getCanSort();
@@ -139,7 +151,7 @@ export function DataTable({
                       key={header.id}
                       numeric={field ? isNumeric(field) : false}
                       aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
-                      className="whitespace-nowrap"
+                      className={cn("whitespace-nowrap py-1.5", index === 0 && FROZEN)}
                     >
                       {header.isPlaceholder ? null : sortable ? (
                         <button
@@ -192,14 +204,26 @@ export function DataTable({
                       : undefined
                   }
                   className={cn(
+                    "group/row",
                     open && "cursor-pointer focus-visible:bg-accent/60 focus-visible:outline-none",
                     selectedId === id && "bg-accent/70",
                   )}
                 >
-                  {row.getVisibleCells().map(cell => {
+                  {row.getVisibleCells().map((cell, index) => {
                     const field = fieldOf(cell.column.id);
                     return (
-                      <Td key={cell.id} numeric={field ? isNumeric(field) : false} className="max-w-80 align-top text-xs">
+                      <Td
+                        key={cell.id}
+                        numeric={field ? isNumeric(field) : false}
+                        // One line a row, like a desktop grid; the whole value is in the cell's tooltip.
+                        className={cn(
+                          "max-w-80 py-1.5 text-xs whitespace-nowrap",
+                          index === 0 && FROZEN,
+                          // The frozen cell is opaque, so it repeats the row's hover and selection itself.
+                          index === 0 && "lg:group-hover/row:bg-[color-mix(in_oklch,var(--muted)_40%,var(--card))]",
+                          index === 0 && selectedId === id && "lg:bg-[color-mix(in_oklch,var(--accent)_70%,var(--card))]",
+                        )}
+                      >
                         <table.FlexRender cell={cell} />
                       </Td>
                     );
@@ -212,7 +236,7 @@ export function DataTable({
         </Table>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2 text-xs text-muted-foreground">
+      <div className="flex shrink-0 flex-wrap items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
         <label className="flex items-center gap-1.5">
           Rows
           <select
@@ -308,7 +332,7 @@ function CellValue({ value, type }: { value: unknown; type: FieldInfo["type"] })
   if (Array.isArray(value) && value.every(entry => typeof entry === "string")) {
     if (value.length === 0) return <Minus className="size-3 text-muted-foreground/50" aria-label="empty" />;
     return (
-      <span className="flex flex-wrap gap-1">
+      <span className="flex gap-1">
         {value.map((entry, index) => (
           <span key={index} className="rounded-sm border bg-muted/50 px-1 font-mono text-[11px]">
             {entry}
@@ -320,14 +344,14 @@ function CellValue({ value, type }: { value: unknown; type: FieldInfo["type"] })
   if (typeof value === "object") {
     const text = JSON.stringify(value);
     return (
-      <code className="line-clamp-2 font-mono text-[11px] break-all text-muted-foreground" title={JSON.stringify(value, null, 2)}>
+      <code className="block truncate font-mono text-[11px] text-muted-foreground" title={JSON.stringify(value, null, 2)}>
         {text}
       </code>
     );
   }
   const text = String(value);
   return (
-    <span className="line-clamp-2 break-words" title={text.length > 80 ? text : undefined}>
+    <span className="block truncate" title={text.length > 40 ? text : undefined}>
       {text}
     </span>
   );

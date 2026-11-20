@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Info, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -8,31 +9,43 @@ import type { ComputedSummary } from "@/lib/workspace";
  * collection's workspace and worked out by the server as the reader. It
  * looks like the quote editor's totals panel on purpose — a heading, the
  * lines, and the one line the panel is about set apart under a rule.
+ *
+ * Given a height (the workspace's third pane), the heading stays and the
+ * lines scroll beneath it.
  */
 export function SummaryPane({
   summary,
   loading,
   preview,
+  className,
+  footer,
 }: {
   summary: ComputedSummary | null;
   loading?: boolean;
   /** Drawn from a draft layout in the editor, not the stored one. */
   preview?: boolean;
+  className?: string;
+  /** A note under the lines, inside the panel's scroll. */
+  footer?: ReactNode;
 }) {
   const lines = summary?.lines ?? [];
 
   return (
     <section
       aria-label="Record summary"
-      className="panel motion-safe:animate-rise rounded-lg border shadow-[0_1px_2px_var(--cast)]"
+      className={cn(
+        "panel motion-safe:animate-rise flex flex-col overflow-hidden rounded-lg border shadow-[0_1px_2px_var(--cast)]",
+        className,
+      )}
     >
-      <div className="seam flex items-center gap-2 border-b px-4 py-3">
+      <div className="seam flex shrink-0 items-center gap-2 border-b px-4 py-3">
         <h2 className="font-display text-[0.95rem] leading-tight font-semibold tracking-tight">Summary</h2>
         {preview && <Badge tone="pending">preview</Badge>}
         {loading && <Loader2 className="ml-auto size-3.5 animate-spin text-muted-foreground" aria-label="Working it out" />}
         {summary && !loading && <span className="ml-auto font-mono text-[11px] text-muted-foreground">{summary.currency}</span>}
       </div>
 
+      <div className="min-h-0 flex-1 overflow-y-auto">
       {lines.length === 0 ? (
         <p className="px-4 py-6 text-center text-xs text-muted-foreground">
           {summary ? "Nothing to summarize yet — add lines under Customize." : "Working it out…"}
@@ -77,6 +90,8 @@ export function SummaryPane({
           )}
         </dl>
       )}
+      {footer && <div className="px-4 pt-1 pb-3 text-[11px] text-muted-foreground">{footer}</div>}
+      </div>
     </section>
   );
 }

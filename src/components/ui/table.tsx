@@ -9,9 +9,16 @@ import { cn } from "@/lib/utils";
  * figures. Money in a proportional font does not line up column-wise, and a
  * column of prices that does not line up is a column nobody can scan.
  */
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+function Table({
+  className,
+  containerClassName,
+  ...props
+}: React.ComponentProps<"table"> & {
+  /** The scrolling wrapper. Give it a height and `overflow-auto` and a sticky `Thead` stays put inside it. */
+  containerClassName?: string;
+}) {
   return (
-    <div className="w-full overflow-x-auto">
+    <div className={cn("w-full overflow-x-auto", containerClassName)}>
       <table className={cn("w-full caption-bottom border-collapse text-sm", className)} {...props} />
     </div>
   );

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PaginationState, SortingState, Updater } from "@tanstack/react-table";
-import { AlertCircle, ArrowLeft, Check, Code2, Database, Link2, ListFilter, LogIn, RotateCcw, X } from "lucide-react";
+import { AlertCircle, ArrowLeft, Check, ChevronDown, Code2, Database, Link2, ListFilter, LogIn, RotateCcw, X } from "lucide-react";
 import { BrandLockup } from "@/components/app/Brand";
 import { useAccountTheme } from "@/components/app/useAccountTheme";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,11 @@ import { RecordWorkspace } from "./RecordWorkspace";
  * from the URL that the builder cannot show (a function call, say) opens in
  * text mode rather than being refused: PocketBase is the judge of whether it
  * is valid, not the builder.
+ *
+ * On `lg` and up the list is a desktop window, like the app's own frame: the
+ * page is exactly the height of the viewport and never scrolls, the filter is
+ * a pane that folds away to one line, and the grid takes every pixel left,
+ * scrolling inside itself. Below `lg` it is an ordinary page.
  */
 
 const EMPTY_ROWS: TableRecord[] = [];
@@ -90,9 +95,12 @@ export function TablePage() {
   const [text, setText] = useState(initial.text);
   /** Why the text cannot be shown in the builder, when it cannot. */
   const [notice, setNotice] = useState(initial.notice);
+  /** The filter pane, folded to its heading to give the grid the room. Open when the URL brought a filter. */
+  const [filterOpen, setFilterOpen] = useState(Boolean(initial.filter.trim() || initial.notice));
 
   const [sorting, setSorting] = useState<SortingState>([]);
-  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: DEFAULT_TABLE_PAGE_SIZE });
+  // A window of single-line rows holds more than the API's default page.
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: Math.max(DEFAULT_TABLE_PAGE_SIZE, 50) });
 
   const [data, setData] = useState<TablePageData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -212,6 +220,7 @@ export function TablePage() {
     const parsed = parseFilter(text);
     if (!parsed.ok) {
       setNotice(parsed.error);
+      setFilterOpen(true);
       return;
     }
     setGroup(parsed.group);
@@ -258,8 +267,8 @@ export function TablePage() {
   /* --------------------------------- render -------------------------------- */
 
   const header = (
-    <header className="seam sticky top-0 z-20 border-b bg-background/85 backdrop-blur">
-      <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-3 px-4 py-3">
+    <header className="seam sticky top-0 z-20 shrink-0 border-b bg-background/85 backdrop-blur">
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2 lg:px-5">
         <a href="/" className="rounded">
           <BrandLockup tagline="data table" markClassName="size-7" />
         </a>
@@ -323,7 +332,7 @@ export function TablePage() {
   // A record opens full page — its workspace — rather than in a panel over the table.
   if (openId && isCollectionName(collection)) {
     return (
-      <div className="slab min-h-dvh">
+      <div className="slab flex min-h-dvh flex-col xl:h-dvh xl:overflow-hidden">
         {header}
         <RecordWorkspace
           key={`${collection}/${openId}`}
@@ -343,12 +352,12 @@ export function TablePage() {
     : { message: `"${collection}" is not a collection name — letters, digits and underscores only.`, signedOut: false };
 
   return (
-    <div className="slab min-h-dvh">
+    <div className="slab flex min-h-dvh flex-col lg:h-dvh lg:overflow-hidden">
       {header}
 
-      <main className="mx-auto max-w-7xl space-y-4 px-4 py-5">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h1 className="font-display text-xl font-semibold">{collection}</h1>
+      <main className="flex flex-col gap-3 px-4 py-3 lg:min-h-0 lg:flex-1 lg:px-5">
+        <div className="flex shrink-0 flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="font-display text-lg font-semibold">{collection}</h1>
           {data && data.collection === collection && (
             <span className="font-display text-sm text-muted-foreground tabular-nums">
               {data.totalItems.toLocaleString()} {data.totalItems === 1 ? "row" : "rows"}
@@ -361,16 +370,44 @@ export function TablePage() {
         </div>
 
         {/* ------------------------------ filter ------------------------------ */}
-        <section aria-label="Filter" className="panel @container rounded-lg border shadow-[0_1px_2px_var(--cast)]">
-          <div className="seam flex flex-wrap items-center gap-2 border-b px-3 py-2">
-            <ListFilter className="size-4 text-muted-foreground" />
-            <h2 className="font-display text-sm font-semibold">Filter</h2>
+        <section aria-label="Filter" className="panel @container shrink-0 rounded-md border shadow-[0_1px_2px_var(--cast)]">
+          <div className={cn("flex flex-wrap items-center gap-2 px-3 py-1.5", filterOpen && "seam border-b")}>
+            <button
+              type="button"
+              onClick={() => setFilterOpen(open => !open)}
+              aria-expanded={filterOpen}
+              aria-controls="table-filter"
+              className="-mx-1 inline-flex items-center gap-2 rounded px-1 hover:text-foreground"
+            >
+              <ChevronDown
+                className={cn("size-3.5 text-muted-foreground transition-transform", !filterOpen && "-rotate-90")}
+              />
+              <ListFilter className="size-4 text-muted-foreground" />
+              <h2 className="font-display text-sm font-semibold">Filter</h2>
+            </button>
             {mode === "builder" && conditions > 0 && (
               <span className="text-xs text-muted-foreground tabular-nums">
                 {conditions} {conditions === 1 ? "condition" : "conditions"}
               </span>
             )}
-            <div className="ml-auto inline-flex gap-0.5 rounded-md border bg-muted/60 p-0.5">
+            {!filterOpen && (
+              <code
+                className={cn(
+                  "min-w-0 flex-1 truncate rounded-sm bg-muted/50 px-2 py-0.5 font-mono text-[11px]",
+                  !applied && "text-muted-foreground",
+                )}
+                title={applied}
+              >
+                {applied || "no filter"}
+              </code>
+            )}
+            {!filterOpen && applied && (
+              <Button variant="ghost" size="sm" className="h-6" onClick={clear}>
+                <X />
+                Clear
+              </Button>
+            )}
+            <div className={cn("ml-auto inline-flex gap-0.5 rounded-md border bg-muted/60 p-0.5", !filterOpen && "hidden")}>
               {(["builder", "text"] as const).map(entry => (
                 <button
                   key={entry}
@@ -389,7 +426,7 @@ export function TablePage() {
             </div>
           </div>
 
-          <div className="space-y-3 p-3">
+          <div id="table-filter" hidden={!filterOpen} className="space-y-3 p-3">
             {notice && (
               <p className="flex items-start gap-2 rounded-md border border-hazard/40 bg-hazard/10 px-2.5 py-1.5 text-xs text-hazard">
                 <AlertCircle className="mt-px size-3.5 shrink-0" />
@@ -400,7 +437,10 @@ export function TablePage() {
             )}
 
             {mode === "builder" ? (
-              <QueryBuilder value={group} onChange={setGroup} fields={fields} problems={problems} />
+              // Tall filters scroll in their pane rather than pushing the grid off the window.
+              <div className="lg:max-h-[36vh] lg:overflow-y-auto">
+                <QueryBuilder value={group} onChange={setGroup} fields={fields} problems={problems} />
+              </div>
             ) : (
               <Textarea
                 aria-label="Filter expression"
@@ -459,7 +499,7 @@ export function TablePage() {
         {/* ------------------------------- table ------------------------------ */}
         {shownError &&
           (shownError.signedOut ? (
-            <div className="panel flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 text-sm">
+            <div className="panel flex shrink-0 flex-wrap items-center gap-3 rounded-md border px-4 py-3 text-sm">
               <LogIn className="size-4 text-muted-foreground" />
               <span className="flex-1">Sign in to read this collection — every row is read as you.</span>
               <Button asChild size="sm">
@@ -469,7 +509,7 @@ export function TablePage() {
           ) : (
             <p
               role="alert"
-              className="flex items-start gap-2 rounded-lg border border-alert/40 bg-alert/10 px-3 py-2 text-sm text-alert"
+              className="flex shrink-0 items-start gap-2 rounded-md border border-alert/40 bg-alert/10 px-3 py-2 text-sm text-alert"
             >
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
               {shownError.message}
